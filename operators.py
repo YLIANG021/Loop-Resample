@@ -155,6 +155,7 @@ def apply_counts(context, session, counts, shape=None):
     # All planning happens on a detached copy of the locked source, so a
     # failure leaves the live mesh exactly as it was.
     working_bm = session.open_bmesh()
+    print_timing("open-bmesh", time.perf_counter() - started)
     try:
         summary = _resample(session, working_bm, counts, shape)
     except Exception as error:

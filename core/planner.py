@@ -938,6 +938,18 @@ def _build_transitions(
     # that order.  One flat dict plus a diagonal filter made every round re-scan all
     # history -- ~800k dead iterations to reach ~24k live ones.
     layers = {0: {(0, 0, None): (0.0, ())}}
+    # What is left of the rectangle once the round structure is fixed.  Only the one
+    # triangle direction that closes this strip's length gap is authorized, so d moves
+    # one way only and every prefix of a completable path has to stay between the start
+    # and the goal offsets.  A state outside that band is not merely lost on its own
+    # account: its parents are outside too, so no surviving state is reached through it
+    # and dropping it cannot reorder, reprice or retie anything.  The band is therefore
+    # tied to the single-direction rule rather than assumed, and gives up by itself if
+    # both triangle directions are ever authorized -- a wider search, not a wrong one.
+    final_offset = outer_steps - inner_steps
+    low_offset = min(0, final_offset)
+    high_offset = max(0, final_offset)
+    band_limited = sum(1 for kind in allowed if kind != "QUAD") <= 1
     expanded = 0
     for total in range(inner_steps + outer_steps):
         tri_layer = {}
@@ -952,6 +964,10 @@ def _build_transitions(
                     outer_index,
                 )
                 if next_inner > inner_steps or next_outer > outer_steps:
+                    continue
+                if band_limited and not (
+                    low_offset <= next_outer - next_inner <= high_offset
+                ):
                     continue
                 if waypoints and (
                     not _on_seam_corridor(next_inner, next_outer, waypoints)
