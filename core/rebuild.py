@@ -34,9 +34,28 @@ def rebuild_detached_path(bm, path, samples):
     """Replace a fully detached path with one sampled directly from its source."""
     source_vertices, source_edges, is_closed = path
     source_edge_set = {edge for edge in source_edges if edge.is_valid}
-    if any(edge.link_faces for edge in source_edge_set):
+    attached = sorted(
+        (
+            (edge.index, tuple(face.index for face in edge.link_faces))
+            for edge in source_edge_set
+            if edge.link_faces
+        ),
+        key=lambda item: item[0],
+    )
+    if attached:
+        print(
+            "[Loop Resample][diagnostic] detach-refused "
+            f"closed={int(is_closed)} rail_vertices={len(source_vertices)} "
+            f"rail_edges={len(source_edges)} still_attached={len(attached)} "
+            "edges=["
+            + ", ".join(f"{edge}:{list(faces)}" for edge, faces in attached[:12])
+            + "]"
+        )
+        first_edge, first_faces = attached[0]
         raise ValueError(
-            "The selected path touches faces outside the supported surface strips."
+            f"{len(attached)} of {len(source_edge_set)} rail edges still hold faces "
+            f"the capture left out (edge {first_edge} holds face {first_faces[0]}): "
+            "the selected path does not run between two supported strips."
         )
 
     removable_vertices = (

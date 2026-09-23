@@ -1,7 +1,43 @@
 """Surface-region capture and source-topology mapping."""
 
+from collections import Counter
+
 from .paths import ordered_selected_path
 from .utils import _point
+
+
+def _listed(values, limit=12):
+    """A sorted, capped index list for a diagnostic line."""
+    values = sorted(values)
+    shown = ",".join(str(value) for value in values[:limit])
+    if len(values) > limit:
+        shown += f",..+{len(values) - limit}"
+    return f"[{shown}]"
+
+
+def _rail_histogram(component, path_edge_set):
+    """How many of the path's rail edges each face of a component sits on.
+
+    ``1x8`` is a clean strip, one face per rail edge.  Anything holding two means
+    that side is coarser than the rail, which is why a component like it cannot span
+    the whole path and gets rejected.
+    """
+    histogram = Counter(
+        sum(edge in path_edge_set for edge in face.edges) for face in component
+    )
+    return ",".join(
+        f"{holds}x{count}" for holds, count in sorted(histogram.items())
+    )
+
+
+def print_capture_reject(path_index, reason, component, path_edge_set, **detail):
+    """Why one side of a rail was left out of the capture."""
+    print(
+        "[Loop Resample][diagnostic] capture-reject "
+        f"path={path_index} reason={reason} "
+        f"faces={len(component)} rails={_rail_histogram(component, path_edge_set)}"
+        + "".join(f" {key}={value}" for key, value in detail.items())
+    )
 
 
 def region_rails(region, paths):
@@ -37,6 +73,45 @@ def _rail_frame(vertices, closed):
         "points": tuple(_point(vertex) for vertex in vertices),
         "segments": max(count - (0 if closed else 1), 1) if count else 1,
     }
+
+
+def region_source_rungs(region, paths):
+    """The ``(inner, outer)`` column pairs the source band already joins with an edge.
+
+    Which way the two rails run against each other, and where the ring's one cut sits,
+    is the question :func:`.planner.align_outer_boundary` answers, and answering it from
+    distances is degenerate on a band that is nearly symmetric: both walk directions and
+    several cut columns score within a few percent, so the winner moves with the sample
+    count and the ring gets wired left outer to right inner.
+
+    The band the user drew answers it exactly.  An edge of a region face with one end on
+    each rail *is* a rung of the source pairing, so the set of them is a description of
+    the pairing rather than an opinion about it.  Indices are used because they are what
+    survives the session's frozen capture.
+    """
+    inner_vertices, outer_vertices = region_rails(region, paths)
+    if not inner_vertices or not outer_vertices:
+        return ()
+    inner_index = {vertex.index: i for i, vertex in enumerate(inner_vertices)}
+    outer_index = {vertex.index: j for j, vertex in enumerate(outer_vertices)}
+    rungs = set()
+    for face in region["faces"]:
+        for edge in face.edges:
+            first, second = edge.verts
+            pair = (
+                inner_index.get(first.index),
+                outer_index.get(second.index),
+            )
+            if None not in pair:
+                rungs.add(pair)
+                continue
+            pair = (
+                inner_index.get(second.index),
+                outer_index.get(first.index),
+            )
+            if None not in pair:
+                rungs.add(pair)
+    return tuple(sorted(rungs))
 
 
 def _capture_ngon_cap(path_index, path, used_faces):
@@ -127,6 +202,16 @@ def capture_adjacent_strips(bm, paths):
         path_edge_set = set(path_edges)
         component_edges = {edge for face in component for edge in face.edges}
         if component_edges & path_edge_set != path_edge_set:
+            print_capture_reject(
+                path_index,
+                "partial-rail",
+                component,
+                path_edge_set,
+                covered=f"{len(component_edges & path_edge_set)}/{len(path_edge_set)}",
+                missing_edges=_listed(
+                    edge.index for edge in path_edge_set - component_edges
+                ),
+            )
             return None
 
         component_vertices = {vertex for face in component for vertex in face.verts}
@@ -179,9 +264,29 @@ def capture_adjacent_strips(bm, paths):
             outer_vertices, ordered_outer_edges, outer_closed = ordered_selected_path(
                 outer_edges
             )
-        except ValueError:
+        except ValueError as error:
+            print_capture_reject(
+                path_index,
+                "outer-none"
+                if not outer_edges
+                else "outer-unorderable",
+                component,
+                path_edge_set,
+                error=str(error),
+                outer_edges=_listed(edge.index for edge in outer_edges),
+                boundary=_listed(edge.index for edge in boundary_edges - outer_edges),
+            )
             return None
         if outer_closed != is_closed:
+            print_capture_reject(
+                path_index,
+                "outer-openness",
+                component,
+                path_edge_set,
+                outer_closed=int(outer_closed),
+                path_closed=int(is_closed),
+                outer_vertices=_listed(vertex.index for vertex in outer_vertices),
+            )
             return None
 
         first_face = next(iter(component))
@@ -254,14 +359,37 @@ def capture_adjacent_strips(bm, paths):
         first_path = paths[first_index]
         second_path = paths[second_index]
         if first_path[2] != second_path[2]:
+            print(
+                "[Loop Resample][diagnostic] capture-reject "
+                f"path={first_index} reason=pair-openness "
+                f"between={first_index}+{second_index} "
+                f"closed={int(first_path[2])}/{int(second_path[2])} "
+                f"faces={len(eligible)}"
+            )
             continue
         boundary_edges = set(first_path[1]) | set(second_path[1])
         while eligible:
             component = component_from_seed(eligible.pop(), eligible, boundary_edges)
             component_edges = {edge for face in component for edge in face.edges}
-            if component_edges & set(first_path[1]) != set(first_path[1]):
-                continue
-            if component_edges & set(second_path[1]) != set(second_path[1]):
+            rails = (
+                (first_index, set(first_path[1])),
+                (second_index, set(second_path[1])),
+            )
+            partial = [
+                (index, rail)
+                for index, rail in rails
+                if component_edges & rail != rail
+            ]
+            for index, rail in partial:
+                print_capture_reject(
+                    index,
+                    "partial-rail",
+                    component,
+                    rail,
+                    between=f"{first_index}+{second_index}",
+                    covered=f"{len(component_edges & rail)}/{len(rail)}",
+                )
+            if partial:
                 continue
 
             first_face = next(iter(component))
@@ -285,6 +413,7 @@ def capture_adjacent_strips(bm, paths):
             used_faces.update(component)
 
     for path_index, (_, path_edges, _) in enumerate(paths):
+        path_edge_set = set(path_edges)
         linked_faces = {face for edge in path_edges for face in edge.link_faces}
         captured_faces = {
             face
@@ -300,6 +429,24 @@ def capture_adjacent_strips(bm, paths):
                 f"path={path_index} selected_edges={len(path_edges)} "
                 f"linked_faces={len(linked_faces)} captured={len(captured_faces)} "
                 f"remaining={len(remaining_faces)} "
+                f"rails={_rail_histogram(remaining_faces, path_edge_set)} "
                 "reason=unsupported-component-boundary"
             )
+            # The operator refuses the whole step once any face is still attached to
+            # the rail, so the faces worth blaming are exactly these.
+            for face in sorted(remaining_faces, key=lambda item: item.index)[:12]:
+                print(
+                    "[Loop Resample][diagnostic] capture-uncaptured "
+                    f"path={path_index} face={face.index} "
+                    f"verts={_listed(vertex.index for vertex in face.verts)} "
+                    f"corners={len(face.verts)} "
+                    f"on_rail={sum(edge in path_edge_set for edge in face.edges)} "
+                    f"rail_edges={_listed(edge.index for edge in face.edges if edge in path_edge_set)} "
+                    f"other_faces={len({linked for edge in face.edges for linked in edge.link_faces}) - 1}"
+                )
+            if len(remaining_faces) > 12:
+                print(
+                    "[Loop Resample][diagnostic] capture-uncaptured "
+                    f"path={path_index} ..+{len(remaining_faces) - 12} more"
+                )
     return regions
