@@ -34,7 +34,7 @@ and a spacing is the same question -- can a strip be laid between these two rail
 import bpy
 
 from ..core import session as sessions
-from ..operators import apply_counts
+from ..operators import apply_counts, restore_source
 from ..shape.state import (
     MODE_COUNT,
     MODE_EVEN,
@@ -310,33 +310,36 @@ class MESH_OT_loop_resample_interactive(bpy.types.Operator):
         )
 
     def _restore_entry(self, context):
-        """Put back the mesh the wheel found: entry counts, both strengths at zero.
+        """Put back the mesh the wheel found: the locked source, written back as it stands.
 
-        One call rather than two, because the rebuild is a pure function of all four
-        values -- the shape comes back with the counts whether or not it moved, so a
-        cancel cannot leave a half-reverted curve standing.
+        This is deliberately not a step at the entry counts.  A step re-solves, and the
+        re-solve has no reason to reproduce the source's own wiring -- measured on a ring
+        whose bands are 8x8 and 8x12, an entry-count step landed every vertex back on its
+        source position and still moved 11 of the 20 rebuilt faces.  The session already
+        holds the source the steps rebuild from, so reverting is that copy put back, and
+        the counts, the shape and the selection come with it for nothing.
         """
         if self.applied_state == _ENTRY_STATE:
             return True, "Left the curve as it was."
         moved_shape = self.applied_state[1:] != (0.0, 0.0)
-        succeeded, message = apply_counts(context, self.session, self.entry_counts)
-        if succeeded:
-            self.applied_state = _ENTRY_STATE
-            self.label_values = tuple(self.entry_counts)
-            self.label_smooth = 0.0
-            self.label_even = 0.0
-            self._relabel(None)
-            message = (
-                "Reverted to "
-                + ", ".join(
-                    str(value)
-                    for value in segment_counts(self.session.counts, self.label_closed)
-                )
-                + " segment(s)"
-                + (" and the original curve" if moved_shape else "")
-                + "."
+        restore_source(context, self.session, self.entry_counts)
+        self.applied_state = _ENTRY_STATE
+        self.attempted_state = _ENTRY_STATE
+        self.label_values = tuple(self.entry_counts)
+        self.label_smooth = 0.0
+        self.label_even = 0.0
+        self._relabel(None)
+        return (
+            True,
+            "Reverted to "
+            + ", ".join(
+                str(value)
+                for value in segment_counts(self.session.counts, self.label_closed)
             )
-        return succeeded, message
+            + " segment(s)"
+            + (" and the original curve" if moved_shape else "")
+            + ".",
+        )
 
     def _commit(self, context):
         # Read before finishing: finishing ends the session, and the report is the last
