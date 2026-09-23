@@ -1,0 +1,17 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 打包脚本
+Addon_pack.vbs
+
+# 说明文档（txt / md）
+*.txt
+*.md
+
+# 常见缓存 / 临时目录
+.cache/
+*.tmp
+*.log
+.DS_Store

@@ -1,0 +1,416 @@
+"""Edit-mode operators for the Loop Resample adjust session."""
+
+import time
+
+import bpy
+import bmesh
+
+from .core import (
+    apply_path_edge_attributes,
+    apply_path_point_attributes,
+    apply_region_edge_attributes,
+    apply_region_faces,
+    apply_region_seams,
+    cleanup_detached_edges,
+    detach_adjacent_strips,
+    outer_boundary_order,
+    paint_path_seam_jogs,
+    rebuild_detached_path,
+    rebuild_ngon_cap,
+    rebuild_ordered_strip,
+    rebuild_triangle_fan,
+    region_outer_parameters,
+    region_rungs,
+    region_seam_rungs,
+    region_seam_waypoints,
+)
+from .core import session as sessions
+from .core.diagnostics import (
+    accumulate_scan,
+    print_seam_crossings,
+    print_scans,
+    print_timing,
+    reset_scans,
+)
+
+
+def _replace_edit_bmesh(mesh, live_bm, source_bm):
+    """Replace the live edit BMesh from a detached, fully evaluated copy."""
+    started = time.perf_counter()
+    staging_mesh = bpy.data.meshes.new("_loop_resample_staging")
+    try:
+        source_bm.to_mesh(staging_mesh)
+        live_bm.clear()
+        live_bm.from_mesh(staging_mesh)
+        live_bm.normal_update()
+    finally:
+        bpy.data.meshes.remove(staging_mesh)
+    bmesh.update_edit_mesh(mesh, loop_triangles=True, destructive=True)
+    print_timing(
+        "commit-working-bmesh",
+        time.perf_counter() - started,
+        verts=len(source_bm.verts),
+        edges=len(source_bm.edges),
+        faces=len(source_bm.faces),
+    )
+
+
+def _redraw(context):
+    if context.area is not None:
+        context.area.tag_redraw()
+
+
+class MESH_OT_loop_resample_begin(bpy.types.Operator):
+    bl_idname = "mesh.loop_resample_begin"
+    bl_label = "Enter Loop Resample"
+    bl_description = "Lock the current mesh and selection as the resample source"
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.mode == "EDIT_MESH"
+            and context.active_object is not None
+            and context.active_object.type == "MESH"
+            and not sessions.is_active(context)
+        )
+
+    def execute(self, context):
+        try:
+            session = sessions.begin(context)
+        except ValueError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        _redraw(context)
+        self.report(
+            {"INFO"},
+            "Locked {} path(s): {}".format(
+                len(session.counts), ", ".join(str(count) for count in session.counts)
+            ),
+        )
+        return {"FINISHED"}
+
+
+class MESH_OT_loop_resample_step(bpy.types.Operator):
+    bl_idname = "mesh.loop_resample_step"
+    bl_label = "Loop Resample"
+    bl_description = "Resample the locked paths from the session source"
+    bl_options = {"UNDO"}
+
+    delta: bpy.props.IntProperty(default=0, min=-1, max=1, options={"HIDDEN"})
+    target_count: bpy.props.IntProperty(name="Target Count", default=0, min=0)
+    _running = False
+
+    @classmethod
+    def poll(cls, context):
+        return sessions.is_active(context) and context.mode == "EDIT_MESH"
+
+    def invoke(self, context, event):
+        if self.delta in {-1, 1} or self.target_count > 0:
+            return self.execute(context)
+        session = sessions.active(context)
+        counts = session.counts
+        self.target_count = max(counts)
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        self.layout.prop(self, "target_count")
+
+    def execute(self, context):
+        operator_type = type(self)
+        if operator_type._running:
+            self.report({"WARNING"}, "Mesh update is already running; wait a moment.")
+            return {"CANCELLED"}
+        operator_type._running = True
+        try:
+            session = sessions.active(context)
+            if session is None:
+                self.report({"ERROR"}, "Enter adjust mode first.")
+                return {"CANCELLED"}
+            try:
+                counts = session.next_counts(self.delta, self.target_count)
+            except ValueError as error:
+                self.report({"ERROR"}, str(error))
+                return {"CANCELLED"}
+            succeeded, message = apply_counts(context, session, counts)
+        finally:
+            operator_type._running = False
+        self.report({"INFO" if succeeded else "ERROR"}, message)
+        return {"FINISHED"} if succeeded else {"CANCELLED"}
+
+
+def apply_counts(context, session, counts, shape=None):
+    """Resample every locked path to ``counts`` and write the result into the edit mesh.
+
+    The panel operator and the interactive modal both come through here, so a scroll and a
+    click cannot drift apart.  ``(succeeded, message)`` comes back instead of a report
+    because the caller owns what the user hears: a scroll that fails at a count the planner
+    cannot solve must stay silent and leave the previous mesh standing.
+
+    ``shape`` is one step's moved control points and re-weighted measure, or None for a
+    step that only changed counts.
+    """
+    started = time.perf_counter()
+    mesh = context.active_object.data
+    # All planning happens on a detached copy of the locked source, so a
+    # failure leaves the live mesh exactly as it was.
+    working_bm = session.open_bmesh()
+    try:
+        summary = _resample(session, working_bm, counts, shape)
+    except Exception as error:
+        working_bm.free()
+        print_timing("operator-failed", time.perf_counter() - started)
+        return False, f"Loop Resample failed safely: {error}"
+
+    try:
+        _replace_edit_bmesh(mesh, bmesh.from_edit_mesh(mesh), working_bm)
+    finally:
+        working_bm.free()
+    session.counts = list(counts)
+    if hasattr(mesh, "update_gpu_tag"):
+        mesh.update_gpu_tag()
+    _redraw(context)
+    print_timing("operator-total", time.perf_counter() - started)
+    return True, summary
+
+
+def _resample(session, bm, counts, shape=None):
+    step_started = time.perf_counter()
+    reset_scans()
+    cached = session.capture_cache is not None
+    capture = session.capture(bm)
+    paths = capture["paths"]
+    synchronized_paths = capture["synchronized"]
+    regions = capture["regions"]
+    path_states = capture["path_states"]
+    path_points = capture["path_points"]
+    path_anchors = capture["path_anchors"]
+    print_timing(
+        "capture-strips",
+        time.perf_counter() - step_started,
+        cached=cached,
+        paths=len(paths),
+        regions=len(regions),
+        synchronized=len(synchronized_paths),
+        edge_records=sum(
+            len(region["edge_attributes"]["records"]) for region in regions
+        ),
+        face_records=sum(
+            len(region["source_faces"]["records"]) for region in regions
+        ),
+    )
+
+    print_seam_crossings(path_anchors, counts)
+    if shape is not None:
+        print(
+            "[Loop Resample][diagnostic] shape "
+            "tSmooth={:.2f} paths={}".format(
+                shape.t_smooth,
+                sum(1 for moved in shape.points if moved is not None),
+            )
+            + " tEven={:.2f}".format(shape.t_even)
+        )
+    snapshots = session.samples(counts, path_anchors, shape=shape)
+
+    detach_adjacent_strips(bm, regions)
+    updated_paths = [
+        rebuild_detached_path(bm, path, samples)
+        for path, samples in zip(paths, snapshots)
+    ]
+    path_parameters = [
+        session.parameters(
+            index,
+            updated[0],
+            frame=None if shape is None else shape.frame_points(index),
+        )
+        for index, updated in enumerate(updated_paths)
+    ]
+    print_timing("rebuild-target-paths", time.perf_counter() - step_started)
+
+    rebuilt_face_count = 0
+    seam_landings = []
+    for region in regions:
+        kind = region["kind"]
+        inner_vertices = updated_paths[region["path_index"]][0]
+        outer_vertices = (
+            updated_paths[region["outer_path_index"]][0]
+            if region.get("outer_path_index") is not None
+            else region.get("outer_vertices")
+        ) or ()
+        has_ladder = kind not in {"FAN", "NGON_CAP"}
+        if has_ladder:
+            # A rung has to join the two rails walked in the same direction, so
+            # the choice is made once here and the seam's rung lookup, the corner
+            # transfer and the solve all read the outer rail in it.
+            outer_vertices = outer_boundary_order(
+                inner_vertices, outer_vertices, region
+            )
+        region_started = time.perf_counter()
+        inner_parameters = path_parameters[region["path_index"]]
+        outer_path_index = region.get("outer_path_index")
+        outer_parameters = region_outer_parameters(
+            region,
+            outer_vertices,
+            frame_points=(
+                None
+                if shape is None or outer_path_index is None
+                else shape.frame_points(outer_path_index)
+            ),
+        )
+        accumulate_scan(
+            "region-parameters", time.perf_counter() - region_started,
+            len(inner_vertices) + len(outer_vertices),
+        )
+        region_started = time.perf_counter()
+        plan = None
+        if kind == "FAN":
+            rebuilt_faces = rebuild_triangle_fan(
+                bm, inner_vertices, region["pole_vertex"], region
+            )
+        elif kind == "NGON_CAP":
+            rebuilt_faces = rebuild_ngon_cap(bm, inner_vertices, region)
+        else:
+            rebuilt_faces, plan = rebuild_ordered_strip(
+                bm,
+                inner_vertices,
+                outer_vertices,
+                region,
+                region_seam_waypoints(
+                    region, inner_parameters, outer_parameters
+                ),
+            )
+        accumulate_scan(
+            "strip-rebuild", time.perf_counter() - region_started, len(rebuilt_faces)
+        )
+        region_started = time.perf_counter()
+        apply_region_faces(
+            bm,
+            rebuilt_faces,
+            region,
+            inner_vertices,
+            inner_parameters,
+            outer_vertices,
+            outer_parameters,
+        )
+        accumulate_scan(
+            "apply-face-attributes", time.perf_counter() - region_started,
+            len(rebuilt_faces),
+        )
+        region_started = time.perf_counter()
+        rungs, pinned, landings = (
+            region_seam_rungs(region, plan, inner_parameters, outer_parameters)
+            if plan is not None
+            else ((), (), ())
+        )
+        seam_landings.extend(landings)
+        if plan is not None:
+            apply_region_seams(bm, plan, region, rungs)
+        apply_region_edge_attributes(
+            bm,
+            region,
+            inner_parameters,
+            region_rungs(region, plan, inner_vertices),
+            pinned,
+        )
+        accumulate_scan(
+            "apply-region-edge-attributes",
+            time.perf_counter() - region_started,
+            len(region["edge_attributes"]["records"]),
+        )
+        rebuilt_face_count += len(rebuilt_faces)
+
+    phase_started = time.perf_counter()
+    apply_path_edge_attributes(updated_paths, path_parameters, path_states, bm)
+    # Last, because a crossing that reached the path on two different columns joins
+    # up by adding seam flags to path edges the step above already resampled.
+    paint_path_seam_jogs(bm, updated_paths, seam_landings)
+    apply_path_point_attributes(updated_paths, path_parameters, path_points, bm)
+    accumulate_scan(
+        "apply-path-attributes",
+        time.perf_counter() - phase_started,
+        sum(len(path) for path, _, _ in updated_paths),
+    )
+    phase_started = time.perf_counter()
+    cleanup_detached_edges(bm, regions)
+    accumulate_scan(
+        "cleanup-edges",
+        time.perf_counter() - phase_started,
+        sum(len(region.get("delete_edges", ())) for region in regions),
+    )
+
+    selected_edges = {
+        edge for _, path_edges, _ in updated_paths for edge in path_edges
+    }
+    phase_started = time.perf_counter()
+    for face in bm.faces:
+        face.select_set(False)
+    for edge in bm.edges:
+        edge.select_set(False)
+    for vertex in bm.verts:
+        vertex.select_set(False)
+    for edge in selected_edges:
+        edge.select_set(True)
+    bm.select_history.clear()
+    accumulate_scan(
+        "deselect-all",
+        time.perf_counter() - phase_started,
+        len(bm.faces) + len(bm.edges) + len(bm.verts) + len(selected_edges),
+    )
+    phase_started = time.perf_counter()
+    bm.normal_update()
+    accumulate_scan("normal-update", time.perf_counter() - phase_started, len(bm.faces))
+    print_timing(
+        "rebuild-all-strips",
+        time.perf_counter() - step_started,
+        regions=len(regions),
+        faces=rebuilt_face_count,
+    )
+    print_scans()
+    return (
+        f"Resampled {len(paths)} path(s): "
+        + ", ".join(
+            f"{before}->{after}"
+            for before, after in zip(session.source_counts, counts)
+        )
+        + f"; rebuilt {len(regions)} strip(s) with {rebuilt_face_count} face(s)"
+    )
+
+
+class MESH_OT_loop_resample_confirm(bpy.types.Operator):
+    bl_idname = "mesh.loop_resample_confirm"
+    bl_label = "Confirm Resample"
+    bl_description = "Keep the current result and end the session"
+
+    @classmethod
+    def poll(cls, context):
+        return sessions.is_active(context)
+
+    def execute(self, context):
+        sessions.end(context)
+        _redraw(context)
+        return {"FINISHED"}
+
+
+class MESH_OT_loop_resample_cancel(bpy.types.Operator):
+    bl_idname = "mesh.loop_resample_cancel"
+    bl_label = "Cancel Resample"
+    bl_description = "Restore the mesh to its state when the session started"
+    bl_options = {"UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return sessions.is_active(context) and context.mode == "EDIT_MESH"
+
+    def execute(self, context):
+        session = sessions.active(context)
+        mesh = context.active_object.data
+        restored_bm = session.open_bmesh()
+        try:
+            _replace_edit_bmesh(mesh, bmesh.from_edit_mesh(mesh), restored_bm)
+        finally:
+            restored_bm.free()
+        if hasattr(mesh, "update_gpu_tag"):
+            mesh.update_gpu_tag()
+        sessions.end(context)
+        _redraw(context)
+        self.report({"INFO"}, "Restored the mesh from before the session.")
+        return {"FINISHED"}
