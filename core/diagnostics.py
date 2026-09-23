@@ -124,6 +124,98 @@ def print_seam_crossing_skipped(region, reason, detail):
     )
 
 
+# --- temporary ladder diagnostic ----------------------------------------------
+# Added to find which step moved a strip's connectivity while only a shape axis was
+# being scrolled.  ``ladder``'s ``gap`` is the margin the search won by, so it says
+# whether one rail vertex sliding was ever likely to flip the strip; ``ladder-final``
+# shows what actually became faces and what each of its columns' rungs measures,
+# because the column pair whose rung lengths cross is the flip itself.
+# Gated by ``planner.DIAGNOSE_LADDER`` and removed in one go with the UV block below.
+
+_LADDER_KIND_LETTER = {"QUAD": "Q", "INNER_TRI": "I", "OUTER_TRI": "O"}
+
+
+def _ladder_sequence(transitions):
+    return "".join(_LADDER_KIND_LETTER.get(kind, "?") for kind in transitions)
+
+
+def print_outer_align(region, candidates, chosen_index, rotate, is_closed):
+    """The two orientations' pairing costs, and which one the strip walked.
+
+    For a closed rail ``rotate`` is the captured index the outer rail now starts at,
+    so a step whose ``rotate`` moved has shifted every rung by that many columns -- a
+    whole band's worth of connectivity change from one wheel tick.
+    """
+    print(
+        "[Loop Resample][diagnostic] align "
+        f"region={region.get('region_index')} closed={int(is_closed)} "
+        "costs=["
+        + ",".join(f"{cost:.6f}" for cost, _ in candidates)
+        + f"] chosen={chosen_index} rotate={rotate}"
+    )
+
+
+def print_ladder_dp(region, inner_steps, outer_steps, allowed, ranked, waypoints):
+    """The search's cheapest ladder and its closest rival among the last moves.
+
+    ``runner`` is the best complete ladder that ended on a *different* final move, so
+    ``gap`` is an upper bound on the margin the search really won by -- the true
+    second-best ladder may share the winner's last step and never surface here.  On a
+    two-transition strip every ladder has a different final move, so the bound is exact
+    and ``gap`` is the whole margin a shape axis had to overcome to move the strip.
+    """
+    best_cost, best_transitions = ranked[0]
+    line = (
+        "[Loop Resample][diagnostic] ladder "
+        f"region={region.get('region_index')} steps={inner_steps}x{outer_steps} "
+        "allowed="
+        + "/".join(_LADDER_KIND_LETTER.get(kind, "?") for kind in allowed)
+        + f" finals={len(ranked)}"
+        + " pins="
+        + ("-" if not waypoints else str(sorted(set(waypoints))))
+        + f" dp={_ladder_sequence(best_transitions)} score={best_cost:.6f}"
+    )
+    if len(ranked) > 1:
+        line += (
+            f" runner={_ladder_sequence(ranked[1][1])}"
+            f" gap={ranked[1][0] - best_cost:.6f}"
+        )
+    else:
+        line += " runner=- gap=inf"
+    print(line)
+
+
+def print_ladder_plan(region, plan, dp_transitions):
+    """The ladder that became faces, with the rung length of every one of its columns.
+
+    ``beautified`` marks that the local swap pass rewrote what the search chose; on a
+    two-transition strip the two sequences are scored by the same arithmetic over the
+    same nodes, so it never does.  ``rungs`` is what ``_step_cost`` pays
+    ``1.2 * length ** 2`` for: two neighbouring columns swapping which rung is the
+    shorter one is the flip, and its threshold is where those two numbers are equal.
+    """
+    inner = plan.inner_vertices
+    outer = plan.outer_vertices
+    rungs = [
+        (
+            _point(outer[outer_index % len(outer)])
+            - _point(inner[inner_index % len(inner)])
+        ).length
+        for inner_index, outer_index in plan.nodes
+    ]
+    print(
+        "[Loop Resample][diagnostic] ladder-final "
+        f"region={region.get('region_index')} "
+        f"{'kept' if dp_transitions == plan.transitions else 'beautified'}="
+        f"{_ladder_sequence(plan.transitions)} score={plan.score:.6f} "
+        "nodes=["
+        + ",".join(f"{i}>{o}" for i, o in plan.nodes)
+        + "] rungs=["
+        + ",".join(f"{length:.6f}" for length in rungs)
+        + "]"
+    )
+
+
 def print_crossing(first_label, first_segment, second_label, second_segment, epsilon_squared):
     print(
         "[Loop Resample][diagnostic] crossing "

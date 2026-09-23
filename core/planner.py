@@ -9,7 +9,13 @@ import math
 import time
 
 from .curves import _sample_parameterized, parameterize_boundary
-from .diagnostics import accumulate_scan, print_seam_crossing_skipped
+from .diagnostics import (
+    accumulate_scan,
+    print_ladder_dp,
+    print_ladder_plan,
+    print_outer_align,
+    print_seam_crossing_skipped,
+)
 from .geometry import (
     _crossing_after_box_overlap,
     _segments_intersect,
@@ -22,6 +28,10 @@ from .utils import _point
 
 RUNG_CONTINUITY_VECTOR_WEIGHT = 0.75
 TRIANGLE_DISTRIBUTION_WEIGHT = 0.9
+
+# Temporary: how a shape axis moved a strip's connectivity.  Off costs nothing but the
+# branch; nothing below reads it to decide anything.
+DIAGNOSE_LADDER = True
 
 
 def _triangle_distribution_cost(
@@ -137,10 +147,11 @@ def _rotate_nearest(vertices, point):
     return vertices[start:] + vertices[:start]
 
 
-def align_outer_boundary(inner_vertices, outer_vertices, is_closed):
+def align_outer_boundary(inner_vertices, outer_vertices, is_closed, region=None):
     """Choose one orientation and, for a loop, one rotation."""
     inner = parameterize_boundary(inner_vertices, is_closed)
     inner_start = _point(inner_vertices[0])
+    orientations = []
     candidates = []
     for orientation in (list(outer_vertices), list(reversed(outer_vertices))):
         candidate = _rotate_nearest(orientation, inner_start) if is_closed else orientation
@@ -150,7 +161,25 @@ def align_outer_boundary(inner_vertices, outer_vertices, is_closed):
             for vertex, parameter in zip(inner.vertices, inner.parameters)
         )
         candidates.append((cost, candidate))
-    return min(candidates, key=lambda item: item[0])[1]
+        orientations.append(orientation)
+    chosen_index = min(
+        range(len(candidates)), key=lambda index: candidates[index][0]
+    )
+    if DIAGNOSE_LADDER and region is not None:
+        chosen_outer = candidates[chosen_index][1]
+        rotate = 0
+        if is_closed and chosen_outer:
+            head = chosen_outer[0]
+            rotate = next(
+                (
+                    index
+                    for index, vertex in enumerate(orientations[chosen_index])
+                    if vertex is head
+                ),
+                0,
+            )
+        print_outer_align(region, candidates, chosen_index, rotate, is_closed)
+    return candidates[chosen_index][1]
 
 
 def _transition_face(inner, outer, inner_index, outer_index, kind):
@@ -870,6 +899,7 @@ def _build_transitions(
     is_closed,
     boundary_geometry,
     waypoints=(),
+    region=None,
 ):
     """Solve the whole ladder: cheapest monotone path between two ordered rails.
 
@@ -996,7 +1026,17 @@ def _build_transitions(
     candidates = list(layers[inner_steps + outer_steps].values())
     if not candidates:
         raise ValueError("No valid ordered strip path was found.")
-    return min(candidates, key=lambda state: state[0])
+    best = min(candidates, key=lambda state: state[0])
+    if DIAGNOSE_LADDER and region is not None:
+        print_ladder_dp(
+            region,
+            inner_steps,
+            outer_steps,
+            allowed,
+            sorted(candidates, key=lambda state: state[0])[:2],
+            waypoints,
+        )
+    return best
 
 
 def outer_boundary_order(inner_vertices, outer_vertices, region):
@@ -1013,6 +1053,7 @@ def outer_boundary_order(inner_vertices, outer_vertices, region):
         inner_vertices,
         outer_vertices,
         region["closed"],
+        region=region,
     )
     accumulate_scan("plan-align", time.perf_counter() - started, 1)
     return aligned
@@ -1074,6 +1115,7 @@ def build_ordered_strip_plan(inner_vertices, outer_vertices, region, waypoints=(
             closed,
             boundary_geometry,
             seam_nodes,
+            region=region,
         )
     except ValueError:
         if not seam_nodes:
@@ -1095,10 +1137,12 @@ def build_ordered_strip_plan(inner_vertices, outer_vertices, region, waypoints=(
             outer_boundary,
             closed,
             boundary_geometry,
+            region=region,
         )
         seam_nodes = ()
     accumulate_scan("plan-build", time.perf_counter() - started, attempts)
     started = time.perf_counter()
+    dp_transitions = transitions
     transitions = _beautify_transitions(
         transitions,
         inner,
@@ -1159,4 +1203,6 @@ def build_ordered_strip_plan(inner_vertices, outer_vertices, region, waypoints=(
     ):
         raise ValueError("The ordered strip contains intersecting edges.")
     accumulate_scan("plan-validate", time.perf_counter() - started, len(faces))
+    if DIAGNOSE_LADDER:
+        print_ladder_plan(region, plan, dp_transitions)
     return plan
