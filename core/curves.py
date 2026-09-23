@@ -244,18 +244,24 @@ def _pinned_samples(curve, target_count, anchors, even=0.0):
         return None
 
     try:
+        total = positions[-1]
         samples = _interval_samples(
             ordered,
             positions,
             curve.is_closed,
-            positions[-1],
+            total,
             target_count,
             at_anchor=lambda index: points[index].copy(),
+            # A closed path's anchor-to-itself interval runs off the end of the
+            # measure table, and reading past that end clamps onto the closing
+            # point rather than coming back around, so it wraps here instead.
             between=lambda start, offset: _distance_at(
                 curve,
                 table,
                 positions,
-                positions[start] + offset,
+                (positions[start] + offset) % total
+                if curve.is_closed
+                else positions[start] + offset,
             ),
         )
     except ValueError:
