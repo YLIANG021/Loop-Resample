@@ -1,9 +1,14 @@
 """Curve shape and distribution: the two one-way wheel axes beside the count wheel.
 
-Nothing here reads the mesh.  A step is a pure function of the frozen source plus two
-strengths, so the order the axes were scrolled in cannot matter, and a session reverted
-from its entry state lands back on the mesh it started from -- the same invariant the
-count wheel already keeps.
+Nothing here reads the mesh.  A step's points are a pure function of the frozen source
+plus two strengths, so the order the axes were scrolled in cannot move a single vertex,
+and a session reverted from its entry state lands back on the mesh it started from -- the
+same invariant the count wheel already keeps.
+
+Which way a rebuilt strip's rungs are paired is the one thing a session carries as
+history, on purpose: a strip keeps the wiring the count wheel last solved for it, so an
+axis that only moves points never re-pairs the band under it.  Smoothing and then
+changing a count can therefore land on a different pairing than the other way round.
 
 Each axis carries one function, and a tick carries it one step further whichever way
 the wheel turns: Shift smooths the locked curves with a Taubin low-pass, Ctrl evens the

@@ -13,6 +13,7 @@ from .core import (
     apply_region_seams,
     cleanup_detached_edges,
     detach_adjacent_strips,
+    frozen_ladder,
     outer_boundary_order,
     paint_path_seam_jogs,
     rebuild_detached_path,
@@ -237,12 +238,32 @@ def _resample(session, bm, counts, shape=None):
             else region.get("outer_vertices")
         ) or ()
         has_ladder = kind not in {"FAN", "NGON_CAP"}
+        # A phase-locked region walks its outer rail in the source's own order, so
+        # there is no pairing choice to carry over and nothing a saved ladder could
+        # replay.  ``shape is None`` is the session's baseline step -- entered first
+        # and again on cancel -- and it always re-solves, which is what keeps a
+        # cancelled session landing on the mesh it started from.
+        ladders = (
+            session.laddings
+            if has_ladder and not region.get("phase_locked")
+            else None
+        )
+        frozen = frozen_ladder(
+            ladders,
+            region,
+            inner_vertices,
+            outer_vertices,
+            refresh=shape is None,
+        )
+        decision = None if frozen is None else frozen["decision"]
         if has_ladder:
             # A rung has to join the two rails walked in the same direction, so
             # the choice is made once here and the seam's rung lookup, the corner
-            # transfer and the solve all read the outer rail in it.
-            outer_vertices = outer_boundary_order(
-                inner_vertices, outer_vertices, region
+            # transfer and the solve all read the outer rail in it.  A frozen ladder
+            # arrives with the order it was solved against, because its transitions
+            # index that order.
+            outer_vertices, decision = outer_boundary_order(
+                inner_vertices, outer_vertices, region, decision
             )
         region_started = time.perf_counter()
         inner_parameters = path_parameters[region["path_index"]]
@@ -277,6 +298,9 @@ def _resample(session, bm, counts, shape=None):
                 region_seam_waypoints(
                     region, inner_parameters, outer_parameters
                 ),
+                frozen=frozen,
+                ladders=ladders,
+                decision=decision,
             )
         accumulate_scan(
             "strip-rebuild", time.perf_counter() - region_started, len(rebuilt_faces)

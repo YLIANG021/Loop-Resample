@@ -136,6 +136,13 @@ class ResampleSession:
             tuple(_point(vertex) for vertex in path[0]) for path in paths
         )
         self.closed = tuple(bool(path[2]) for path in paths)
+        # How each strip's rails are paired, frozen per region for as long as its
+        # ladder grid keeps its size.  The shape axes move points without being asked
+        # to re-pair them; the count axis and the baseline step re-solve.  It lives here
+        # rather than on a region dict because ``capture`` replays a thawed copy of the
+        # captured regions every step, and it dies with the session so no wiring can
+        # leak into the next one.
+        self.laddings = {}
         self.source_counts = tuple(len(points) for points in self.source_points)
         self.segments = tuple(
             max(count - (0 if closed else 1), 1)

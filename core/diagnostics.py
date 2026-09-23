@@ -155,6 +155,21 @@ def print_outer_align(region, candidates, chosen_index, rotate, is_closed):
     )
 
 
+def print_outer_replay(region, decision):
+    """The outer rail was walked in the order the frozen ladder chose for it.
+
+    Printed under the same ``align`` tag as a fresh choice, because the line disappearing
+    from a scroll would otherwise read as "no alignment happened" rather than the truth:
+    the two orientations were never re-measured, so a ``rotate`` that moved cannot be
+    blamed on this step.
+    """
+    print(
+        "[Loop Resample][diagnostic] align "
+        f"region={region.get('region_index')} replay=chosen{decision[0]} "
+        f"rotate={decision[1]}"
+    )
+
+
 def print_ladder_dp(region, inner_steps, outer_steps, allowed, ranked, waypoints):
     """The search's cheapest ladder and its closest rival among the last moves.
 
@@ -185,14 +200,16 @@ def print_ladder_dp(region, inner_steps, outer_steps, allowed, ranked, waypoints
     print(line)
 
 
-def print_ladder_plan(region, plan, dp_transitions):
+def print_ladder_plan(region, plan, source, swapped):
     """The ladder that became faces, with the rung length of every one of its columns.
 
-    ``beautified`` marks that the local swap pass rewrote what the search chose; on a
-    two-transition strip the two sequences are scored by the same arithmetic over the
-    same nodes, so it never does.  ``rungs`` is what ``_step_cost`` pays
-    ``1.2 * length ** 2`` for: two neighbouring columns swapping which rung is the
-    shorter one is the flip, and its threshold is where those two numbers are equal.
+    ``source`` is how the strip came by that ladder: ``dp`` solved it, ``reuse`` replayed
+    the frozen one, and ``reflow`` found the frozen one no longer fits its rails and
+    solved again -- which is the one number that says how often a saved wiring outlives
+    its own geometry.  ``swapped`` marks that the local pass rewrote what the search
+    chose.  ``rungs`` is what ``_step_cost`` pays ``1.2 * length ** 2`` for: two
+    neighbouring columns swapping which rung is the shorter one is the flip, and its
+    threshold is where those two numbers are equal.
     """
     inner = plan.inner_vertices
     outer = plan.outer_vertices
@@ -205,8 +222,8 @@ def print_ladder_plan(region, plan, dp_transitions):
     ]
     print(
         "[Loop Resample][diagnostic] ladder-final "
-        f"region={region.get('region_index')} "
-        f"{'kept' if dp_transitions == plan.transitions else 'beautified'}="
+        f"region={region.get('region_index')} wiring={source} "
+        f"{'swapped' if swapped else 'kept'}="
         f"{_ladder_sequence(plan.transitions)} score={plan.score:.6f} "
         "nodes=["
         + ",".join(f"{i}>{o}" for i, o in plan.nodes)

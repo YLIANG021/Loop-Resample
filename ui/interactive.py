@@ -126,9 +126,10 @@ class MESH_OT_loop_resample_interactive(bpy.types.Operator):
         )
         self.delta = 0
         # The two strength axes and which one the next tick belongs to.  The mode only
-        # routes input: both strengths stay live whatever the mode says, so a step is
-        # always the frozen source plus these three values and the order the wheel was
-        # turned in cannot show up in the mesh.
+        # routes input: both strengths stay live whatever the mode says, so a step's
+        # points are always the frozen source plus these three values and the order the
+        # wheel was turned in cannot move one of them.  A strip's wiring is the one
+        # exception, and a deliberate one -- see ``shape.state``.
         self.shape = ShapeController(session)
         self.t_smooth = 0.0
         self.t_even = 0.0

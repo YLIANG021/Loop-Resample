@@ -13,6 +13,7 @@ from .diagnostics import (
     accumulate_scan,
     print_ladder_dp,
     print_ladder_plan,
+    print_outer_replay,
     print_outer_align,
     print_seam_crossing_skipped,
 )
@@ -139,47 +140,65 @@ def _rung_continuity_cost(
 
 def _rotate_nearest(vertices, point):
     if not vertices:
-        return []
+        return [], 0
     start = min(
         range(len(vertices)),
         key=lambda index: (_point(vertices[index]) - point).length_squared,
     )
-    return vertices[start:] + vertices[:start]
+    return vertices[start:] + vertices[:start], start
 
 
 def align_outer_boundary(inner_vertices, outer_vertices, is_closed, region=None):
-    """Choose one orientation and, for a loop, one rotation."""
+    """Choose one orientation and, for a loop, one rotation, and report which.
+
+    The decision is the pair ``(orientation_index, rotate)`` rather than the reordered
+    vertices, because :func:`ladder_steps` freezes it alongside the ladder that was
+    solved on top of it: a saved sequence of transitions is a run of advances over
+    *this* order's indices, so replaying it only means anything once the order that
+    made it is replayed as well.
+    """
     inner = parameterize_boundary(inner_vertices, is_closed)
     inner_start = _point(inner_vertices[0])
-    orientations = []
     candidates = []
-    for orientation in (list(outer_vertices), list(reversed(outer_vertices))):
-        candidate = _rotate_nearest(orientation, inner_start) if is_closed else orientation
+    decisions = []
+    for orientation_index, orientation in enumerate(
+        (list(outer_vertices), list(reversed(outer_vertices)))
+    ):
+        rotate = 0
+        candidate = orientation
+        if is_closed:
+            candidate, rotate = _rotate_nearest(orientation, inner_start)
         outer = parameterize_boundary(candidate, is_closed)
         cost = sum(
             (_point(vertex) - _sample_parameterized(outer, parameter)).length_squared
             for vertex, parameter in zip(inner.vertices, inner.parameters)
         )
         candidates.append((cost, candidate))
-        orientations.append(orientation)
+        decisions.append((orientation_index, rotate))
     chosen_index = min(
         range(len(candidates)), key=lambda index: candidates[index][0]
     )
     if DIAGNOSE_LADDER and region is not None:
-        chosen_outer = candidates[chosen_index][1]
-        rotate = 0
-        if is_closed and chosen_outer:
-            head = chosen_outer[0]
-            rotate = next(
-                (
-                    index
-                    for index, vertex in enumerate(orientations[chosen_index])
-                    if vertex is head
-                ),
-                0,
-            )
-        print_outer_align(region, candidates, chosen_index, rotate, is_closed)
-    return candidates[chosen_index][1]
+        print_outer_align(
+            region, candidates, chosen_index, decisions[chosen_index][1], is_closed
+        )
+    return candidates[chosen_index][1], decisions[chosen_index]
+
+
+def apply_outer_decision(outer_vertices, decision, is_closed):
+    """Walk the outer rail the way a frozen decision chose to walk it.
+
+    The rotation is replayed as the index it picked, not re-derived from where the
+    rail sits now: re-deriving it would let one shape tick slide every rung of a band
+    along it at once, which is a far larger connectivity change than the search
+    refusing one rung.
+    """
+    orientation = (
+        list(outer_vertices) if decision[0] == 0 else list(reversed(outer_vertices))
+    )
+    if is_closed and decision[1]:
+        orientation = orientation[decision[1]:] + orientation[:decision[1]]
+    return orientation
 
 
 def _transition_face(inner, outer, inner_index, outer_index, kind):
@@ -1039,73 +1058,145 @@ def _build_transitions(
     return best
 
 
-def outer_boundary_order(inner_vertices, outer_vertices, region):
-    """The direction a region's outer rail is walked in.
+def ladder_steps(region, inner_vertices, outer_vertices):
+    """The size of the grid a region's ladder walks.
+
+    A saved transition sequence is a run of advances across exactly this grid, so the
+    pair is both what the search is solved against and what a replay has to match.
+    """
+    if region["closed"]:
+        return len(inner_vertices), len(outer_vertices)
+    return len(inner_vertices) - 1, len(outer_vertices) - 1
+
+
+def frozen_ladder(ladders, region, inner_vertices, outer_vertices, refresh=False):
+    """The wiring this step may replay, or None when the search has to run again.
+
+    Only a step that leaves the ladder's grid the same size has anything to say about a
+    saved sequence, which is precisely what the shape axes are: :mod:`.curves` keeps a
+    path's sample count alone unless the count wheel moved, so the rails advance over
+    the same number of columns and the saved run of transitions still names faces.
+
+    ``refresh`` is the step taken with no shape applied -- the session's baseline, run
+    first and again on right-click cancel.  It re-solves even when the grid matches,
+    because a cancel that replayed a wiring the user had since flipped would no longer
+    land on the mesh the session started from.
+    """
+    if ladders is None or refresh:
+        return None
+    entry = ladders.get(region["region_index"])
+    if entry is None:
+        return None
+    if entry["steps"] != ladder_steps(region, inner_vertices, outer_vertices):
+        return None
+    return entry
+
+
+def outer_boundary_order(inner_vertices, outer_vertices, region, decision=None):
+    """The direction a region's outer rail is walked in, and the choice that made it.
 
     Both rails have to be read in the same direction for a rung to join sensible
     pairs, so the choice is made once here and every later step -- the seam's rung
     lookup, the corner transfer, the ladder solve -- uses the same order.
+
+    A ``decision`` from :func:`align_outer_boundary` is replayed instead of a new one
+    being made, and comes back out again so the caller can freeze the two rails'
+    pairing as one unit with the ladder solved on it.
     """
     if region.get("phase_locked"):
-        return list(outer_vertices)
+        return list(outer_vertices), None
+    if decision is not None:
+        if DIAGNOSE_LADDER:
+            print_outer_replay(region, decision)
+        return (
+            apply_outer_decision(outer_vertices, decision, region["closed"]),
+            decision,
+        )
     started = time.perf_counter()
-    aligned = align_outer_boundary(
+    aligned, chosen = align_outer_boundary(
         inner_vertices,
         outer_vertices,
         region["closed"],
         region=region,
     )
     accumulate_scan("plan-align", time.perf_counter() - started, 1)
-    return aligned
+    return aligned, chosen
 
 
-def build_ordered_strip_plan(inner_vertices, outer_vertices, region, waypoints=()):
-    """Resample two ordered curves into one direct, monotone strip.
-
-    The solve sees geometry, with one authorized exception: ``waypoints`` are the
-    ladder nodes :func:`.seams.region_seam_waypoints` says a seam crossing needs, and
-    the search may not route around them.  They name two vertices the sampler already
-    pinned, so this connects what the pin created rather than shaping anything new.
-    ``outer_vertices`` arrives in the direction :func:`outer_boundary_order` chose,
-    because that is the order the seam looks its rung up in as well.
-    """
-    closed = region["closed"]
-    if len(inner_vertices) < (3 if closed else 2):
-        raise ValueError("The inner curve has too few points.")
-    if len(outer_vertices) < (3 if closed else 2):
-        raise ValueError("The outer curve has too few points.")
-
+def _ladder_plan(inner_boundary, outer_boundary, transitions, score, closed):
+    """Turn one transition sequence into the faces and nodes it walks out."""
     started = time.perf_counter()
-    inner_boundary = parameterize_boundary(inner_vertices, closed)
-    outer_boundary = parameterize_boundary(outer_vertices, closed)
-    accumulate_scan("plan-parameterize", time.perf_counter() - started, 2)
-    started = time.perf_counter()
-    boundary_geometry = _prepare_boundary_geometry(
-        inner_boundary.vertices,
-        outer_boundary.vertices,
-        closed,
-    )
-    accumulate_scan("plan-geometry", time.perf_counter() - started, 1)
-    inner = inner_boundary.vertices
-    outer = outer_boundary.vertices
-    inner_steps = len(inner) if closed else len(inner) - 1
-    outer_steps = len(outer) if closed else len(outer) - 1
-    allowed = _allowed_transitions(inner_steps, outer_steps)
-    seam_nodes, dropped_nodes = _seam_waypoint_nodes(
-        waypoints,
-        allowed,
-        inner_steps,
-        outer_steps,
-    )
-    if dropped_nodes:
-        print_seam_crossing_skipped(
-            region,
-            "unreachable",
-            _waypoint_reach_diagnostic(seam_nodes, dropped_nodes, allowed),
+    inner_index = 0
+    outer_index = 0
+    faces = []
+    nodes = [(0, 0)]
+    for kind in transitions:
+        faces.append(
+            _transition_face(
+                inner_boundary.vertices,
+                outer_boundary.vertices,
+                inner_index,
+                outer_index,
+                kind,
+            )
         )
+        inner_index, outer_index = _advance(kind, inner_index, outer_index)
+        nodes.append((inner_index, outer_index))
 
+    if closed:
+        nodes.pop()
+    plan = StripPlan(
+        tuple(inner_boundary.vertices),
+        tuple(outer_boundary.vertices),
+        tuple(transitions),
+        tuple(faces),
+        score,
+        inner_boundary.parameters,
+        outer_boundary.parameters,
+        tuple(nodes),
+    )
+    accumulate_scan("plan-faces", time.perf_counter() - started, len(transitions))
+    return plan
+
+
+def _finish_ladder_plan(plan, inner, outer, region):
+    """Reject a ladder that cannot stand on the rails it was solved for.
+
+    A replayed sequence arrives here too, which is what makes freezing a wiring safe:
+    every check is geometric, so a shape tick that pushed a frozen rung across the
+    boundary or into a degenerate face loses the replay rather than shipping the face.
+    """
+    started = time.perf_counter()
+    validate_ordered_strip_plan(plan, inner, outer, region)
+    if diagnose_ordered_strip_geometry(plan, inner, outer, region):
+        raise ValueError("The ordered strip contains intersecting edges.")
+    accumulate_scan("plan-validate", time.perf_counter() - started, len(plan.faces))
+
+
+def _search_ladder(
+    inner,
+    outer,
+    inner_boundary,
+    outer_boundary,
+    closed,
+    boundary_geometry,
+    allowed,
+    seam_nodes,
+    region,
+):
+    """Solve the ladder: the search, then the local swap over what it chose.
+
+    Returns ``(transitions, score, complete, swapped)``.  ``complete`` is False only for
+    the one answer the strip is allowed to give in a degraded form -- routing around
+    every seam waypoint refused, so the crossings fall back to positional matching.  A
+    degraded ladder is never frozen, because the seam's rung would then stay off the
+    vertex the sampler pinned for as long as the shape axes were scrolled.  ``swapped``
+    only says whether the local swap rewrote what the search chose, which is a
+    diagnostic question, not one the rebuild asks itself.
+    """
     started = time.perf_counter()
     attempts = 1
+    complete = True
     try:
         score, transitions = _build_transitions(
             inner,
@@ -1140,6 +1231,7 @@ def build_ordered_strip_plan(inner_vertices, outer_vertices, region, waypoints=(
             region=region,
         )
         seam_nodes = ()
+        complete = False
     accumulate_scan("plan-build", time.perf_counter() - started, attempts)
     started = time.perf_counter()
     dp_transitions = transitions
@@ -1154,55 +1246,136 @@ def build_ordered_strip_plan(inner_vertices, outer_vertices, region, waypoints=(
         seam_nodes,
     )
     accumulate_scan("plan-beautify", time.perf_counter() - started, 1)
+    return transitions, score, complete, transitions != dp_transitions
+
+
+def build_ordered_strip_plan(
+    inner_vertices,
+    outer_vertices,
+    region,
+    waypoints=(),
+    frozen=None,
+    ladders=None,
+    decision=None,
+):
+    """Resample two ordered curves into one direct, monotone strip.
+
+    The solve sees geometry, with one authorized exception: ``waypoints`` are the
+    ladder nodes :func:`.seams.region_seam_waypoints` says a seam crossing needs, and
+    the search may not route around them.  They name two vertices the sampler already
+    pinned, so this connects what the pin created rather than shaping anything new.
+    ``outer_vertices`` arrives in the direction :func:`outer_boundary_order` chose,
+    because that is the order the seam looks its rung up in as well.
+
+    ``frozen`` is the entry :func:`frozen_ladder` says this step may replay: the search
+    and the local swap are skipped outright and only the two rails' coordinates move,
+    which is what stops a shape axis from re-pairing a strip it was never asked to
+    touch.  ``ladders`` is where a solved ladder is written back under
+    ``region["region_index"]``, together with the ``decision`` the outer rail was walked
+    by -- the two are one unit, since the saved transitions are indices into that order.
+    A ladder that no longer fits its rails is re-solved and *does* overwrite the entry,
+    so a freeze that outlived its own geometry costs one flip and then settles instead
+    of costing one flip per tick.
+    """
+    closed = region["closed"]
+    if len(inner_vertices) < (3 if closed else 2):
+        raise ValueError("The inner curve has too few points.")
+    if len(outer_vertices) < (3 if closed else 2):
+        raise ValueError("The outer curve has too few points.")
 
     started = time.perf_counter()
-    inner_index = 0
-    outer_index = 0
-    faces = []
-    nodes = [(0, 0)]
-    for kind in transitions:
-        faces.append(
-            _transition_face(
-                inner_boundary.vertices,
-                outer_boundary.vertices,
-                inner_index,
-                outer_index,
-                kind,
+    inner_boundary = parameterize_boundary(inner_vertices, closed)
+    outer_boundary = parameterize_boundary(outer_vertices, closed)
+    accumulate_scan("plan-parameterize", time.perf_counter() - started, 2)
+    inner = inner_boundary.vertices
+    outer = outer_boundary.vertices
+    inner_steps = len(inner) if closed else len(inner) - 1
+    outer_steps = len(outer) if closed else len(outer) - 1
+    steps = (inner_steps, outer_steps)
+
+    plan = None
+    swapped = False
+    source = "reuse"
+    reused = frozen is not None and frozen["steps"] == steps
+    if reused:
+        try:
+            plan = _finish_reuse(
+                frozen, inner_boundary, outer_boundary, closed, inner, outer, region
             )
+        except ValueError:
+            plan = None
+    if plan is None:
+        source = "reflow" if reused else "dp"
+        started = time.perf_counter()
+        boundary_geometry = _prepare_boundary_geometry(
+            inner_boundary.vertices,
+            outer_boundary.vertices,
+            closed,
         )
-        inner_index, outer_index = _advance(kind, inner_index, outer_index)
-        nodes.append((inner_index, outer_index))
-
-    if closed:
-        nodes.pop()
-    plan = StripPlan(
-        tuple(inner_boundary.vertices),
-        tuple(outer_boundary.vertices),
-        tuple(transitions),
-        tuple(faces),
-        score,
-        inner_boundary.parameters,
-        outer_boundary.parameters,
-        tuple(nodes),
-    )
-    accumulate_scan("plan-faces", time.perf_counter() - started, len(transitions))
-    accumulate_scan(
-        "plan-boundary-positions",
-        0.0,
-        len(boundary_geometry.rung_cross_cache),
-    )
-    started = time.perf_counter()
-    validate_ordered_strip_plan(
-        plan, inner_boundary.vertices, outer_boundary.vertices, region
-    )
-    if diagnose_ordered_strip_geometry(
-        plan,
-        inner_boundary.vertices,
-        outer_boundary.vertices,
-        region,
-    ):
-        raise ValueError("The ordered strip contains intersecting edges.")
-    accumulate_scan("plan-validate", time.perf_counter() - started, len(faces))
+        accumulate_scan("plan-geometry", time.perf_counter() - started, 1)
+        accumulate_scan(
+            "plan-boundary-positions",
+            0.0,
+            len(boundary_geometry.rung_cross_cache),
+        )
+        allowed = _allowed_transitions(inner_steps, outer_steps)
+        seam_nodes, dropped_nodes = _seam_waypoint_nodes(
+            waypoints,
+            allowed,
+            inner_steps,
+            outer_steps,
+        )
+        if dropped_nodes:
+            print_seam_crossing_skipped(
+                region,
+                "unreachable",
+                _waypoint_reach_diagnostic(seam_nodes, dropped_nodes, allowed),
+            )
+        transitions, score, complete, swapped = _search_ladder(
+            inner,
+            outer,
+            inner_boundary,
+            outer_boundary,
+            closed,
+            boundary_geometry,
+            allowed,
+            seam_nodes,
+            region,
+        )
+        plan = _ladder_plan(inner_boundary, outer_boundary, transitions, score, closed)
+        _finish_ladder_plan(plan, inner, outer, region)
+        if ladders is not None and decision is not None:
+            if complete:
+                ladders[region["region_index"]] = {
+                    "steps": steps,
+                    "transitions": transitions,
+                    "score": score,
+                    "decision": decision,
+                }
+            else:
+                # Only a complete ladder is ever kept, and a refusal to keep one has to
+                # reach the entry that is already there: leaving it would have every
+                # later shape tick try it, fail it and re-solve from scratch.
+                ladders.pop(region["region_index"], None)
     if DIAGNOSE_LADDER:
-        print_ladder_plan(region, plan, dp_transitions)
+        print_ladder_plan(region, plan, source, swapped)
+    return plan
+
+
+def _finish_reuse(frozen, inner_boundary, outer_boundary, closed, inner, outer, region):
+    """Rebuild a saved ladder on rails that have moved, or refuse it.
+
+    The transitions are the only thing carried over: their faces, nodes and parameters
+    are all recomputed here, so the rebuilt strip still describes the geometry it is
+    actually standing on.  The score is the one the saved sequence won on the geometry
+    it was solved for, which is the honest number to print beside ``reuse``.
+    """
+    plan = _ladder_plan(
+        inner_boundary,
+        outer_boundary,
+        frozen["transitions"],
+        frozen["score"],
+        closed,
+    )
+    _finish_ladder_plan(plan, inner, outer, region)
     return plan
