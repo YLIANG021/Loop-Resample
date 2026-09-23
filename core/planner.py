@@ -15,6 +15,7 @@ from .diagnostics import (
     print_ladder_plan,
     print_outer_replay,
     print_outer_align,
+    print_outer_rungs,
     print_seam_crossing_skipped,
 )
 from .geometry import (
@@ -138,6 +139,22 @@ def _rung_continuity_cost(
     )
 
 
+def _pairing_cost(inner_vertices, outer_vertices, is_closed):
+    """Squared distance from every inner vertex to the outer rail read at its arc length.
+
+    This is a qualitative measure and nothing more: a band that is nearly symmetric
+    scores within a few percent for both walk directions, so it cannot pick a pairing.
+    It is used to split a tie the source band's own rungs left standing, which is the
+    most it has ever been trusted with.
+    """
+    inner = parameterize_boundary(inner_vertices, is_closed)
+    outer = parameterize_boundary(outer_vertices, is_closed)
+    return sum(
+        (_point(vertex) - _sample_parameterized(outer, parameter)).length_squared
+        for vertex, parameter in zip(inner.vertices, inner.parameters)
+    )
+
+
 def _rotate_nearest(vertices, point):
     if not vertices:
         return [], 0
@@ -148,6 +165,76 @@ def _rotate_nearest(vertices, point):
     return vertices[start:] + vertices[:start], start
 
 
+def _rung_ranking(rungs, outer_count, is_closed):
+    """Every ``(orientation, rotate)`` ranked by how many source rungs it contradicts.
+
+    Under a decision the outer rail is walked as ``j -> (walked(j) - rotate) % M``, with
+    ``walked`` the identity for a forward walk and the mirror for a reversed one, and a
+    ladder that only ever advances can realize a rung ``(i, j)`` only where that column
+    runs non-decreasing with ``i``.  Counting the columns where it drops is therefore a
+    structural verdict on the decision rather than a distance opinion, and the first
+    column's offset says whether the cut it opens is one the source band itself uses.
+    """
+    if not rungs or outer_count < 2:
+        return []
+    grouped = {}
+    for inner_index, outer_index in rungs:
+        grouped.setdefault(inner_index, []).append(outer_index)
+    columns = sorted(grouped)
+    ranking = []
+    for orientation in (0, 1):
+        rotations = range(outer_count) if is_closed else (0,)
+        for rotate in rotations:
+            highest = -1
+            conflicts = 0
+            head = 0
+            for position, inner_index in enumerate(columns):
+                places = [
+                    (
+                        outer_index
+                        if orientation == 0
+                        else outer_count - 1 - outer_index
+                    )
+                    - (rotate if is_closed else 0)
+                    for outer_index in grouped[inner_index]
+                ]
+                if is_closed:
+                    places = [place % outer_count for place in places]
+                if min(places) < highest:
+                    conflicts += 1
+                highest = max(highest, max(places))
+                if not position:
+                    head = min(places)
+            ranking.append(((conflicts, head), (orientation, rotate)))
+    return ranking
+
+
+def _rung_decision(inner_vertices, outer_vertices, rungs, is_closed):
+    """The pairing the band's own rungs ask for, or None where they ask for nothing.
+
+    Returns ``(decision, rank, tied)``; ``tied`` is how many decisions share the winning
+    rank, which is how often the arc-length measure still got a vote.
+    """
+    ranking = _rung_ranking(rungs, len(outer_vertices), is_closed)
+    if not ranking:
+        return None
+    key = min(rank for rank, _ in ranking)
+    tied = [decision for rank, decision in ranking if rank == key]
+    width = len(tied)
+    if width > 1:
+        tied = [
+            min(
+                tied,
+                key=lambda decision: _pairing_cost(
+                    inner_vertices,
+                    apply_outer_decision(outer_vertices, decision, is_closed),
+                    is_closed,
+                ),
+            )
+        ]
+    return tied[0], key, width
+
+
 def align_outer_boundary(inner_vertices, outer_vertices, is_closed, region=None):
     """Choose one orientation and, for a loop, one rotation, and report which.
 
@@ -156,24 +243,34 @@ def align_outer_boundary(inner_vertices, outer_vertices, is_closed, region=None)
     solved on top of it: a saved sequence of transitions is a run of advances over
     *this* order's indices, so replaying it only means anything once the order that
     made it is replayed as well.
+
+    The rung structure captured from the source band decides, because it is the pairing
+    the user drew rather than a reading of it; the arc-length measure only ranks the two
+    orientations for a region whose band offers no rungs, which is the case it was
+    originally asked to cover.
     """
-    inner = parameterize_boundary(inner_vertices, is_closed)
+    outer = list(outer_vertices)
+    rungs = (region or {}).get("source_rungs") or ()
+    decided = _rung_decision(inner_vertices, outer, rungs, is_closed)
+    if decided is not None:
+        decision, rank, tied = decided
+        if DIAGNOSE_LADDER and region is not None:
+            print_outer_rungs(
+                region, rungs, rank[0], rank[1], tied, decision, is_closed
+            )
+        return apply_outer_decision(outer, decision, is_closed), decision
     inner_start = _point(inner_vertices[0])
     candidates = []
     decisions = []
-    for orientation_index, orientation in enumerate(
-        (list(outer_vertices), list(reversed(outer_vertices)))
-    ):
-        rotate = 0
-        candidate = orientation
-        if is_closed:
-            candidate, rotate = _rotate_nearest(orientation, inner_start)
-        outer = parameterize_boundary(candidate, is_closed)
-        cost = sum(
-            (_point(vertex) - _sample_parameterized(outer, parameter)).length_squared
-            for vertex, parameter in zip(inner.vertices, inner.parameters)
+    for orientation_index, orientation in enumerate((outer, list(reversed(outer)))):
+        candidate, rotate = (
+            _rotate_nearest(orientation, inner_start)
+            if is_closed
+            else (orientation, 0)
         )
-        candidates.append((cost, candidate))
+        candidates.append(
+            (_pairing_cost(inner_vertices, candidate, is_closed), candidate)
+        )
         decisions.append((orientation_index, rotate))
     chosen_index = min(
         range(len(candidates)), key=lambda index: candidates[index][0]

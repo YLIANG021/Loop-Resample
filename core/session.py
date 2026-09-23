@@ -15,7 +15,11 @@ from .curves import (
     sample_catmull_rom_curve,
 )
 from .paths import selected_paths, synchronize_closed_path_phases
-from .regions import capture_adjacent_strips, region_frames
+from .regions import (
+    capture_adjacent_strips,
+    region_frames,
+    region_source_rungs,
+)
 from .seams import region_seam_crossings
 from .surface import capture_region_faces
 from .utils import _point
@@ -214,6 +218,7 @@ class ResampleSession:
         for index, region in enumerate(regions):
             region["region_index"] = index
             region["frames"] = region_frames(region, paths)
+            region["source_rungs"] = region_source_rungs(region, paths)
             region["phase_locked"] = (
                 region.get("outer_path_index") in synchronized
                 and region.get("path_index") in synchronized

@@ -1,8 +1,11 @@
 """Console timing and failure diagnostics for Loop Resample."""
 
+import traceback
+
 from .utils import _point
 
 _SCAN_TOTALS = {}
+_STEP = {"base": {}, "scope": {}, "at": "-", "detail": {}}
 
 
 def diagnostic_vertex(vertex):
@@ -55,6 +58,54 @@ def print_scans():
         if elapsed > 0.0 and work > 0:
             line += f" ns_per_work={elapsed / work * 1e9:.1f}"
         print(line)
+
+
+def start_step(**details):
+    """Record what a step was asked to do, so a failure can print its own post-mortem.
+
+    ``apply_counts`` turns an exception into a return string, which is what the HUD shows
+    and what leaves the system console with nothing but a bare ``operator-failed`` timing:
+    the raise itself, and every number the planner was handed, are unrecoverable after it.
+    A step therefore carries its own context and prints it the moment it fails.
+    """
+    _STEP["base"] = details
+    _STEP["scope"] = {}
+    _STEP["at"] = "start"
+    _STEP["detail"] = {}
+
+
+def start_scope(**details):
+    """Give the stages that follow a shared identity -- which region, which path.
+
+    ``at`` becomes ``enter`` rather than keeping the previous scope's last stage, so work
+    that dies before its first stage is not blamed on the stage before it.
+    """
+    _STEP["scope"] = details
+    _STEP["detail"] = {}
+    _STEP["at"] = "enter"
+
+
+def mark(label, **details):
+    """Note the stage a step just entered; only the last one before a raise is printed."""
+    _STEP["at"] = label
+    _STEP["detail"] = details
+
+
+def print_failure(elapsed):
+    """The stage a step died in, the data that stage was given, and the traceback."""
+    stage = " ".join(
+        f"{key}={value}"
+        for key, value in {**_STEP["scope"], **_STEP["detail"]}.items()
+    )
+    print(
+        "[Loop Resample][diagnostic] failed"
+        f" {elapsed * 1000.0:.3f}ms at={_STEP['at']}" + (f" {stage}" if stage else "")
+    )
+    print(
+        "[Loop Resample][diagnostic] step "
+        + " ".join(f"{key}={value}" for key, value in _STEP["base"].items())
+    )
+    traceback.print_exc()
 
 
 def print_seam_crossings(anchors_per_path, counts):
@@ -137,6 +188,25 @@ _LADDER_KIND_LETTER = {"QUAD": "Q", "INNER_TRI": "I", "OUTER_TRI": "O"}
 
 def _ladder_sequence(transitions):
     return "".join(_LADDER_KIND_LETTER.get(kind, "?") for kind in transitions)
+
+
+def print_outer_rungs(region, rungs, conflicts, head, tied, decision, is_closed):
+    """The outer rail was walked into the order the source band already used.
+
+    ``rungs`` are the ``(inner, outer)`` column pairs the source faces joined with an
+    edge, so ``conflicts`` counts how many of them the chosen ``(orientation, rotate)``
+    would contradict and ``head`` breaks the ties that leaves.  ``tied=1`` means the
+    source band's own connectivity settled the cut; more means distance still had to.
+    """
+    shown = ", ".join(f"{inner}->{outer}" for inner, outer in rungs[:8])
+    if len(rungs) > 8:
+        shown += f", ..{len(rungs) - 8} more"
+    print(
+        "[Loop Resample][diagnostic] align "
+        f"region={region.get('region_index')} rungs=[{shown}] "
+        f"conflicts={conflicts} head={head} tied={tied} "
+        f"chosen={decision[0]} rotate={decision[1]} closed={int(is_closed)}"
+    )
 
 
 def print_outer_align(region, candidates, chosen_index, rotate, is_closed):
