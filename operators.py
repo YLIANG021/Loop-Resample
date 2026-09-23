@@ -28,10 +28,14 @@ from .core import (
 from .core import session as sessions
 from .core.diagnostics import (
     accumulate_scan,
+    mark,
+    print_failure,
     print_seam_crossings,
     print_scans,
     print_timing,
     reset_scans,
+    start_scope,
+    start_step,
 )
 
 
@@ -139,6 +143,22 @@ class MESH_OT_loop_resample_step(bpy.types.Operator):
         return {"FINISHED"} if succeeded else {"CANCELLED"}
 
 
+def _step_request(session, counts, shape):
+    """What one step was asked for, as fields for the failure line.
+
+    Recorded before the capture as well as after it, so a raise that comes out of the
+    capture itself cannot be blamed on the region that was being rebuilt.
+    """
+    return {
+        "counts": ",".join(str(count) for count in counts),
+        "source_counts": ",".join(str(count) for count in session.source_counts),
+        "live_counts": ",".join(str(count) for count in session.counts),
+        "closed": ",".join(str(int(value)) for value in session.closed),
+        "shape": "-" if shape is None else "applied",
+        "ladders": len(session.laddings),
+    }
+
+
 def apply_counts(context, session, counts, shape=None):
     """Resample every locked path to ``counts`` and write the result into the edit mesh.
 
@@ -152,6 +172,7 @@ def apply_counts(context, session, counts, shape=None):
     """
     started = time.perf_counter()
     mesh = context.active_object.data
+    start_step(**_step_request(session, counts, shape))
     # All planning happens on a detached copy of the locked source, so a
     # failure leaves the live mesh exactly as it was.
     working_bm = session.open_bmesh()
@@ -160,6 +181,7 @@ def apply_counts(context, session, counts, shape=None):
         summary = _resample(session, working_bm, counts, shape)
     except Exception as error:
         working_bm.free()
+        print_failure(time.perf_counter() - started)
         print_timing("operator-failed", time.perf_counter() - started)
         return False, f"Loop Resample failed safely: {error}"
 
@@ -175,10 +197,39 @@ def apply_counts(context, session, counts, shape=None):
     return True, summary
 
 
+def restore_source(context, session, counts):
+    """Put the locked source back over the edit mesh, exactly as it was found.
+
+    A cancel used to be one more step -- the entry counts with no shape -- and a step is a
+    re-solve, not a replay: measured on a ring whose bands are 8x8 and 8x12, every vertex
+    landed back on its source position and the counts matched, but 11 of the 20 rebuilt
+    faces had different corners.  The 8x12 band cannot be asked to come back at all,
+    because its source layout has faces the ladder is not allowed to write (one inner
+    corner against three outer ones), so no amount of tuning the search reaches it.
+
+    The pristine source is already held for every step, so cancel copies it back instead
+    of recomputing it.  ``counts`` is what the overlay should then read.
+    """
+    started = time.perf_counter()
+    mesh = context.active_object.data
+    pristine = session.open_bmesh()
+    try:
+        _replace_edit_bmesh(mesh, bmesh.from_edit_mesh(mesh), pristine)
+    finally:
+        pristine.free()
+    session.counts = list(counts)
+    if hasattr(mesh, "update_gpu_tag"):
+        mesh.update_gpu_tag()
+    _redraw(context)
+    print_timing("restore-source", time.perf_counter() - started)
+    return True
+
+
 def _resample(session, bm, counts, shape=None):
     step_started = time.perf_counter()
     reset_scans()
     cached = session.capture_cache is not None
+    mark("capture")
     capture = session.capture(bm)
     paths = capture["paths"]
     synchronized_paths = capture["synchronized"]
@@ -202,6 +253,16 @@ def _resample(session, bm, counts, shape=None):
     )
 
     print_seam_crossings(path_anchors, counts)
+    start_step(
+        **_step_request(session, counts, shape),
+        paths=len(paths),
+        path_vertices=",".join(str(len(path[0])) for path in paths),
+        regions=len(regions),
+        region_kinds="/".join(
+            f"{region.get('region_index')}:{region['kind']}" for region in regions
+        ),
+        cached=cached,
+    )
     if shape is not None:
         print(
             "[Loop Resample][diagnostic] shape "
@@ -211,13 +272,17 @@ def _resample(session, bm, counts, shape=None):
             )
             + " tEven={:.2f}".format(shape.t_even)
         )
+    mark("samples")
     snapshots = session.samples(counts, path_anchors, shape=shape)
 
+    mark("detach")
     detach_adjacent_strips(bm, regions)
+    mark("rebuild-paths", samples=",".join(str(len(s)) for s in snapshots))
     updated_paths = [
         rebuild_detached_path(bm, path, samples)
         for path, samples in zip(paths, snapshots)
     ]
+    mark("path-parameters")
     path_parameters = [
         session.parameters(
             index,
@@ -249,6 +314,27 @@ def _resample(session, bm, counts, shape=None):
             if has_ladder and not region.get("phase_locked")
             else None
         )
+        start_scope(
+            region=region.get("region_index"),
+            kind=kind,
+            path=region["path_index"],
+            outer=(
+                f"path{region['outer_path_index']}"
+                if region.get("outer_path_index") is not None
+                else "source" if region.get("outer_vertices") else "none"
+            ),
+            rails=f"{len(inner_vertices)}x{len(outer_vertices)}",
+            closed=int(region["closed"]),
+            ladder=int(has_ladder),
+            phase=int(bool(region.get("phase_locked"))),
+            faces=len(region["faces"]),
+            delete=len(region.get("delete_edges") or ()),
+            pole=(
+                getattr(region.get("pole_vertex"), "index", "-")
+                if kind == "FAN"
+                else "-"
+            ),
+        )
         frozen = frozen_ladder(
             ladders,
             region,
@@ -257,15 +343,21 @@ def _resample(session, bm, counts, shape=None):
             refresh=shape is None,
         )
         decision = None if frozen is None else frozen["decision"]
+        mark(
+            "frozen",
+            transitions="-" if frozen is None else len(frozen["transitions"]),
+        )
         if has_ladder:
             # A rung has to join the two rails walked in the same direction, so
             # the choice is made once here and the seam's rung lookup, the corner
             # transfer and the solve all read the outer rail in it.  A frozen ladder
             # arrives with the order it was solved against, because its transitions
             # index that order.
+            mark("outer-order")
             outer_vertices, decision = outer_boundary_order(
                 inner_vertices, outer_vertices, region, decision
             )
+        mark("parameters")
         region_started = time.perf_counter()
         inner_parameters = path_parameters[region["path_index"]]
         outer_path_index = region.get("outer_path_index")
@@ -282,6 +374,7 @@ def _resample(session, bm, counts, shape=None):
             "region-parameters", time.perf_counter() - region_started,
             len(inner_vertices) + len(outer_vertices),
         )
+        mark("rebuild")
         region_started = time.perf_counter()
         plan = None
         if kind == "FAN":
@@ -306,6 +399,7 @@ def _resample(session, bm, counts, shape=None):
         accumulate_scan(
             "strip-rebuild", time.perf_counter() - region_started, len(rebuilt_faces)
         )
+        mark("faces", rebuilt=len(rebuilt_faces))
         region_started = time.perf_counter()
         apply_region_faces(
             bm,
@@ -320,6 +414,7 @@ def _resample(session, bm, counts, shape=None):
             "apply-face-attributes", time.perf_counter() - region_started,
             len(rebuilt_faces),
         )
+        mark("region-attributes")
         region_started = time.perf_counter()
         rungs, pinned, landings = (
             region_seam_rungs(region, plan, inner_parameters, outer_parameters)
@@ -343,6 +438,8 @@ def _resample(session, bm, counts, shape=None):
         )
         rebuilt_face_count += len(rebuilt_faces)
 
+    start_scope(paths=len(updated_paths))
+    mark("path-attributes")
     phase_started = time.perf_counter()
     apply_path_edge_attributes(updated_paths, path_parameters, path_states, bm)
     # Last, because a crossing that reached the path on two different columns joins
@@ -354,6 +451,7 @@ def _resample(session, bm, counts, shape=None):
         time.perf_counter() - phase_started,
         sum(len(path) for path, _, _ in updated_paths),
     )
+    mark("cleanup")
     phase_started = time.perf_counter()
     cleanup_detached_edges(bm, regions)
     accumulate_scan(
@@ -362,6 +460,7 @@ def _resample(session, bm, counts, shape=None):
         sum(len(region.get("delete_edges", ())) for region in regions),
     )
 
+    mark("finalize")
     selected_edges = {
         edge for _, path_edges, _ in updated_paths for edge in path_edges
     }
