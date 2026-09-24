@@ -321,6 +321,17 @@ def _resample(session, bm, counts, shape=None):
     mark("samples")
     snapshots = session.samples(counts, path_anchors, shape=shape)
 
+    # The copy arrived wearing the selection the session was locked with, and the capture
+    # was the last thing that read it.  Taking it off here, while its indices still name
+    # the elements they were taken from, costs as much as the user had selected; taking it
+    # off at the end used to cost a pass over every element in the mesh.
+    deselect_started = time.perf_counter()
+    session.clear_source_selection(bm)
+    accumulate_scan(
+        "deselect-all",
+        time.perf_counter() - deselect_started,
+        sum(len(part) for part in session.selected),
+    )
     mark("detach")
     detach_adjacent_strips(bm, regions)
     mark("rebuild-paths", samples=",".join(str(len(s)) for s in snapshots))
@@ -515,19 +526,15 @@ def _resample(session, bm, counts, shape=None):
         edge for _, path_edges, _ in updated_paths for edge in path_edges
     }
     phase_started = time.perf_counter()
-    for face in bm.faces:
-        face.select_set(False)
-    for edge in bm.edges:
-        edge.select_set(False)
-    for vertex in bm.verts:
-        vertex.select_set(False)
+    # Nothing else needs turning off: the source's own selection went at the top of the
+    # step, and every element the rebuild created started unselected.
     for edge in selected_edges:
         edge.select_set(True)
     bm.select_history.clear()
     accumulate_scan(
         "deselect-all",
         time.perf_counter() - phase_started,
-        len(bm.faces) + len(bm.edges) + len(bm.verts) + len(selected_edges),
+        len(selected_edges),
     )
     phase_started = time.perf_counter()
     bm.normal_update()

@@ -31,6 +31,7 @@ a UV may change what the add-on says, never how the band is wired.
 """
 
 import time
+from bisect import bisect_left
 
 from mathutils import Vector
 
@@ -50,6 +51,15 @@ _UV_MERGE_DECIMALS = 6
 # noise; a corner the sampler moved is somewhere the source never was, and a wider net
 # here would hand it a stored value that belongs to its neighbour.
 _TIED_CORNER_TOLERANCE = 1e-6
+
+# Where the two things a step asks for hundreds of times but never changes wait between
+# the asks: one source face's footprint split at the seam, and one chain's knots with the
+# wrap-around copy appended.  Both hang off dicts the capture built once and writes never
+# again, and ``_freeze_region`` hands ``source_faces`` to the next step as it stands, so
+# the same objects -- and what is cached on them -- ride out the whole session.
+_RECORD_ARCS = "arcs"
+_CHAIN_POINTS = "points"
+_CHAIN_KNOT_US = "us"
 
 # Stays True while the add-on is being tuned; the [uvdiag] block it gates is removed
 # in one go at the end.  Set False to silence those lines without touching geometry.
@@ -574,9 +584,7 @@ def _match_island(records, start, end, closed, corner_us, rails):
     for record in records:
         if not _island_reaches(record, corner_us, rails):
             continue
-        overlap = _arc_overlap(
-            span, _arc_pieces(record["u_start"], record["u_end"], closed)
-        )
+        overlap = _arc_overlap(span, _record_arcs(record, closed))
         key = (-overlap, _u_distance(record["u_center"], center, closed))
         if best is None or key < best_key:
             best, best_key = record, key
@@ -619,9 +627,7 @@ def _match_face(records, start, end, closed, probe=None):
     best_overlap = 0.0
     tied = 0
     for record in records:
-        overlap = _arc_overlap(
-            span, _arc_pieces(record["u_start"], record["u_end"], closed)
-        )
+        overlap = _arc_overlap(span, _record_arcs(record, closed))
         if overlap > best_overlap:
             best, best_overlap, tied = record, overlap, 1
         elif probe is not None and overlap > 0.0:
@@ -648,6 +654,21 @@ def _arc_pieces(start, end, closed):
     if not closed or end >= start:
         return [(start, end)]
     return [(start, 1.0), (0.0, end)]
+
+
+def _record_arcs(record, closed):
+    """A source face's footprint along the rail, split at the seam once per session.
+
+    Every rebuilt face asks every source face for this, so a band of 200 faces over 100
+    source faces asks 20,000 times for 100 answers.  ``closed`` comes off the same
+    capture the record does, which is the only reason one key is enough: a record cannot
+    be reached with a different ``closed`` than the one its footprint was split under.
+    """
+    arcs = record.get(_RECORD_ARCS)
+    if arcs is None:
+        arcs = _arc_pieces(record["u_start"], record["u_end"], closed)
+        record[_RECORD_ARCS] = arcs
+    return arcs
 
 
 def _arc_overlap(first, second):
@@ -682,6 +703,38 @@ def _tied_corner(record, rail, u, closed):
     return best
 
 
+def _chain_points(chain):
+    """A chain's knots, with the wrap-around copy a closed rail needs already on the end.
+
+    A chain that runs all the way around a closed rail continues from its last knot into
+    its first across u=1, and saying so costs a fresh list of every knot on the chain --
+    once per sampled corner, which is several hundred times a step for a list that was
+    settled when the capture finished.
+    """
+    points = chain.get(_CHAIN_POINTS)
+    if points is None:
+        knots = chain["knots"]
+        points = (
+            knots + [(knots[0][0] + 1.0, knots[0][1])] if chain["closed"] else knots
+        )
+        chain[_CHAIN_POINTS] = points
+    return points
+
+
+def _chain_knot_us(chain):
+    """The knot positions of :func:`_chain_points`, ascending.
+
+    Ascending is what lets one jump replace the walk from the front.  It holds because
+    ``_RailBuilder.chains`` sorted the knots and every u is a position along the rail,
+    so the wrap copy -- the first knot plus a whole turn -- lands past the last one.
+    """
+    us = chain.get(_CHAIN_KNOT_US)
+    if us is None:
+        us = [point[0] for point in _chain_points(chain)]
+        chain[_CHAIN_KNOT_US] = us
+    return us
+
+
 def _sample_chain(chain, u, periodic, probe=None):
     """Interpolate one island's rail polyline at u, as {layer name: Vector}.
 
@@ -701,16 +754,19 @@ def _sample_chain(chain, u, periodic, probe=None):
                 }
             )
         return knots[0][1]
-    points = knots
-    # A chain that runs all the way around a closed rail continues from its last
-    # knot into its first across u=1.
-    if chain["closed"]:
-        points = knots + [(knots[0][0] + 1.0, knots[0][1])]
-        if u < points[0][0]:
-            u += 1.0
-    index = 0
-    while index < len(points) - 2 and u > points[index + 1][0]:
-        index += 1
+    points = _chain_points(chain)
+    if chain["closed"] and u < points[0][0]:
+        u += 1.0
+    # ``bisect_left`` counts the knots strictly below u, so one less is the knot the walk
+    # stopped on: the walk advanced exactly while u was past the *next* knot, which is the
+    # same as saying the knot at or below u is the last one it passed.  Both ends clamp --
+    # a u before the first knot has no segment ahead of it, and the walk could never reach
+    # past the last segment, which is the one a u beyond the end knot falls back on.
+    index = bisect_left(_chain_knot_us(chain), u) - 1
+    if index < 0:
+        index = 0
+    elif index > len(points) - 2:
+        index = len(points) - 2
     accumulate_scan("chain-sample", 0.0, index + 1)
     first_u, first_uv = points[index]
     second_u, second_uv = points[index + 1]

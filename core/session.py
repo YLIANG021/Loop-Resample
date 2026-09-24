@@ -152,6 +152,21 @@ def _thaw_capture(cache, bm):
     }
 
 
+def _selected_indices(bm):
+    """What is selected on a mesh, as indices into its verts, edges and faces.
+
+    Taken once off the locked source.  The source keeps the flags themselves, because a
+    cancel hands that mesh back and the user's selection is part of what they get back;
+    these indices are what lets a step undo the same flags on its own copy by name,
+    instead of walking all 126,000 elements of it to find the few hundred that are set.
+    """
+    return (
+        tuple(vertex.index for vertex in bm.verts if vertex.select),
+        tuple(edge.index for edge in bm.edges if edge.select),
+        tuple(face.index for face in bm.faces if face.select),
+    )
+
+
 class ResampleSession:
     """One adjust session: a locked source mesh plus its resampling curves.
 
@@ -169,6 +184,7 @@ class ResampleSession:
     def __init__(self, obj, source, paths, trims=None):
         self.obj = obj
         self.source = source
+        self.selected = _selected_indices(source)
         # Re-derived from the selection on every step, so it has to be cut back the same way
         # each time or the paths stop matching the ones the curves below were fitted to.
         self.trims = dict(trims or {})
@@ -208,6 +224,27 @@ class ResampleSession:
         bm.edges.ensure_lookup_table()
         bm.faces.ensure_lookup_table()
         return bm
+
+    def clear_source_selection(self, bm):
+        """Undo the locked selection on a working copy of the source.
+
+        Has to run after the capture -- the last thing that reads a selection -- and
+        before the detach, which deletes faces and edges and leaves bmesh renumbering
+        around the holes, so these indices stop naming the elements they were taken
+        from.  Nothing the rebuild creates is born selected, so this and the path edges
+        a step selects at the end are the whole of its selection: the same set the three
+        full-mesh passes used to arrive at.
+        """
+        vertices, edges, faces = self.selected
+        bm.verts.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+        for index in vertices:
+            bm.verts[index].select_set(False)
+        for index in edges:
+            bm.edges[index].select_set(False)
+        for index in faces:
+            bm.faces[index].select_set(False)
 
     def paths(self, bm):
         """Re-derive the locked paths on a working copy of the source mesh.
