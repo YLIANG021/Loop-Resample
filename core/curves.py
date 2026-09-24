@@ -3,6 +3,7 @@
 from bisect import bisect_right
 from math import acos
 
+from ..i18n import pgettext
 from ..shape.warp import measure_positions, measure_to_distance
 from .types import BoundaryParameters, CatmullRomCurve
 from .utils import _point
@@ -75,14 +76,16 @@ def build_catmull_rom_curve(vertices, is_closed):
     minimum = 3 if is_closed else 2
     if len(points) < minimum:
         raise ValueError(
-            f"A {'closed' if is_closed else 'open'} curve needs at least {minimum} points."
+            pgettext("A {kind} curve needs at least {minimum} points.").format(
+                kind=pgettext("closed" if is_closed else "open"), minimum=minimum
+            )
         )
     segment_count = len(points) if is_closed else len(points) - 1
     if any(
         (points[(index + 1) % len(points)] - points[index]).length <= 1e-12
         for index in range(segment_count)
     ):
-        raise ValueError("A curve source contains a zero-length segment.")
+        raise ValueError(pgettext("A curve source contains a zero-length segment."))
 
     samples_per_segment = DEFAULT_CURVE_SAMPLES_PER_SEGMENT
     lookup_points = [points[0].copy()]
@@ -111,9 +114,9 @@ def build_catmull_rom_curve(vertices, is_closed):
         following - current <= 1e-12
         for current, following in zip(control_distances, control_distances[1:])
     ):
-        raise ValueError("A fitted curve segment has no measurable length.")
+        raise ValueError(pgettext("A fitted curve segment has no measurable length."))
     if cumulative[-1] <= 1e-12:
-        raise ValueError("The fitted curve has no measurable length.")
+        raise ValueError(pgettext("The fitted curve has no measurable length."))
     return CatmullRomCurve(
         control_points=points,
         is_closed=is_closed,
@@ -291,7 +294,9 @@ def sample_catmull_rom_curve(
     minimum = 3 if curve.is_closed else 2
     if target_count < minimum:
         raise ValueError(
-            f"A {'closed' if curve.is_closed else 'open'} path needs at least {minimum} points."
+            pgettext("A {kind} path needs at least {minimum} points.").format(
+                kind=pgettext("closed" if curve.is_closed else "open"), minimum=minimum
+            )
         )
 
     divisor = target_count if curve.is_closed else target_count - 1
@@ -368,7 +373,9 @@ def parameterize_boundary(vertices, is_closed, curvature_weight=DEFAULT_CURVATUR
     minimum = 3 if is_closed else 2
     if len(points) < minimum:
         raise ValueError(
-            f"A {'closed' if is_closed else 'open'} boundary needs at least {minimum} points."
+            pgettext("A {kind} boundary needs at least {minimum} points.").format(
+                kind=pgettext("closed" if is_closed else "open"), minimum=minimum
+            )
         )
 
     segment_points = points + [points[0]] if is_closed else points
@@ -377,7 +384,7 @@ def parameterize_boundary(vertices, is_closed, curvature_weight=DEFAULT_CURVATUR
         for index in range(len(segment_points) - 1)
     )
     if any(length <= 1e-12 for length in segment_lengths):
-        raise ValueError("A boundary contains a zero-length segment.")
+        raise ValueError(pgettext("A boundary contains a zero-length segment."))
 
     turn_strength = [0.0] * len(points)
     last_index = len(points) - 1
@@ -470,7 +477,7 @@ def _limit_feature_anchors(boundary, anchors, target_count):
 def _allocate_interval_segments(interval_lengths, total_segments):
     """Allocate at least one segment to each feature-to-feature interval."""
     if total_segments < len(interval_lengths):
-        raise ValueError("The target count cannot preserve every feature anchor.")
+        raise ValueError(pgettext("The target count cannot preserve every feature anchor."))
 
     segments = [1] * len(interval_lengths)
     remaining = total_segments - len(interval_lengths)
@@ -479,7 +486,7 @@ def _allocate_interval_segments(interval_lengths, total_segments):
 
     total_length = sum(interval_lengths)
     if total_length <= 1e-12:
-        raise ValueError("Feature anchors do not span a valid boundary.")
+        raise ValueError(pgettext("Feature anchors do not span a valid boundary."))
 
     exact_additions = [remaining * length / total_length for length in interval_lengths]
     whole_additions = [int(value) for value in exact_additions]
@@ -511,7 +518,9 @@ def sample_by_arclength(
     minimum = 3 if is_closed else 2
     if target_count < minimum:
         raise ValueError(
-            f"A {'closed' if is_closed else 'open'} path needs at least {minimum} points."
+            pgettext("A {kind} path needs at least {minimum} points.").format(
+                kind=pgettext("closed" if is_closed else "open"), minimum=minimum
+            )
         )
     boundary = parameterize_boundary(vertices, is_closed)
     anchors = detect_feature_anchors(boundary)
@@ -544,5 +553,7 @@ def sample_by_arclength(
         ),
     )
     if len(samples) != target_count:
-        raise RuntimeError("Feature-aware sampling returned the wrong point count.")
+        raise RuntimeError(
+            pgettext("Feature-aware sampling returned the wrong point count.")
+        )
     return samples

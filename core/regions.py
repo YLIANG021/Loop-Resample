@@ -388,6 +388,9 @@ def capture_adjacent_strips(bm, paths):
                     rail,
                     between=f"{first_index}+{second_index}",
                     covered=f"{len(component_edges & rail)}/{len(rail)}",
+                    missing_edges=_listed(
+                        edge.index for edge in rail - component_edges
+                    ),
                 )
             if partial:
                 continue

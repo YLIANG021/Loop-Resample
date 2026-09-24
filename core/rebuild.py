@@ -5,6 +5,7 @@ import time
 import bmesh
 from mathutils.geometry import tessellate_polygon
 
+from ..i18n import pgettext
 from .diagnostics import accumulate_scan
 from .geometry import _plan_rungs, reference_normal as _reference_normal
 from .planner import build_ordered_strip_plan
@@ -53,9 +54,16 @@ def rebuild_detached_path(bm, path, samples):
         )
         first_edge, first_faces = attached[0]
         raise ValueError(
-            f"{len(attached)} of {len(source_edge_set)} rail edges still hold faces "
-            f"the capture left out (edge {first_edge} holds face {first_faces[0]}): "
-            "the selected path does not run between two supported strips."
+            pgettext(
+                "{attached} of {total} rail edges still hold faces the capture left out "
+                "(edge {edge} holds face {face}): the selected path does not run between "
+                "two supported strips."
+            ).format(
+                attached=len(attached),
+                total=len(source_edge_set),
+                edge=first_edge,
+                face=first_faces[0],
+            )
         )
 
     removable_vertices = (
@@ -67,7 +75,9 @@ def rebuild_detached_path(bm, path, samples):
         }
         if vertex.link_faces or remaining_edges:
             raise ValueError(
-                "The selected path contains a branch that cannot be resampled safely."
+                pgettext(
+                    "The selected path contains a branch that cannot be resampled safely."
+                )
             )
 
     for edge in source_edge_set:
@@ -94,7 +104,7 @@ def rebuild_detached_path(bm, path, samples):
         edge_pairs.append((rebuilt_vertices[-1], rebuilt_vertices[0]))
     for first, second in edge_pairs:
         if bm.edges.get((first, second)) is not None:
-            raise ValueError("The target path would duplicate an existing edge.")
+            raise ValueError(pgettext("The target path would duplicate an existing edge."))
         edge = bm.edges.new((first, second))
         rebuilt_edges.append(edge)
     return rebuilt_vertices, rebuilt_edges, is_closed
@@ -119,7 +129,7 @@ def _new_oriented_face(bm, face_vertices, region):
 def rebuild_triangle_fan(bm, boundary_vertices, pole_vertex, region):
     """Rebuild a closed triangle-fan cap around its existing pole vertex."""
     if not pole_vertex.is_valid or len(boundary_vertices) < 3:
-        raise ValueError("The triangle-fan cap is no longer valid.")
+        raise ValueError(pgettext("The triangle-fan cap is no longer valid."))
 
     new_faces = []
     for index, first in enumerate(boundary_vertices):
@@ -133,7 +143,7 @@ def rebuild_triangle_fan(bm, boundary_vertices, pole_vertex, region):
 def rebuild_ngon_cap(bm, boundary_vertices, region):
     """Rebuild one validated n-gon cap from its resampled boundary."""
     if len(boundary_vertices) < 3:
-        raise ValueError("An n-gon cap needs at least three boundary vertices.")
+        raise ValueError(pgettext("An n-gon cap needs at least three boundary vertices."))
 
     coordinates = [_point(vertex) for vertex in boundary_vertices]
     if any(
@@ -141,11 +151,11 @@ def rebuild_ngon_cap(bm, boundary_vertices, region):
         for index, coordinate in enumerate(coordinates)
         for previous in coordinates[:index]
     ):
-        raise ValueError("The n-gon cap boundary contains duplicate points.")
+        raise ValueError(pgettext("The n-gon cap boundary contains duplicate points."))
 
     triangles = tessellate_polygon([coordinates])
     if len(triangles) != len(coordinates) - 2:
-        raise ValueError("The n-gon cap boundary is degenerate or self-intersecting.")
+        raise ValueError(pgettext("The n-gon cap boundary is degenerate or self-intersecting."))
     scale_squared = max(
         (
             coordinates[(index + 1) % len(coordinates)] - coordinate
@@ -164,7 +174,7 @@ def rebuild_ngon_cap(bm, boundary_vertices, region):
         <= max(scale_squared * scale_squared, 1e-24) * 1e-16
         for first, second, third in triangle_coordinates
     ):
-        raise ValueError("The n-gon cap would contain a degenerate triangle.")
+        raise ValueError(pgettext("The n-gon cap would contain a degenerate triangle."))
 
     return [_new_oriented_face(bm, tuple(boundary_vertices), region)]
 

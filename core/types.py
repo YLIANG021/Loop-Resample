@@ -3,6 +3,22 @@
 from dataclasses import dataclass
 
 
+class SelectionProblem(ValueError):
+    """A selection that cannot be resampled, plus the pieces of it to blame.
+
+    It stays a ``ValueError`` because every caller already catches that and hands the
+    sentence to the user; what it adds is the coordinates the overlay can paint red --
+    the vertices a chain forks at, the edges the walk never reached.  They come out in
+    the mesh's local space, straight off whichever bmesh the selection was read from,
+    because that bmesh does not know where the object it came from sits in the scene.
+    """
+
+    def __init__(self, message, vertices=(), edges=()):
+        super().__init__(message)
+        self.vertices = tuple(tuple(point) for point in vertices)
+        self.edges = tuple((tuple(start), tuple(end)) for start, end in edges)
+
+
 @dataclass(frozen=True)
 class BoundaryParameters:
     """Geometry-only parameterization of an ordered mesh boundary."""

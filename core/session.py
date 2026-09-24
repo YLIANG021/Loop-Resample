@@ -3,6 +3,8 @@
 import bmesh
 import bpy
 
+from ..i18n import pgettext
+
 from .attributes import (
     capture_path_edge_attributes,
     capture_path_point_attributes,
@@ -179,7 +181,7 @@ class ResampleSession:
         if tuple(len(path[0]) for path in paths) != self.source_counts or tuple(
             bool(path[2]) for path in paths
         ) != self.closed:
-            raise ValueError("The source no longer matches the locked selection.")
+            raise ValueError(pgettext("The source no longer matches the locked selection."))
         return paths, synchronized
 
     def capture(self, bm):
@@ -202,7 +204,7 @@ class ResampleSession:
             len(bm.edges),
             len(bm.faces),
         ):
-            raise ValueError("The source no longer matches the locked selection.")
+            raise ValueError(pgettext("The source no longer matches the locked selection."))
         return _thaw_capture(cache, bm)
 
     def _capture(self, bm):
@@ -210,7 +212,7 @@ class ResampleSession:
         paths, synchronized = self.paths(bm)
         if not paths:
             raise ValueError(
-                "Select one path or multiple quad-connected parallel paths."
+                pgettext("Select one path or multiple quad-connected parallel paths.")
             )
         regions = capture_adjacent_strips(bm, paths)
         path_states = capture_path_edge_attributes(paths, bm)
@@ -319,8 +321,9 @@ class ResampleSession:
             minimum = 3 if closed else 2
             if count < minimum:
                 raise ValueError(
-                    f"A {'closed' if closed else 'open'} path needs at least "
-                    f"{minimum} points."
+                    pgettext("A {kind} path needs at least {minimum} points.").format(
+                        kind=pgettext("closed" if closed else "open"), minimum=minimum
+                    )
                 )
         return counts
 
@@ -357,10 +360,27 @@ def begin(context):
     selected_edges = {
         edge for edge in live_bm.edges if edge.select and not edge.hide
     }
+    if not selected_edges:
+        # The right-click entry reaches this from vertex select mode too, where a click
+        # sets ``vert.select`` and leaves every edge flag clear.  The vertices a user
+        # rang out bound exactly the edges they meant, so read them back as edges rather
+        # than refusing a selection that is plainly sitting on screen.
+        selected_edges = {
+            edge
+            for edge in live_bm.edges
+            if not edge.hide and all(
+                vert.select and not vert.hide for vert in edge.verts
+            )
+        }
     paths = selected_paths(selected_edges)
     paths, _ = synchronize_closed_path_phases(paths)
     if not paths:
-        raise ValueError("Select one or more non-branching paths.")
+        raise ValueError(
+            pgettext(
+                "Nothing here can be resampled.  Select a continuous chain of edges, a "
+                "closed edge loop, or a row of points that edges run through."
+            )
+        )
     session = ResampleSession(obj, live_bm.copy(), paths)
     _release()
     _ACTIVE = session

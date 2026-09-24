@@ -8,6 +8,7 @@ the final mesh cannot change a local connection after it has been searched.
 import math
 import time
 
+from ..i18n import pgettext
 from .curves import _sample_parameterized, parameterize_boundary
 from .diagnostics import (
     accumulate_scan,
@@ -1157,7 +1158,7 @@ def _build_transitions(
     accumulate_scan("plan-expand", 0.0, expanded)
     candidates = list(layers[inner_steps + outer_steps].values())
     if not candidates:
-        raise ValueError("No valid ordered strip path was found.")
+        raise ValueError(pgettext("No valid ordered strip path was found."))
     best = min(candidates, key=lambda state: state[0])
     if DIAGNOSE_LADDER and region is not None:
         print_ladder_dp(
@@ -1282,7 +1283,7 @@ def _finish_ladder_plan(plan, inner, outer, region):
     started = time.perf_counter()
     validate_ordered_strip_plan(plan, inner, outer, region)
     if diagnose_ordered_strip_geometry(plan, inner, outer, region):
-        raise ValueError("The ordered strip contains intersecting edges.")
+        raise ValueError(pgettext("The ordered strip contains intersecting edges."))
     accumulate_scan("plan-validate", time.perf_counter() - started, len(plan.faces))
 
 
@@ -1392,9 +1393,9 @@ def build_ordered_strip_plan(
     """
     closed = region["closed"]
     if len(inner_vertices) < (3 if closed else 2):
-        raise ValueError("The inner curve has too few points.")
+        raise ValueError(pgettext("The inner curve has too few points."))
     if len(outer_vertices) < (3 if closed else 2):
-        raise ValueError("The outer curve has too few points.")
+        raise ValueError(pgettext("The outer curve has too few points."))
 
     started = time.perf_counter()
     inner_boundary = parameterize_boundary(inner_vertices, closed)

@@ -18,8 +18,8 @@ arms one effect -- smoothing the locked curves -- and Ctrl another -- evening th
 out; both are one-way, so a tick strengthens the armed effect whichever way the wheel turns,
 and only the right-click that reverts the session puts it back.
 
-The sidebar button runs this operator directly, which makes the operator responsible for
-both ends of the life: it locks the mesh on the way in -- the panel used to do that, in a
+The right-click menu runs this operator through a forwarder, which makes the operator
+responsible for both ends of the life: it locks the mesh on the way in -- that used to be a
 separate click -- and it drops the session on the way out, because a session that outlives
 the scroll that owns it would leave the next click adjusting the mesh from the previous
 selection.  Every step the planner refuses is written onto the overlay, because this
@@ -32,8 +32,10 @@ and a spacing is the same question -- can a strip be laid between these two rail
 """
 
 import bpy
+from mathutils import Vector
 
 from ..core import session as sessions
+from ..i18n import pgettext
 from ..operators import apply_counts, restore_source
 from ..shape.state import (
     MODE_COUNT,
@@ -47,8 +49,10 @@ from .hud import (
     clear_highlight_cache,
     draw_highlight,
     draw_hud,
+    hide_notice,
     path_midpoint,
     segment_counts,
+    show_notice,
 )
 
 
@@ -80,12 +84,60 @@ def _mode_for(shift_held, ctrl_held):
     return MODE_SMOOTH if shift_held else MODE_EVEN if ctrl_held else MODE_COUNT
 
 
+def _viewport_area(context):
+    """The 3D viewport the overlay belongs to, even when the caller has no area to hand over.
+
+    An operator invoked with the pointer in a viewport is handed that viewport as
+    ``context.area``.  A call deferred out of a menu is not: its context carries a window but
+    no area, and the overlay is pinned to the area captured here -- both draw handlers bail
+    out whenever the area drawing them is not that pointer.  So a ``None`` here silences the
+    whole readout while the wheel keeps rebuilding the mesh, which is what made the menu
+    entry read as a dumber version of the same tool.  Asking the window for its viewport
+    makes the entry point stop mattering.
+    """
+    area = context.area
+    if area is not None and area.type == "VIEW_3D":
+        return area
+    window = context.window
+    if window is None:
+        for candidate in context.window_manager.windows:
+            window = candidate
+            break
+    for candidate in getattr(getattr(window, "screen", None), "areas", ()):
+        if candidate.type == "VIEW_3D":
+            return candidate
+    return area
+
+
+def _show_refusal(context, error):
+    """Put a refusal that came before any overlay existed onto the viewport.
+
+    Called from ``invoke`` before anything has started, so there is no chip row to write
+    into and ``self.report`` alone would leave the user staring at an unchanged viewport.
+
+    The coordinates come off the raise in local space -- the selection is read from a bmesh
+    that does not know which object it was copied from -- and ``matrix_world`` is what makes
+    them a position on screen.
+    """
+    matrix = context.active_object.matrix_world
+    show_notice(
+        context,
+        _viewport_area(context),
+        str(error),
+        points=tuple(matrix @ Vector(co) for co in getattr(error, "vertices", ())),
+        segments=tuple(
+            (matrix @ Vector(start), matrix @ Vector(end))
+            for start, end in getattr(error, "edges", ())
+        ),
+    )
+
+
 class MESH_OT_loop_resample_interactive(bpy.types.Operator):
     """Scroll to set the locked paths' counts, shape and spacing, live."""
 
     bl_idname = "mesh.loop_resample_interactive"
-    bl_label = "Adjust Resample by Wheel"
-    bl_description = (
+    bl_label = pgettext("Adjust Resample by Wheel")
+    bl_description = pgettext(
         "Lock what is selected, then scroll to set its segment count.  Hold Shift and "
         "scroll to smooth the locked curve(s), or Ctrl and scroll to spread their points "
         "more evenly -- every tick strengthens whichever effect the held key armed, and "
@@ -95,23 +147,31 @@ class MESH_OT_loop_resample_interactive(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        # No session required: the operator makes one.  The panel has a single button that
-        # runs this, so a poll demanding a locked session would grey the button out before
-        # it had ever done anything.
+        # No session required: the operator makes one.  The menu item runs this through a
+        # forwarder, so a poll demanding a locked session would grey the item out before it
+        # had ever done anything.
+        #
+        # Vertex or edge select mode only: the two modes a path is actually picked in.
+        # This is a gate on the menu rather than a capability check -- the operator answers
+        # to a selection made in either of those two, and points out on the mesh which part
+        # of it it could not use.
+        select_mode = context.tool_settings.mesh_select_mode
         return (
             context.mode == "EDIT_MESH"
             and context.active_object is not None
             and context.active_object.type == "MESH"
+            and (select_mode[0] or select_mode[1])
         )
 
     def invoke(self, context, event):
         session = sessions.active(context)
         if session is None:
-            # The lock that the sidebar used to do in its own click: the selection on
+            # The lock that used to be its own click: the selection on
             # screen right now becomes the source, and the wheel works from there.
             try:
                 session = sessions.begin(context)
             except ValueError as error:
+                _show_refusal(context, error)
                 self.report({"ERROR"}, str(error))
                 return {"CANCELLED"}
         self.session = session
@@ -160,8 +220,9 @@ class MESH_OT_loop_resample_interactive(bpy.types.Operator):
         self._relabel(None)
         self.draw_handler = None
         self.highlight_handler = None
-        self.hud_area = context.area
-        self.hud_area_ptr = context.area.as_pointer() if context.area else None
+        hud_area = _viewport_area(context)
+        self.hud_area = hud_area
+        self.hud_area_ptr = hud_area.as_pointer() if hud_area else None
         self.labels_shown = False
         self.highlight_shown = False
         return self._start(context)
@@ -177,7 +238,7 @@ class MESH_OT_loop_resample_interactive(bpy.types.Operator):
                 return self._cancel(context)
             return {"RUNNING_MODAL"}
         if event.type in _COMMIT_EVENTS:
-            # PRESS only: the click that launched this operator from the sidebar ends
+            # PRESS only: the click that opened this operator ends
             # here as a RELEASE, and finishing on that would commit before a scroll starts.
             if event.value == "PRESS":
                 return self._commit(context)
@@ -233,21 +294,18 @@ class MESH_OT_loop_resample_interactive(bpy.types.Operator):
         axis reads it either way, because an axis that carries one function has no second
         direction to point at: a tick is one more step of the same effect whichever way
         the wheel turned, and the right-click that reverts the session is the only way
-        back.  An axis already at full strength says so instead of stopping dead, which
-        is the whole difference between a finished control and a broken one.
+        back.  An axis that has already reached its end simply stops moving; the percentage
+        on its chip is where the wheel says it stands, so nothing has to be said on top of
+        it.
         """
         if self.mode == MODE_SMOOTH:
             stepped = strengthen(self.t_smooth)
             if stepped == self.t_smooth:
-                # The axis has one end and the wheel has already reached it: saying so is
-                # the whole difference between a finished control and a broken one.
-                self.message = "Curve smoothing is already at full strength."
                 return
             self.t_smooth = stepped
         elif self.mode == MODE_EVEN:
             stepped = strengthen(self.t_even)
             if stepped == self.t_even:
-                self.message = "Point spacing is already as even as it gets."
                 return
             self.t_even = stepped
         else:
@@ -329,17 +387,16 @@ class MESH_OT_loop_resample_interactive(bpy.types.Operator):
         self.label_smooth = 0.0
         self.label_even = 0.0
         self._relabel(None)
-        return (
-            True,
-            "Reverted to "
-            + ", ".join(
-                str(value)
-                for value in segment_counts(self.session.counts, self.label_closed)
-            )
-            + " segment(s)"
-            + (" and the original curve" if moved_shape else "")
-            + ".",
+        counts = ", ".join(
+            str(value)
+            for value in segment_counts(self.session.counts, self.label_closed)
         )
+        template = (
+            "Reverted to {counts} segment(s) and the original curve."
+            if moved_shape
+            else "Reverted to {counts} segment(s)."
+        )
+        return True, pgettext(template).format(counts=counts)
 
     def _commit(self, context):
         # Read before finishing: finishing ends the session, and the report is the last
@@ -350,14 +407,12 @@ class MESH_OT_loop_resample_interactive(bpy.types.Operator):
         )
         strengthened = self.applied_state[1:] != (0.0, 0.0)
         self._finish(context)
-        self.report(
-            {"INFO"},
-            "Kept "
-            + kept
-            + " segment(s)"
-            + (" and the adjusted curve" if strengthened else "")
-            + " on the locked path(s).",
+        template = (
+            "Kept {counts} segment(s) and the adjusted curve on the locked path(s)."
+            if strengthened
+            else "Kept {counts} segment(s) on the locked path(s)."
         )
+        self.report({"INFO"}, pgettext(template).format(counts=kept))
         return {"FINISHED"}
 
     def _cancel(self, context):
@@ -367,6 +422,9 @@ class MESH_OT_loop_resample_interactive(bpy.types.Operator):
         return {"CANCELLED"}
 
     def _start(self, context):
+        # A notice from the click before this one has nothing left to explain: this one got
+        # as far as starting, and the chip row takes over the reporting from here.
+        hide_notice()
         self.draw_handler = bpy.types.SpaceView3D.draw_handler_add(
             draw_hud,
             (self, context),
@@ -398,8 +456,8 @@ class MESH_OT_loop_resample_interactive(bpy.types.Operator):
         clear_box_cache()
         clear_highlight_cache()
         # The session ends with the scroll that owns it, both ways out: a frozen source
-        # left behind is memory held for nothing, and worse, the next click on the
-        # sidebar would find it and keep adjusting the mesh from the selection that was
+        # left behind is memory held for nothing, and worse, the next right-click would
+        # find it and keep adjusting the mesh from the selection that was
         # current two tools ago.
         sessions.end(context)
         self._tag_redraw(context)
@@ -417,3 +475,52 @@ class MESH_OT_loop_resample_interactive(bpy.types.Operator):
             if pointer not in seen:
                 seen.add(pointer)
                 area.tag_redraw()
+
+
+def _start_wheel_modal():
+    """Ask for the wheel from outside the menu that asked for it.
+
+    ``None`` retires the timer; this fires once.
+    """
+    try:
+        bpy.ops.mesh.loop_resample_interactive("INVOKE_DEFAULT")
+    except RuntimeError as error:
+        # The selection can stop answering the poll between the click and this callback --
+        # the menu closing is not a commit, but it is a redraw, and a viewport that lost the
+        # mesh in between has nothing left to lock.  A timer callback has no operator to
+        # report through, so the only channel left is the console; silence here is what read
+        # as "the menu item does nothing" the first time round.
+        print(f"[Loop Resample][diagnostic] menu entry could not start the wheel: {error}")
+    return None
+
+
+class MESH_OT_loop_resample_interactive_entry(bpy.types.Operator):
+    """Forward one menu click to the wheel modal, one pass of the loop later.
+
+    The right-click menu cannot call :class:`MESH_OT_loop_resample_interactive` itself.  A
+    modal handler is attached to the region the operator was invoked in, and for an item
+    picked out of a menu that region is the menu's own popup -- which is torn down as soon
+    as the item fires.  The handler dies with it, Blender then calls ``cancel()`` on the
+    operator, and ``cancel()`` ends the session with the mesh untouched.  That is the exact
+    shape of "nothing happened": no error, no overlay, no wheel.
+
+    Deferred by a timer, the popup is gone and the context is the viewport again -- the same
+    condition that makes a call from the Python console work.
+    """
+
+    bl_idname = "mesh.loop_resample_interactive_entry"
+    bl_label = pgettext("Adjust Loops by Wheel")
+    # Not a thing to search for: the operator it forwards to is the one that belongs in the
+    # list, and two entries worded identically would read as one of them being broken.
+    bl_options = {"INTERNAL"}
+
+    @classmethod
+    def poll(cls, context):
+        return MESH_OT_loop_resample_interactive.poll(context)
+
+    def execute(self, context):
+        # Guarded the way the session watcher guards its own: a second click before the
+        # first callback runs would otherwise register the same function twice.
+        if not bpy.app.timers.is_registered(_start_wheel_modal):
+            bpy.app.timers.register(_start_wheel_modal, first_interval=0.0)
+        return {"FINISHED"}

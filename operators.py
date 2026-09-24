@@ -37,6 +37,13 @@ from .core.diagnostics import (
     start_scope,
     start_step,
 )
+from .i18n import pgettext
+
+
+# The one sentence every refused step is wrapped in, and the one sentence the overlay strips
+# back off before drawing the reason.  Both halves read it through ``pgettext``, so the strip
+# still works once the message is in another language.
+FAILURE_PREFIX = "Loop Resample failed safely: "
 
 
 def _replace_edit_bmesh(mesh, live_bm, source_bm):
@@ -67,8 +74,8 @@ def _redraw(context):
 
 class MESH_OT_loop_resample_begin(bpy.types.Operator):
     bl_idname = "mesh.loop_resample_begin"
-    bl_label = "Enter Loop Resample"
-    bl_description = "Lock the current mesh and selection as the resample source"
+    bl_label = pgettext("Enter Loop Resample")
+    bl_description = pgettext("Lock the current mesh and selection as the resample source")
 
     @classmethod
     def poll(cls, context):
@@ -88,8 +95,9 @@ class MESH_OT_loop_resample_begin(bpy.types.Operator):
         _redraw(context)
         self.report(
             {"INFO"},
-            "Locked {} path(s): {}".format(
-                len(session.counts), ", ".join(str(count) for count in session.counts)
+            pgettext("Locked {count} path(s): {counts}").format(
+                count=len(session.counts),
+                counts=", ".join(str(count) for count in session.counts),
             ),
         )
         return {"FINISHED"}
@@ -97,8 +105,8 @@ class MESH_OT_loop_resample_begin(bpy.types.Operator):
 
 class MESH_OT_loop_resample_step(bpy.types.Operator):
     bl_idname = "mesh.loop_resample_step"
-    bl_label = "Loop Resample"
-    bl_description = "Resample the locked paths from the session source"
+    bl_label = pgettext("Loop Resample")
+    bl_description = pgettext("Resample the locked paths from the session source")
     bl_options = {"UNDO"}
 
     delta: bpy.props.IntProperty(default=0, min=-1, max=1, options={"HIDDEN"})
@@ -123,13 +131,13 @@ class MESH_OT_loop_resample_step(bpy.types.Operator):
     def execute(self, context):
         operator_type = type(self)
         if operator_type._running:
-            self.report({"WARNING"}, "Mesh update is already running; wait a moment.")
+            self.report({"WARNING"}, pgettext("Mesh update is already running; wait a moment."))
             return {"CANCELLED"}
         operator_type._running = True
         try:
             session = sessions.active(context)
             if session is None:
-                self.report({"ERROR"}, "Enter adjust mode first.")
+                self.report({"ERROR"}, pgettext("Enter adjust mode first."))
                 return {"CANCELLED"}
             try:
                 counts = session.next_counts(self.delta, self.target_count)
@@ -162,7 +170,7 @@ def _step_request(session, counts, shape):
 def apply_counts(context, session, counts, shape=None):
     """Resample every locked path to ``counts`` and write the result into the edit mesh.
 
-    The panel operator and the interactive modal both come through here, so a scroll and a
+    The stepper operator and the interactive modal both come through here, so a scroll and a
     click cannot drift apart.  ``(succeeded, message)`` comes back instead of a report
     because the caller owns what the user hears: a scroll that fails at a count the planner
     cannot solve must stay silent and leave the previous mesh standing.
@@ -183,7 +191,7 @@ def apply_counts(context, session, counts, shape=None):
         working_bm.free()
         print_failure(time.perf_counter() - started)
         print_timing("operator-failed", time.perf_counter() - started)
-        return False, f"Loop Resample failed safely: {error}"
+        return False, pgettext(FAILURE_PREFIX) + str(error)
 
     try:
         _replace_edit_bmesh(mesh, bmesh.from_edit_mesh(mesh), working_bm)
@@ -489,20 +497,24 @@ def _resample(session, bm, counts, shape=None):
         faces=rebuilt_face_count,
     )
     print_scans()
-    return (
-        f"Resampled {len(paths)} path(s): "
-        + ", ".join(
+    return pgettext(
+        "Resampled {paths} path(s): {changes}; rebuilt {strips} strip(s) with "
+        "{faces} face(s)"
+    ).format(
+        paths=len(paths),
+        changes=", ".join(
             f"{before}->{after}"
             for before, after in zip(session.source_counts, counts)
-        )
-        + f"; rebuilt {len(regions)} strip(s) with {rebuilt_face_count} face(s)"
+        ),
+        strips=len(regions),
+        faces=rebuilt_face_count,
     )
 
 
 class MESH_OT_loop_resample_confirm(bpy.types.Operator):
     bl_idname = "mesh.loop_resample_confirm"
-    bl_label = "Confirm Resample"
-    bl_description = "Keep the current result and end the session"
+    bl_label = pgettext("Confirm Resample")
+    bl_description = pgettext("Keep the current result and end the session")
 
     @classmethod
     def poll(cls, context):
@@ -516,8 +528,8 @@ class MESH_OT_loop_resample_confirm(bpy.types.Operator):
 
 class MESH_OT_loop_resample_cancel(bpy.types.Operator):
     bl_idname = "mesh.loop_resample_cancel"
-    bl_label = "Cancel Resample"
-    bl_description = "Restore the mesh to its state when the session started"
+    bl_label = pgettext("Cancel Resample")
+    bl_description = pgettext("Restore the mesh to its state when the session started")
     bl_options = {"UNDO"}
 
     @classmethod
@@ -536,5 +548,5 @@ class MESH_OT_loop_resample_cancel(bpy.types.Operator):
             mesh.update_gpu_tag()
         sessions.end(context)
         _redraw(context)
-        self.report({"INFO"}, "Restored the mesh from before the session.")
+        self.report({"INFO"}, pgettext("Restored the mesh from before the session."))
         return {"FINISHED"}

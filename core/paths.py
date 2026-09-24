@@ -1,5 +1,27 @@
 """Selected-edge path ordering and component discovery."""
 
+from ..i18n import pgettext
+from .types import SelectionProblem
+
+# How many of the guilty vertices a sentence can name before it stops being readable.
+# The overlay marks every one of them; this is only about the ones spelled out.
+_NAMED_MAX = 4
+
+
+def _named(vertices):
+    """Up to four vertex numbers, in the order a user would look for them."""
+    indices = sorted(vertex.index for vertex in vertices)
+    text = ", ".join(str(index) for index in indices[:_NAMED_MAX])
+    if len(indices) > _NAMED_MAX:
+        text += ", ..."
+    return text
+
+
+def _segment_coordinates(edges):
+    return tuple(
+        (tuple(edge.verts[0].co), tuple(edge.verts[1].co)) for edge in edges
+    )
+
 
 def _closed_loop_anchor(loop_vertices):
     """Closed-loop start: a vertex a seam runs through, else the lowest index.
@@ -24,7 +46,7 @@ def _closed_loop_anchor(loop_vertices):
 def ordered_selected_path(edges):
     """Return (vertices, edges, is_closed) for one non-branching component."""
     if not edges:
-        raise ValueError("Select one continuous edge chain or edge loop.")
+        raise ValueError(pgettext("Select one continuous edge chain or edge loop."))
 
     adjacency = {}
     for edge in edges:
@@ -33,8 +55,15 @@ def ordered_selected_path(edges):
 
     degrees = {vertex: len(vertex_edges) for vertex, vertex_edges in adjacency.items()}
     endpoints = [vertex for vertex, degree in degrees.items() if degree == 1]
-    if any(degree not in {1, 2} for degree in degrees.values()):
-        raise ValueError("Selected edges branch. A path can only have degree 1 or 2 vertices.")
+    branching = [vertex for vertex, degree in degrees.items() if degree > 2]
+    if branching:
+        raise SelectionProblem(
+            pgettext(
+                "The selection branches at point {where}: a path can only run through "
+                "points that join one or two selected edges."
+            ).format(where=_named(branching)),
+            vertices=[vertex.co for vertex in branching],
+        )
 
     is_closed = not endpoints
     if is_closed:
@@ -42,7 +71,12 @@ def ordered_selected_path(edges):
     elif len(endpoints) == 2:
         start = min(endpoints, key=lambda vertex: vertex.index)
     else:
-        raise ValueError("Select exactly one open chain or one closed loop.")
+        raise SelectionProblem(
+            pgettext(
+                "The selected edges form neither one open chain nor one closed loop."
+            ),
+            vertices=[vertex.co for vertex in adjacency],
+        )
 
     ordered_vertices = []
     ordered_edges = []
@@ -74,9 +108,21 @@ def ordered_selected_path(edges):
             break
 
     if len(used_edges) != len(edges):
-        raise ValueError("Select one connected path, not multiple components.")
+        unreachable = [edge for edge in edges if edge not in used_edges]
+        raise SelectionProblem(
+            pgettext(
+                "{count} of the selected edges are not joined to this chain, so the "
+                "selection is broken in between."
+            ).format(count=len(unreachable)),
+            edges=_segment_coordinates(unreachable),
+        )
     if not is_closed and current not in endpoints:
-        raise ValueError("Could not resolve an open path from this selection.")
+        raise SelectionProblem(
+            pgettext(
+                "The selected edges do not run end to end as one open chain."
+            ),
+            vertices=[current.co],
+        )
 
     return ordered_vertices, ordered_edges, is_closed
 

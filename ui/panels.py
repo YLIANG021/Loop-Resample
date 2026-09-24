@@ -1,31 +1,41 @@
-"""3D View user interface for Loop Resample.
+"""The edit-mode right-click entry for Loop Resample.
 
-One button, and the whole flow is that button.  It used to take two clicks -- one to
-lock the mesh, one to start the scroll -- and a row of steppers that are now the wheel's
-job; the lock happens inside the operator the button runs, so there is nothing to press
-in between.
+This is the only door: the whole flow is that one item.  It used to take two clicks -- one
+to lock the mesh, one to start the scroll -- and a row of steppers that are now the wheel's
+job; the lock happens inside the operator the item runs, so there is nothing to press in
+between.
+
+The sidebar panel that used to carry the same button is gone.  The selection is already
+under the cursor when the right-click happens, so a second entry point across the window
+bought nothing except two contexts to keep in sync.
 """
 
-import bpy
+from ..i18n import pgettext
+from .interactive import MESH_OT_loop_resample_interactive_entry
 
-from .interactive import MESH_OT_loop_resample_interactive
+# The menu says the same words as the operator it forwards to, and both look the sentence up
+# in the same table, so a translation cannot leave the item naming one thing and the operator
+# another.
+_ENTRY_TEXT = "Adjust Loops by Wheel"
+_ENTRY_ICON = "MOUSE_MMB_SCROLL"
 
 
-class VIEW3D_PT_loop_resample(bpy.types.Panel):
-    bl_label = "Loop Resample"
-    bl_idname = "VIEW3D_PT_loop_resample"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "Resample"
+def draw_edit_mesh_context_menu(self, context):
+    """The way in to the wheel, at the top of the mesh edit-mode right-click menu.
 
-    def draw(self, context):
-        layout = self.layout
-        layout.operator(
-            MESH_OT_loop_resample_interactive.bl_idname,
-            text="Adjust Loops by Wheel",
-            icon="MOUSE_MMB_SCROLL",
-        )
-        layout.separator()
-        layout.label(text="Select the loops, click, then scroll.", icon="INFO")
-        layout.label(text="Wheel: segments · Shift+wheel: smooth · Ctrl+wheel: even")
-        layout.label(text="Each scroll strengthens; left-click keeps, right-click reverts")
+    One item rather than a submenu: a submenu is what LoopTools needs because it has a
+    dozen operators behind it, and this add-on has one.  The trailing separator is what
+    keeps the native list below it readable, and it is why the item sits above the divider
+    instead of joining the tail.
+
+    The item names the forwarder rather than the modal itself, because a menu cannot start
+    a modal operator -- see :class:`MESH_OT_loop_resample_interactive_entry`.
+    """
+    if not MESH_OT_loop_resample_interactive_entry.poll(context):
+        return
+    self.layout.operator(
+        MESH_OT_loop_resample_interactive_entry.bl_idname,
+        text=pgettext(_ENTRY_TEXT),
+        icon=_ENTRY_ICON,
+    )
+    self.layout.separator()

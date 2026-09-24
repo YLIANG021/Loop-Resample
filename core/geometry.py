@@ -2,6 +2,7 @@
 
 from mathutils.geometry import intersect_line_line
 
+from ..i18n import pgettext
 from .diagnostics import (
     print_crossing,
     print_degenerate_face,
@@ -218,15 +219,15 @@ def validate_ordered_strip_plan(plan, inner_vertices, outer_vertices, region):
     inner_steps = len(inner_vertices) if is_closed else len(inner_vertices) - 1
     outer_steps = len(outer_vertices) if is_closed else len(outer_vertices) - 1
     if not plan.transitions or not plan.faces:
-        raise ValueError("The strip plan contains no complete face sequence.")
+        raise ValueError(pgettext("The strip plan contains no complete face sequence."))
     if sum(kind in {"QUAD", "INNER_TRI"} for kind in plan.transitions) != inner_steps:
-        raise ValueError("The strip plan did not consume the full inner boundary.")
+        raise ValueError(pgettext("The strip plan did not consume the full inner boundary."))
     if sum(kind in {"QUAD", "OUTER_TRI"} for kind in plan.transitions) != outer_steps:
-        raise ValueError("The strip plan did not consume the full outer boundary.")
+        raise ValueError(pgettext("The strip plan did not consume the full outer boundary."))
     for face_index, face_vertices in enumerate(plan.faces):
         if face_quality_cost(face_vertices, region) is None:
             print_degenerate_face("degenerate-final-face", face_index, face_vertices)
-            raise ValueError("The strip plan contains a degenerate face.")
+            raise ValueError(pgettext("The strip plan contains a degenerate face."))
         alignment = face_normal_alignment(face_vertices, region)
         if alignment is not None and alignment <= NORMAL_ALIGNMENT_WARNING:
             print_normal_mismatch(face_index, face_vertices, alignment)

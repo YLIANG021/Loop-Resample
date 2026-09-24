@@ -1,10 +1,16 @@
-"""Viewport UI for Loop Resample: the sidebar panel and the interactive adjust modal."""
+"""Viewport UI for Loop Resample: the wheel modal, the right-click entry, the overlays."""
 
-from .interactive import MESH_OT_loop_resample_interactive
-from .panels import VIEW3D_PT_loop_resample
+from .hud import hide_notice
+from .interactive import (
+    MESH_OT_loop_resample_interactive,
+    MESH_OT_loop_resample_interactive_entry,
+)
+from .panels import draw_edit_mesh_context_menu
 
 
 __all__ = (
     "MESH_OT_loop_resample_interactive",
-    "VIEW3D_PT_loop_resample",
+    "MESH_OT_loop_resample_interactive_entry",
+    "draw_edit_mesh_context_menu",
+    "hide_notice",
 )
