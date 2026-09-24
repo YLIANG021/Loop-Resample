@@ -373,10 +373,12 @@ def print_uv_region(region, rails, crossings, parameters=()):
         print(f"[Loop Resample][uvdiag]   rail{rail} chains={len(chains)}")
         for index, chain in enumerate(chains):
             knots = chain["knots"]
+            doubled = len(knots) - len({value[0] for value in knots})
             print(
                 f"[Loop Resample][uvdiag]     chain{index} knots={len(knots)} "
                 f"u=[{knots[0][0]:.6f},{knots[-1][0]:.6f}] "
                 f"closed={int(chain['closed'])}"
+                + (f" doubled={doubled}" if doubled else "")
             )
 
 
@@ -388,11 +390,12 @@ def print_uv_note(region, detail):
 def print_uv_faces(region, rows, total):
     """Every rebuilt face the UV transfer could not place cleanly.
 
-    A line is emitted when a corner was clamped to a chain end, when the face fell
-    through to the nearest-centre guess, when several source faces tied for it, when
-    it sits where a seam crosses, or when the island vote had to replace the face its
-    overlap vote picked -- the ways a wrong island can win, and the last one is what
-    keeps a wire off the map.
+    A line is emitted when a corner was clamped to a chain end, when a corner took the
+    value its matched source face keeps on a doubled rail vertex instead of
+    interpolating, when the face fell through to the nearest-centre guess, when several
+    source faces tied for it, when it sits where a seam crosses, or when the island vote
+    had to replace the face its overlap vote picked -- the ways a wrong island can win,
+    and the last one is what keeps a wire off the map.
     """
     flagged = [
         row
@@ -401,7 +404,7 @@ def print_uv_faces(region, rows, total):
         or row["fallback"]
         or row["tied"] > 1
         or row["near_seam"]
-        or any(probe["clamped"] for probe in row["probes"])
+        or any(probe["clamped"] or probe.get("tied") for probe in row["probes"])
     ]
     print(
         f"[Loop Resample][uvdiag] {_region_tag(region)} faces={total} "
@@ -429,6 +432,7 @@ def print_uv_faces(region, rows, total):
                 f"|r{probe['rail']}v{probe['vertex_index']}chain{probe['chain']} "
                 f"u={probe['u']:.6f} in[{probe['low']:.6f},{probe['high']:.6f}]"
                 + (" CLAMPED" if probe["clamped"] else "")
+                + (" TIED" if probe.get("tied") else "")
                 for probe in row["probes"]
             )
         )

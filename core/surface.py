@@ -16,6 +16,14 @@ layers are treated as periodic.
 
 Only two v values ever occur -- 0 on the inner rail, 1 on the outer rail -- so
 sampling a face reduces to interpolating along the rail the corner belongs to.
+
+One case interpolation cannot answer: a rail vertex an island boundary leaves through
+keeps *two* corners at one u, and closing the ring stitches both into the same chain,
+so the chain is a function of u that has to pick one.  It always picks the one reached
+from below, which is right for the face ending there and a whole island away from the
+face starting there -- that face reads a chord across the map.  So a corner standing on
+such a vertex takes the value the matched source face stores there, which is the copy
+its own island has; see :func:`_tied_corner`.
 """
 
 import time
@@ -32,6 +40,12 @@ from .diagnostics import (
 from .regions import region_rails
 
 _UV_MERGE_DECIMALS = 6
+
+# How close to a source rail vertex a rebuilt corner has to be before it counts as
+# standing on that vertex.  A pinned corner is the same coordinate to within projection
+# noise; a corner the sampler moved is somewhere the source never was, and a wider net
+# here would hand it a stored value that belongs to its neighbour.
+_TIED_CORNER_TOLERANCE = 1e-6
 
 # Stays True while the add-on is being tuned; the [uvdiag] block it gates is removed
 # in one go at the end.  Set False to silence those lines without touching geometry.
@@ -141,6 +155,10 @@ def capture_region_faces(bm, region, paths):
                 "u_end": end,
                 "u_center": center,
                 "chains": chains,
+                "corners": {
+                    (corner["rail"], corner["u"]): corner["values"]
+                    for corner in corners
+                },
             }
         )
 
@@ -150,6 +168,9 @@ def capture_region_faces(bm, region, paths):
         chain_list, index = builder.chains()
         rails.append(chain_list)
         indices.append(index)
+    # Only now that every face is in can a rail say which of its u values carry more
+    # than one corner, so the faces keep their raw corners until this point.
+    doubled = [builder.doubled_parameters() for builder in builders]
     for record in records:
         chains = {}
         for rail, token in record["chains"].items():
@@ -159,6 +180,11 @@ def capture_region_faces(bm, region, paths):
                 else indices[rail][builders[rail]._find(token)]
             )
         record["chains"] = chains
+        record["tied"] = {
+            position: values
+            for position, values in record.pop("corners").items()
+            if position[1] in doubled[position[0]]
+        }
     return {
         "closed": closed,
         "records": records,
@@ -221,6 +247,22 @@ class _RailBuilder:
                 }
             )
         return chains, index
+
+    def doubled_parameters(self):
+        """The u values this rail holds more than one corner at.
+
+        That is where an island boundary leaves the rail: one mesh vertex, two
+        corners with different values, and a chain -- which is a function of u --
+        can only answer one of them.  Every source face that stands on such a
+        vertex is asked which copy is its own; see :func:`_tied_corner`.
+        """
+        seen = set()
+        doubled = set()
+        for key in self._parent:
+            if key[0] in seen:
+                doubled.add(key[0])
+            seen.add(key[0])
+        return frozenset(doubled)
 
     def _key(self, corner):
         return (
@@ -340,12 +382,22 @@ def apply_region_faces(
             chain_index = chains.get(rail)
             if chain_index is None:
                 continue
-            sample = _sample_chain(
-                rails[rail][chain_index],
-                center if u is None else u,
-                periodic,
-                probes,
-            )
+            position = center if u is None else u
+            sample = _tied_corner(record, rail, position, closed)
+            if sample is None:
+                sample = _sample_chain(
+                    rails[rail][chain_index], position, periodic, probes
+                )
+            elif DIAGNOSE_UV:
+                probes.append(
+                    {
+                        "u": position,
+                        "low": position,
+                        "high": position,
+                        "clamped": False,
+                        "tied": True,
+                    }
+                )
             if DIAGNOSE_UV:
                 probes[-1]["rail"] = rail
                 probes[-1]["chain"] = chain_index
@@ -546,6 +598,30 @@ def _arc_overlap(first, second):
         for low_a, high_a in first
         for low_b, high_b in second
     )
+
+
+def _tied_corner(record, rail, u, closed):
+    """What the matched source face stores on this rail vertex, if it stores anything.
+
+    Only corners standing on a doubled u are answered here, and ``u`` comes off the
+    rebuilt rail, so it is matched by distance: inside the tolerance the two are the
+    same vertex, and outside it the corner sits where the source never was, where
+    interpolating is the only answer there is.  Asking the face this one was matched
+    to -- rather than the chain -- is what makes the answer come out as the copy this
+    face's own island keeps there.
+    """
+    tied = record["tied"]
+    if not tied:
+        return None
+    best = None
+    best_distance = _TIED_CORNER_TOLERANCE
+    for (tied_rail, tied_u), values in tied.items():
+        if tied_rail != rail:
+            continue
+        distance = _u_distance(u, tied_u, closed)
+        if distance < best_distance:
+            best, best_distance = values, distance
+    return best
 
 
 def _sample_chain(chain, u, periodic, probe=None):
