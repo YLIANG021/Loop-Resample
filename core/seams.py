@@ -65,7 +65,10 @@ def region_seam_crossings(region, paths, bm):
     cannot become a single rung, so it is reported and left to positional matching
     rather than bending the ladder for.  The edges a crossing is made of stay in the
     region's ordinary attribute records: only a crossing that actually gets a rung is
-    taken out of them, which :func:`region_seam_rungs` is what decides.
+    taken out of them, which :func:`region_seam_rungs` is what decides.  Each
+    crossing names itself and the source edge indices it consumed, so
+    :func:`.attributes.capture_region_edge_attributes` -- which runs after this one,
+    against the same BMesh -- can mark the records those edges made.
     """
     inner_vertices, outer_vertices = region_rails(region, paths)
     if not inner_vertices or not outer_vertices:
@@ -86,7 +89,7 @@ def region_seam_crossings(region, paths, bm):
     float_layers = _float_edge_layers(bm)
 
     crossings = []
-    for chain in _seam_chains(pool):
+    for crossing_id, chain in enumerate(_seam_chains(pool)):
         chain_vertices = {vertex for edge in chain for vertex in edge.verts}
         inner_hits = sorted(
             index for vertex, index in inner_index.items() if vertex in chain_vertices
@@ -103,6 +106,10 @@ def region_seam_crossings(region, paths, bm):
             continue
         crossings.append(
             {
+                "id": crossing_id,
+                # Valid only inside the capture that made it, where both sides of the
+                # lookup read the same BMesh; never resolved against a later step.
+                "source_edges": tuple(edge.index for edge in chain),
                 "inner_index": inner_hits[0],
                 "inner_u": inner_hits[0] / inner_segments,
                 "outer_index": outer_hits[0],
@@ -160,10 +167,12 @@ def region_seam_rungs(region, plan, inner_parameters, outer_parameters):
     aims for the rebuilt vertex the sampler pinned on its own source position and takes
     the nearest one that is actually offered.
 
-    Returns ``(rungs, pinned, ends)``: the nodes to paint with the flags of the chain
-    they replaced, the source inner indices positional matching must no longer place,
-    and the path vertices the red line reached -- :func:`paint_path_seam_jogs` joins
-    those when the strip on the far side of a path chose a different one.
+    Returns ``(rungs, carried, ends)``: the nodes to paint with the flags of the chain
+    they replaced, the ids of the crossings that became a rung -- whose own source
+    edges positional matching must no longer place, since the rung already carries
+    them -- and the path vertices the red line reached:
+    :func:`paint_path_seam_jogs` joins those when the strip on the far side of a path
+    chose a different one.
     """
     crossings = region.get("seam_crossings") or ()
     if not crossings or not inner_parameters or not outer_parameters:
@@ -178,7 +187,7 @@ def region_seam_rungs(region, plan, inner_parameters, outer_parameters):
 
     rungs = []
     by_node = {}
-    pinned = []
+    carried = []
     ends = []
     outer_path_index = region.get("outer_path_index")
     for crossing in crossings:
@@ -206,7 +215,7 @@ def region_seam_rungs(region, plan, inner_parameters, outer_parameters):
             by_node[node] = rung
             rungs.append(rung)
         rung["weighted"].append((1.0, crossing["state"]))
-        pinned.append(crossing["inner_index"])
+        carried.append(crossing["id"])
         ends.append(
             (
                 region["path_index"],
@@ -224,7 +233,7 @@ def region_seam_rungs(region, plan, inner_parameters, outer_parameters):
             )
     for rung in rungs:
         rung["state"] = merge_edge_states(rung.pop("weighted"))
-    return tuple(rungs), tuple(pinned), ends
+    return tuple(rungs), tuple(carried), ends
 
 
 def apply_region_seams(bm, plan, region, rungs):

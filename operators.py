@@ -428,7 +428,7 @@ def _resample(session, bm, counts, shape=None):
         )
         mark("region-attributes")
         region_started = time.perf_counter()
-        rungs, pinned, landings = (
+        rungs, carried, landings = (
             region_seam_rungs(region, plan, inner_parameters, outer_parameters)
             if plan is not None
             else ((), (), ())
@@ -441,7 +441,7 @@ def _resample(session, bm, counts, shape=None):
             region,
             inner_parameters,
             region_rungs(region, plan, inner_vertices),
-            pinned,
+            carried,
         )
         accumulate_scan(
             "apply-region-edge-attributes",

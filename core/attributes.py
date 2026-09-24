@@ -117,18 +117,20 @@ def merge_edge_states(weighted):
     """Combine source states that collapsed onto one target edge.
 
     ``(weight, state)`` pairs are weighted by how much of the target each
-    source covers.  Discrete flags resolve by weighted majority with ties
-    favouring preservation, because losing a seam silently is worse than
-    keeping one extra.  Float layers average, and a layer absent from a state
-    counts as zero over that state's whole weight.
+    source covers.  Discrete flags are unioned, ignoring weight: a flag has only
+    one bit to lose, and a seam dropped because it covered too little of the new
+    edge breaks the line into dots, while one kept on a hairline overlap merely
+    draws the line one edge longer.  Float layers keep weighting their overlap,
+    so a value uniform along the source survives untouched and only a boundary
+    between two values softens -- the user's "like blending a gradient".  A layer
+    absent from a state counts as zero over that state's whole weight.
     """
     total = sum(weight for weight, _ in weighted)
     if total <= 0.0:
         return dict(weighted[0][1])
     merged = {}
     for key in DISCRETE_STATE_KEYS:
-        keep = sum(weight for weight, state in weighted if state.get(key))
-        merged[key] = keep * 2.0 >= total
+        merged[key] = any(state.get(key) for _, state in weighted)
     float_keys = {
         key
         for _, state in weighted
@@ -210,9 +212,10 @@ def capture_region_edge_attributes(regions, paths, bm):
     Each record stores where the edge sat along the region's inner boundary as a
     normalized parameter, so it stays meaningful no matter how many segments a
     later step uses.  Edges parallel to the path are skipped: they run along the
-    ladder and have no counterpart rung.  Seam edges are recorded like any other;
-    :func:`apply_region_edge_attributes` is what decides whether one travels by
-    position or is already carried by the rung a crossing became.
+    ladder and have no counterpart rung.  A record also names the seam crossing
+    that consumed its edge, if any, so :func:`apply_region_edge_attributes` can
+    stand that edge down without asking whether it was a seam -- a chain carrying a
+    crease is one line, not one line plus a crease to place somewhere else.
     """
     float_layers = _float_edge_layers(bm)
     captured = []
@@ -224,6 +227,11 @@ def capture_region_edge_attributes(regions, paths, bm):
         path_vertices = paths[region["path_index"]][0]
         path_index_by_vertex = {
             vertex: index for index, vertex in enumerate(path_vertices)
+        }
+        consumed = {
+            index: crossing["id"]
+            for crossing in region.get("seam_crossings") or ()
+            for index in crossing["source_edges"]
         }
         records = []
         started = time.perf_counter()
@@ -262,6 +270,7 @@ def capture_region_edge_attributes(regions, paths, bm):
                 {
                     "u": parameter / segments,
                     "inner_index": inner_index,
+                    "crossing_id": consumed.get(edge.index),
                     "state": state,
                 }
             )
@@ -272,23 +281,24 @@ def capture_region_edge_attributes(regions, paths, bm):
     return captured
 
 
-def apply_region_edge_attributes(bm, region, inner_parameters, rungs, pinned=()):
+def apply_region_edge_attributes(bm, region, inner_parameters, rungs, carried=()):
     """Restore the attributes of the cross-band edges the rebuild destroyed.
 
     ``rungs`` lists the rebuilt ones as ``(inner index, edge endpoints)`` in ladder
     order, so a record lands on the nearest one and the edge itself is looked up by
     its two endpoints instead of being rediscovered from the rebuilt faces.
-    ``pinned`` holds the source inner index of every seam crossing that became a
-    rung; that column already carries the red line, so the record it was made from is
-    dropped here rather than drawn a second time beside it.  A crossing that could
-    not become a rung is absent from ``pinned`` and is restored by position like any
-    other edge.
+    ``carried`` holds the id of every seam crossing that became a rung; every record
+    made from an edge that crossing consumed is dropped here, because the rung already
+    carries that whole chain's state and a second, positional copy of it would land on
+    whichever neighbour happened to be nearer.  A crossing that could not become a rung
+    is absent from ``carried`` and its edges are restored by position like any other.
     """
     captured = region.get("edge_attributes") or {}
+    consumed = set(carried)
     records = [
         record
         for record in (captured.get("records") or ())
-        if not (record["state"].get("seam") and record.get("inner_index") in pinned)
+        if record["crossing_id"] not in consumed
     ]
     if not records or not rungs:
         return
@@ -393,6 +403,14 @@ def _blend_values(left, right, factor):
     return left.lerp(right, factor)
 
 
+def _blend_floats(left, right, factor):
+    if factor <= 0.0:
+        return left
+    if factor >= 1.0:
+        return right
+    return left + (right - left) * factor
+
+
 def _point_positions(parameters, source_count, closed):
     """Where each rebuilt vertex falls between two source vertices, as (left, right, factor).
 
@@ -429,12 +447,16 @@ def _point_value_layers(bm):
     Only layers already on the mesh are listed: ``deform.active`` reads the
     vertex-group layer without creating one, and iterating a layer collection
     never adds either, so a mesh with neither vertex groups nor point colors
-    yields nothing and every later step stays a no-op.
+    yields nothing and every later step stays a no-op.  Vertex crease and bevel
+    weight are plain float layers, so they arrive here the same way a color does
+    and blend the same way -- no flag of their own to union.
     """
     layers = []
     deform = bm.verts.layers.deform.active
     if deform is not None:
         layers.append(("weight", deform.name, deform))
+    for name, layer in bm.verts.layers.float.items():
+        layers.append(("float", name, layer))
     for kind, collection in (
         ("color", bm.verts.layers.color),
         ("float_color", bm.verts.layers.float_color),
@@ -445,9 +467,9 @@ def _point_value_layers(bm):
 
 
 def capture_path_point_attributes(paths, bm):
-    """Freeze each source path vertex's weights and point colors, or None.
+    """Freeze each source path vertex's weights and per-point values, or None.
 
-    Colors stored per vertex rather than per corner cannot ride the rail chains
+    Values stored per vertex rather than per corner cannot ride the rail chains
     in :mod:`.surface`, so they travel with the weights here instead.
     """
     layers = _point_value_layers(bm)
@@ -459,6 +481,8 @@ def capture_path_point_attributes(paths, bm):
         for vertices, _, closed in paths:
             if kind == "weight":
                 values = [dict(vertex[layer]) for vertex in vertices]
+            elif kind == "float":
+                values = [vertex[layer] for vertex in vertices]
             else:
                 values = [vertex[layer].copy() for vertex in vertices]
             per_path.append((values, bool(closed)))
@@ -467,17 +491,20 @@ def capture_path_point_attributes(paths, bm):
 
 
 def apply_path_point_attributes(updated_paths, path_parameters, captured, bm):
-    """Restore resampled weights and point colors onto the rebuilt path vertices.
+    """Restore resampled weights and per-point values onto the rebuilt path vertices.
 
     Only path vertices are rewritten: a static outer rail keeps its vertices and
     therefore their values, and a resampled outer rail is itself a path handled
-    here.
+    here.  Layers are matched on kind and name together, since a vertex group and a
+    float attribute are free to share a name.
     """
     if not captured:
         return
-    layers = {name: layer for _, name, layer in _point_value_layers(bm)}
+    layers = {
+        (kind, name): layer for kind, name, layer in _point_value_layers(bm)
+    }
     for kind, name, per_path in captured:
-        layer = layers.get(name)
+        layer = layers.get((kind, name))
         if layer is None:
             continue
         for path_index, (values, closed) in enumerate(per_path):
@@ -495,5 +522,9 @@ def apply_path_point_attributes(updated_paths, path_parameters, captured, bm):
                     stored.clear()
                     for group_index, weight in merged.items():
                         stored[group_index] = weight
+                elif kind == "float":
+                    vertex[layer] = _blend_floats(
+                        values[left], values[right], factor
+                    )
                 else:
                     vertex[layer] = _blend_values(values[left], values[right], factor)
