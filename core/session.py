@@ -196,6 +196,10 @@ class ResampleSession:
                 self.curves.append(None)
         self.counts = list(self.source_counts)
         self.capture_cache = None
+        # Vertices where a UV island boundary leaves a band that carries no seam mark.
+        # Written by the capture, read only to word the closing report; it steers no
+        # geometry, which is the point of keeping it here rather than in the sampler.
+        self.unmarked_cuts = ()
 
     def open_bmesh(self):
         """A fresh working copy of the locked source mesh."""

@@ -45,6 +45,27 @@ from .i18n import pgettext
 # still works once the message is in another language.
 FAILURE_PREFIX = "Loop Resample failed safely: "
 
+# Said once when a gesture ends, never once per step: an unmarked UV boundary is a fact
+# about the source mesh, and the wheel rebuilds that source dozens of times per gesture.
+UNMARKED_CUT_NOTE = (
+    "No seam mark on {count} UV island boundary position(s), so one face there "
+    "stretches across the UV map.  Mark Seam on those cuts to line them up."
+)
+
+
+def cut_notice(session):
+    """The sentence for UV island boundaries no seam mark runs through.
+
+    ``.report`` takes one string, so this comes back with its own leading space rather
+    than as a second report -- two of those would compete for the same popup.  An empty
+    string is the common answer, and it leaves the caller's sentence exactly as long as
+    it was before this existed.
+    """
+    count = len(session.unmarked_cuts)
+    if not count:
+        return ""
+    return " " + pgettext(UNMARKED_CUT_NOTE).format(count=count)
+
 
 def _replace_edit_bmesh(mesh, live_bm, source_bm):
     """Replace the live edit BMesh from a detached, fully evaluated copy."""
@@ -147,7 +168,10 @@ class MESH_OT_loop_resample_step(bpy.types.Operator):
             succeeded, message = apply_counts(context, session, counts)
         finally:
             operator_type._running = False
-        self.report({"INFO" if succeeded else "ERROR"}, message)
+        self.report(
+            {"INFO" if succeeded else "ERROR"},
+            message + (cut_notice(session) if succeeded else ""),
+        )
         return {"FINISHED"} if succeeded else {"CANCELLED"}
 
 
@@ -242,6 +266,20 @@ def _resample(session, bm, counts, shape=None):
     paths = capture["paths"]
     synchronized_paths = capture["synchronized"]
     regions = capture["regions"]
+    # Where a UV island boundary leaves a band that no seam mark runs through.  The
+    # transfer can hand a pinned vertex either copy of a split corner, but it cannot
+    # invent the vertex: only a seam mark puts one on the cut.  So this comes back as a
+    # sentence at the end of the gesture, and it decides nothing about the mesh -- UVs
+    # stay out of the wiring, which is the whole reason the boundary is not read as one.
+    session.unmarked_cuts = tuple(
+        sorted(
+            {
+                index
+                for region in regions
+                for _, index in (region["source_faces"].get("unmarked_cuts") or ())
+            }
+        )
+    )
     path_states = capture["path_states"]
     path_points = capture["path_points"]
     path_anchors = capture["path_anchors"]

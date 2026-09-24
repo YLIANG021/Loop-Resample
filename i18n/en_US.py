@@ -37,6 +37,8 @@ MESSAGES = [
     "Kept {counts} segment(s) on the locked path(s).",
     "Kept {counts} segment(s) and the adjusted curve on the locked path(s).",
     "Resampled {paths} path(s): {changes}; rebuilt {strips} strip(s) with {faces} face(s)",
+    "No seam mark on {count} UV island boundary position(s), so one face there "
+    "stretches across the UV map.  Mark Seam on those cuts to line them up.",
     # Refusals and failures, which reach the user as the warning chip.
     "closed",
     "open",

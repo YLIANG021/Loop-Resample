@@ -24,6 +24,10 @@ from below, which is right for the face ending there and a whole island away fro
 face starting there -- that face reads a chord across the map.  So a corner standing on
 such a vertex takes the value the matched source face stores there, which is the copy
 its own island has; see :func:`_tied_corner`.
+
+A boundary with no seam mark on it cannot be answered this way, because no rebuilt
+vertex stands there at all.  Those are reported to the user and nothing else: reading
+a UV may change what the add-on says, never how the band is wired.
 """
 
 import time
@@ -185,12 +189,66 @@ def capture_region_faces(bm, region, paths):
             for position, values in record.pop("corners").items()
             if position[1] in doubled[position[0]]
         }
+    unmarked_cuts = _unmarked_boundaries(
+        region, doubled, inner_vertices, outer_vertices,
+        inner_segments, outer_segments,
+    )
+    if DIAGNOSE_UV and unmarked_cuts:
+        print_uv_note(
+            region,
+            "unmarked-cut "
+            + " ".join(f"r{rail}v{index}" for rail, index in unmarked_cuts),
+        )
     return {
         "closed": closed,
         "records": records,
         "rails": rails,
         "periodic": _periodic_layers(bounds, closed),
+        # Where an island boundary leaves the band with no seam mark on it, which the
+        # transfer cannot repair and the user can; see :func:`_unmarked_boundaries`.
+        "unmarked_cuts": unmarked_cuts,
     }
+
+
+def _unmarked_boundaries(
+    region, doubled, inner_vertices, outer_vertices, inner_segments, outer_segments
+):
+    """Rail vertices an island boundary splits, on which no seam mark stands.
+
+    A seam mark is what puts a rebuilt vertex on the cut, and without one a face has
+    to cover both islands at once -- no choice of corner values makes that face small,
+    so it is drawn as a chord across the map.  :func:`_tied_corner` fixes the copy a
+    pinned vertex reads; nothing here can.  Which boundaries are split comes from the
+    stored corner values, but only to decide *what to say*: this reaches no waypoint,
+    no anchor and no vertex position, exactly so that editing a UV map cannot move the
+    mesh.
+    """
+    marked = {
+        vertex
+        for face in region["faces"]
+        if face.is_valid
+        for edge in face.edges
+        if getattr(edge, "seam", False)
+        for vertex in edge.verts
+    }
+    cuts = []
+    for rail, (values, vertices, segments) in enumerate(
+        (
+            (doubled[0], inner_vertices, inner_segments),
+            (doubled[1], outer_vertices, outer_segments),
+        )
+    ):
+        if not values:
+            continue
+        # A rail with no vertices is a fan's pole, whose corners sit at their own
+        # face's centre and so never share a u with each other: nothing doubles there.
+        count = segments or 1
+        cuts.extend(
+            (rail, vertex.index)
+            for index, vertex in enumerate(vertices)
+            if index / count in values and vertex not in marked
+        )
+    return tuple(cuts)
 
 
 class _RailBuilder:

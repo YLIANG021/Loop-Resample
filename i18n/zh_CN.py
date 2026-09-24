@@ -47,6 +47,14 @@ TRANSLATIONS = {
         "Resampled {paths} path(s): {changes}; rebuilt {strips} strip(s) with "
         "{faces} face(s)",
     ): "已重采样 {paths} 条路径：{changes}；重建 {strips} 条条带，共 {faces} 个面",
+    (
+        "*",
+        "No seam mark on {count} UV island boundary position(s), so one face there "
+        "stretches across the UV map.  Mark Seam on those cuts to line them up.",
+    ): (
+        "{count} 处 UV 岛的边界上没有缝标记，那里会有一张面被拉过整张 UV 图。"
+        "把这些切口 Mark Seam 就能对齐。"
+    ),
     # Refusals and failures, which reach the user as the warning chip.
     ("*", "closed"): "闭合",
     ("*", "open"): "开放",

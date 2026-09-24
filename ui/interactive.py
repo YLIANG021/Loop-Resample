@@ -35,7 +35,7 @@ import bpy
 
 from ..core import session as sessions
 from ..i18n import pgettext
-from ..operators import apply_counts, restore_source
+from ..operators import apply_counts, cut_notice, restore_source
 from ..shape.state import (
     MODE_COUNT,
     MODE_EVEN,
@@ -399,13 +399,14 @@ class MESH_OT_loop_resample_interactive(bpy.types.Operator):
             for value in segment_counts(self.session.counts, self.label_closed)
         )
         strengthened = self.applied_state[1:] != (0.0, 0.0)
+        note = cut_notice(self.session)
         self._finish(context)
         template = (
             "Kept {counts} segment(s) and the adjusted curve on the locked path(s)."
             if strengthened
             else "Kept {counts} segment(s) on the locked path(s)."
         )
-        self.report({"INFO"}, pgettext(template).format(counts=kept))
+        self.report({"INFO"}, pgettext(template).format(counts=kept) + note)
         return {"FINISHED"}
 
     def _cancel(self, context):
