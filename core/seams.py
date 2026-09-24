@@ -33,7 +33,7 @@ from .diagnostics import (
     print_seam_jogs,
     print_seam_rungs,
 )
-from .regions import region_rails
+from .regions import _listed, region_rails
 
 
 def _seam_chains(edges):
@@ -69,16 +69,52 @@ def region_seam_crossings(region, paths, bm):
     crossing names itself and the source edge indices it consumed, so
     :func:`.attributes.capture_region_edge_attributes` -- which runs after this one,
     against the same BMesh -- can mark the records those edges made.
+
+    A fan has no outer path to read a rail from, but it does name its pole, and a
+    cut that runs up a spoke leaves the band through exactly that vertex.  Read as a
+    one-vertex rail it is the crossing's outer end like any other, and the inner end
+    is what the sampler gets pinned: without it no rebuilt path vertex ever lands on
+    the cut, and the face spanning it is drawn as a chord across the whole fan.  Only
+    crossings reach this far -- a fan has no ladder, so the pole never enters a
+    waypoint, a rung or a rail frame.
     """
     inner_vertices, outer_vertices = region_rails(region, paths)
+    if not outer_vertices and region.get("kind") == "FAN":
+        outer_vertices = (
+            () if region.get("pole_vertex") is None else (region["pole_vertex"],)
+        )
     if not inner_vertices or not outer_vertices:
+        print_seam_crossing_skipped(
+            region,
+            "no-rail",
+            f"kind={region.get('kind')} inner={len(inner_vertices)} "
+            f"outer={len(outer_vertices)}",
+        )
         return []
-    pool = [
-        edge
-        for edge in _destroyed_region_edges(region)
-        if getattr(edge, "seam", False)
-    ]
+    deleted = _destroyed_region_edges(region)
+    pool = [edge for edge in deleted if getattr(edge, "seam", False)]
     if not pool:
+        # A cut nobody marked is invisible to this whole channel, and that is not
+        # something anyone can read out of a log that stays quiet.  The second number
+        # names the difference: seam edges this band owns but the rebuild keeps (its
+        # path edges, and any edge shared with a face outside the band) cross no band
+        # at all, so there is nothing here for a rung to stand on.
+        kept = sorted(
+            {
+                edge.index
+                for face in region["faces"]
+                if face.is_valid
+                for edge in face.edges
+                if getattr(edge, "seam", False)
+            }
+            - {edge.index for edge in deleted}
+        )
+        print_seam_crossing_skipped(
+            region,
+            "no-seam-edge",
+            f"kind={region.get('kind')} deleted={len(deleted)} "
+            f"seam-kept={_listed(kept)}",
+        )
         return []
 
     frames = region["frames"]
