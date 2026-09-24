@@ -113,8 +113,17 @@ def _show_refusal(context, error):
 
     Called from ``invoke`` before anything has started, so there is no chip row to write
     into and ``self.report`` alone would leave the user staring at an unchanged viewport.
+
+    Returns whether the sentence really landed in a viewport.  ``show_notice`` pins its draw
+    handler to ``SpaceView3D`` and bails on a ``None`` area, so a call from a layout without
+    one leaves nothing of ours on screen -- that is the only case where the caller still owes
+    Blender a report, and the reason both channels are not simply one of them.
     """
-    show_notice(_viewport_area(context), str(error))
+    area = _viewport_area(context)
+    if area is None or area.type != "VIEW_3D":
+        return False
+    show_notice(area, str(error))
+    return True
 
 
 class MESH_OT_loop_resample_interactive(bpy.types.Operator):
@@ -155,8 +164,8 @@ class MESH_OT_loop_resample_interactive(bpy.types.Operator):
             try:
                 session = sessions.begin(context)
             except ValueError as error:
-                _show_refusal(context, error)
-                self.report({"ERROR"}, str(error))
+                if not _show_refusal(context, error):
+                    self.report({"ERROR"}, str(error))
                 return {"CANCELLED"}
         self.session = session
         self.entry_counts = list(session.counts)
