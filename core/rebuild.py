@@ -31,6 +31,23 @@ def cleanup_detached_edges(bm, regions):
             bm.edges.remove(edge)
 
 
+def _shared_pole(faces):
+    """The one vertex every face shares, when they are all triangles and one exists.
+
+    A chain that stops short of the ring around a pole leaves exactly this shape behind,
+    and the only thing a user can do about it is select the whole ring -- which is not
+    something the wording about strips of faces would ever suggest.
+    """
+    if not faces or any(len(face.verts) != 3 for face in faces):
+        return None
+    shared = set(next(iter(faces)).verts)
+    for face in faces:
+        shared.intersection_update(face.verts)
+        if not shared:
+            return None
+    return shared.pop() if len(shared) == 1 else None
+
+
 def rebuild_detached_path(bm, path, samples):
     """Replace a fully detached path with one sampled directly from its source."""
     source_vertices, source_edges, is_closed = path
@@ -52,17 +69,20 @@ def rebuild_detached_path(bm, path, samples):
             + ", ".join(f"{edge}:{list(faces)}" for edge, faces in attached[:12])
             + "]"
         )
-        first_edge, first_faces = attached[0]
+        leftover = {
+            face for edge in source_edge_set for face in edge.link_faces
+        }
+        if _shared_pole(leftover) is not None:
+            raise ValueError(
+                pgettext(
+                    "The faces beside this chain all close in on one point, so it has to "
+                    "be resampled as a whole ring."
+                )
+            )
         raise ValueError(
             pgettext(
-                "{attached} of {total} rail edges still hold faces the capture left out "
-                "(edge {edge} holds face {face}): the selected path does not run between "
-                "two supported strips."
-            ).format(
-                attached=len(attached),
-                total=len(source_edge_set),
-                edge=first_edge,
-                face=first_faces[0],
+                "This chain of edges does not run between two matching strips of faces, "
+                "so there is nothing here to resample."
             )
         )
 
@@ -126,13 +146,21 @@ def _new_oriented_face(bm, face_vertices, region):
     return face
 
 
-def rebuild_triangle_fan(bm, boundary_vertices, pole_vertex, region):
-    """Rebuild a closed triangle-fan cap around its existing pole vertex."""
-    if not pole_vertex.is_valid or len(boundary_vertices) < 3:
+def rebuild_triangle_fan(bm, boundary_vertices, pole_vertex, region, closed=True):
+    """Rebuild a triangle-fan cap around its existing pole vertex.
+
+    A ring has one triangle per boundary vertex and the last one wraps onto the first.
+    An arc that stops short of the ring has one per *gap*, and its two end spokes were
+    never deleted -- they belong to the neighbours outside the selection -- so the first
+    and last new triangle just reuse them.
+    """
+    if not pole_vertex.is_valid or len(boundary_vertices) < (3 if closed else 2):
         raise ValueError(pgettext("The triangle-fan cap is no longer valid."))
 
     new_faces = []
-    for index, first in enumerate(boundary_vertices):
+    steps = len(boundary_vertices) if closed else len(boundary_vertices) - 1
+    for index in range(steps):
+        first = boundary_vertices[index]
         second = boundary_vertices[(index + 1) % len(boundary_vertices)]
         new_faces.append(
             _new_oriented_face(bm, (first, second, pole_vertex), region)

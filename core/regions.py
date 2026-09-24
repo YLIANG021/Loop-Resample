@@ -30,14 +30,59 @@ def _rail_histogram(component, path_edge_set):
     )
 
 
-def print_capture_reject(path_index, reason, component, path_edge_set, **detail):
+def print_capture_reject(
+    path_index, reason, component, path_edge_set, quiet=False, **detail
+):
     """Why one side of a rail was left out of the capture."""
+    if quiet:
+        return
     print(
         "[Loop Resample][diagnostic] capture-reject "
         f"path={path_index} reason={reason} "
         f"faces={len(component)} rails={_rail_histogram(component, path_edge_set)}"
         + "".join(f" {key}={value}" for key, value in detail.items())
     )
+
+
+def _covered_run(edges, component_edges):
+    """How many of ``edges`` to drop at each end so the rest form one contiguous run.
+
+    ``None`` means the component touches none of them, or touches two runs with a gap in
+    between.  A band that stops in the middle of its rail is not a band that ends there,
+    and cutting to the outer run would silently swallow surface the walk never reached.
+    """
+    hits = [index for index, edge in enumerate(edges) if edge in component_edges]
+    if not hits:
+        return None
+    if hits[-1] - hits[0] + 1 != len(hits):
+        return None
+    return hits[0], len(edges) - 1 - hits[-1]
+
+
+def _trim_proposal(paths, pair_indices, component_edges):
+    """Where two rails would have to stop for the one band between them to fit.
+
+    A band can stop short of a chain's end -- that is what two chains of different length
+    look like where one of them runs on.  Nothing else about such a pair is unusual: the
+    faces are a clean ladder over the span they do cover, so cutting both chains to that
+    span hands the rest of the pipeline a selection it already knows how to rebuild.  The
+    cut is made once, at session start, before any curve is fitted or any index frozen, so
+    no downstream code has to learn that the user selected one edge more.
+
+    What is given up is the tail itself: it stays exactly where the source left it, so a
+    chain that runs on past the band keeps its last segment straight instead of following
+    the resampled curve.
+    """
+    proposal = []
+    for index in pair_indices:
+        _, edges, closed = paths[index]
+        if closed:
+            return None
+        run = _covered_run(edges, component_edges)
+        if run is None:
+            return None
+        proposal.append((index, *run))
+    return proposal
 
 
 def region_rails(region, paths):
@@ -152,7 +197,7 @@ def _capture_ngon_cap(path_index, path, used_faces):
     ]
 
 
-def capture_adjacent_strips(bm, paths):
+def capture_adjacent_strips(bm, paths, quiet=False):
     """Capture a selected rail network as disjoint adjacent surface strips.
 
     All selected rails are barriers during capture.  A component that touches
@@ -160,6 +205,13 @@ def capture_adjacent_strips(bm, paths):
     selected rail is allowed to stop at the next unselected rail; that rail is
     retained as ``outer_vertices`` and can therefore be shared by two rebuilt
     strips, which is what keeps two paths from each claiming the same surface.
+
+    Returns the regions plus the rails that a band asked to be shortened --
+    ``{path_index: (head, tail)}``, counted in edges of the path as it was handed in.
+    Those regions are *not* captured here: the band is left out of this pass so the
+    caller can trim the rails and capture again against the shorter pair, which is the
+    only way the ladder's indices stay in one piece.  ``quiet`` holds the diagnostics
+    back for that first, throwaway pass.
     """
     all_path_vertices = {vertex for path in paths for vertex in path[0]}
     all_path_edges = {edge for path in paths for edge in path[1]}
@@ -170,6 +222,11 @@ def capture_adjacent_strips(bm, paths):
     }
     regions = []
     used_faces = set()
+    # Where a band asked each of its two rails to stop.  A rail two bands disagree about
+    # is dropped from the list rather than guessed at, and the step then refuses the way it
+    # always did.
+    trims = {}
+    trim_conflicts = set()
 
     # Closed n-gon caps are independent of the rail network and remain a
     # special case.
@@ -207,6 +264,7 @@ def capture_adjacent_strips(bm, paths):
                 "partial-rail",
                 component,
                 path_edge_set,
+                quiet=quiet,
                 covered=f"{len(component_edges & path_edge_set)}/{len(path_edge_set)}",
                 missing_edges=_listed(
                     edge.index for edge in path_edge_set - component_edges
@@ -216,7 +274,13 @@ def capture_adjacent_strips(bm, paths):
 
         component_vertices = {vertex for face in component for vertex in face.verts}
         non_path_vertices = component_vertices - path_vertex_set
-        if is_closed and len(non_path_vertices) == 1:
+        # A fan's second rail is a single vertex, which the boundary walk below cannot
+        # express -- it would hand back no edges and refuse the whole component for it.
+        # That holds whether the selected chain runs all the way around the pole or stops
+        # short of it, so an open arc gets read here too: its two end spokes are shared
+        # with faces outside the region, and ``cleanup_detached_edges`` leaves those alone
+        # because they are still attached.
+        if len(non_path_vertices) == 1:
             pole_vertex = next(iter(non_path_vertices))
             is_triangle_fan = (
                 len(component) == len(path_edges)
@@ -238,7 +302,7 @@ def capture_adjacent_strips(bm, paths):
                     "pole_vertex": pole_vertex,
                     "outer_vertices": None,
                     "outer_path_index": None,
-                    "closed": True,
+                    "closed": is_closed,
                     "normal_samples": [
                         (face.calc_center_median().copy(), face.normal.copy())
                         for face in component
@@ -272,6 +336,7 @@ def capture_adjacent_strips(bm, paths):
                 else "outer-unorderable",
                 component,
                 path_edge_set,
+                quiet=quiet,
                 error=str(error),
                 outer_edges=_listed(edge.index for edge in outer_edges),
                 boundary=_listed(edge.index for edge in boundary_edges - outer_edges),
@@ -283,6 +348,7 @@ def capture_adjacent_strips(bm, paths):
                 "outer-openness",
                 component,
                 path_edge_set,
+                quiet=quiet,
                 outer_closed=int(outer_closed),
                 path_closed=int(is_closed),
                 outer_vertices=_listed(vertex.index for vertex in outer_vertices),
@@ -359,13 +425,14 @@ def capture_adjacent_strips(bm, paths):
         first_path = paths[first_index]
         second_path = paths[second_index]
         if first_path[2] != second_path[2]:
-            print(
-                "[Loop Resample][diagnostic] capture-reject "
-                f"path={first_index} reason=pair-openness "
-                f"between={first_index}+{second_index} "
-                f"closed={int(first_path[2])}/{int(second_path[2])} "
-                f"faces={len(eligible)}"
-            )
+            if not quiet:
+                print(
+                    "[Loop Resample][diagnostic] capture-reject "
+                    f"path={first_index} reason=pair-openness "
+                    f"between={first_index}+{second_index} "
+                    f"closed={int(first_path[2])}/{int(second_path[2])} "
+                    f"faces={len(eligible)}"
+                )
             continue
         boundary_edges = set(first_path[1]) | set(second_path[1])
         while eligible:
@@ -380,19 +447,39 @@ def capture_adjacent_strips(bm, paths):
                 for index, rail in rails
                 if component_edges & rail != rail
             ]
+            proposal = (
+                _trim_proposal(paths, (first_index, second_index), component_edges)
+                if partial
+                else None
+            )
+            wanted = dict(
+                (index, (head, tail)) for index, head, tail in proposal or ()
+            )
             for index, rail in partial:
                 print_capture_reject(
                     index,
                     "partial-rail",
                     component,
                     rail,
+                    quiet=quiet,
                     between=f"{first_index}+{second_index}",
                     covered=f"{len(component_edges & rail)}/{len(rail)}",
                     missing_edges=_listed(
                         edge.index for edge in rail - component_edges
                     ),
+                    trim=(
+                        "-"
+                        if index not in wanted
+                        else "{}+{}".format(*wanted[index])
+                    ),
                 )
             if partial:
+                for index, trim in wanted.items():
+                    known = trims.get(index)
+                    if known is not None and known != trim:
+                        trim_conflicts.add(index)
+                        continue
+                    trims[index] = trim
                 continue
 
             first_face = next(iter(component))
@@ -426,7 +513,7 @@ def capture_adjacent_strips(bm, paths):
             for face in region["faces"]
         }
         remaining_faces = linked_faces - captured_faces
-        if remaining_faces:
+        if remaining_faces and not quiet:
             print(
                 "[Loop Resample][diagnostic] capture-incomplete "
                 f"path={path_index} selected_edges={len(path_edges)} "
@@ -452,4 +539,6 @@ def capture_adjacent_strips(bm, paths):
                     "[Loop Resample][diagnostic] capture-uncaptured "
                     f"path={path_index} ..+{len(remaining_faces) - 12} more"
                 )
-    return regions
+    for index in trim_conflicts:
+        trims.pop(index, None)
+    return regions, trims

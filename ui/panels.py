@@ -10,13 +10,10 @@ under the cursor when the right-click happens, so a second entry point across th
 bought nothing except two contexts to keep in sync.
 """
 
-from ..i18n import pgettext
 from .interactive import MESH_OT_loop_resample_interactive_entry
 
-# The menu says the same words as the operator it forwards to, and both look the sentence up
-# in the same table, so a translation cannot leave the item naming one thing and the operator
-# another.
-_ENTRY_TEXT = "Adjust Loops by Wheel"
+# The item is named after the operator it forwards to, and both names stay English in every
+# locale: the tool's own name is not something a translation should rename under the cursor.
 _ENTRY_ICON = "MOUSE_MMB_SCROLL"
 
 
@@ -35,7 +32,7 @@ def draw_edit_mesh_context_menu(self, context):
         return
     self.layout.operator(
         MESH_OT_loop_resample_interactive_entry.bl_idname,
-        text=pgettext(_ENTRY_TEXT),
+        text=MESH_OT_loop_resample_interactive_entry.bl_label,
         icon=_ENTRY_ICON,
     )
     self.layout.separator()

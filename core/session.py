@@ -45,6 +45,37 @@ _INDEX_KEYS = frozenset(
 )
 
 
+def _apply_trims(paths, trims):
+    """Cut each rail down to the span the band between two chains actually covers.
+
+    Two chains of different length leave the surface between them short of one chain's
+    end.  The capture reports how far each chain has to stop, and cutting them there turns
+    an unusable pair into an ordinary same-span one -- before any curve is fitted or any
+    count frozen, so every index downstream is built on the shortened rail and none of them
+    has to know a cut happened.  The tail that is dropped stays as plain mesh.
+    """
+    if not trims:
+        return paths
+    trimmed = []
+    for index, path in enumerate(paths):
+        trim = trims.get(index)
+        if trim is None or trim == (0, 0):
+            trimmed.append(path)
+            continue
+        vertices, edges, closed = path
+        head, tail = trim
+        if closed or len(vertices) - head - tail < 2:
+            raise ValueError(pgettext("The source no longer matches the locked selection."))
+        trimmed.append(
+            (
+                list(vertices[head : len(vertices) - tail]),
+                list(edges[head : len(edges) - tail]),
+                closed,
+            )
+        )
+    return trimmed
+
+
 def _freeze_paths(paths):
     return tuple(
         (
@@ -135,9 +166,12 @@ class ResampleSession:
     mesh as if the session had been cancelled.
     """
 
-    def __init__(self, obj, source, paths):
+    def __init__(self, obj, source, paths, trims=None):
         self.obj = obj
         self.source = source
+        # Re-derived from the selection on every step, so it has to be cut back the same way
+        # each time or the paths stop matching the ones the curves below were fitted to.
+        self.trims = dict(trims or {})
         self.source_points = tuple(
             tuple(_point(vertex) for vertex in path[0]) for path in paths
         )
@@ -172,12 +206,17 @@ class ResampleSession:
         return bm
 
     def paths(self, bm):
-        """Re-derive the locked paths on a working copy of the source mesh."""
+        """Re-derive the locked paths on a working copy of the source mesh.
+
+        Shortened back to whatever :meth:`begin` trimmed, because the selection on the
+        frozen source still holds the edges that were cut.
+        """
         selected_edges = {
             edge for edge in bm.edges if edge.select and not edge.hide
         }
         paths = selected_paths(selected_edges)
         paths, synchronized = synchronize_closed_path_phases(paths)
+        paths = _apply_trims(paths, self.trims)
         if tuple(len(path[0]) for path in paths) != self.source_counts or tuple(
             bool(path[2]) for path in paths
         ) != self.closed:
@@ -214,7 +253,7 @@ class ResampleSession:
             raise ValueError(
                 pgettext("Select one path or multiple quad-connected parallel paths.")
             )
-        regions = capture_adjacent_strips(bm, paths)
+        regions, _ = capture_adjacent_strips(bm, paths)
         path_states = capture_path_edge_attributes(paths, bm)
         path_points = capture_path_point_attributes(paths, bm)
         for index, region in enumerate(regions):
@@ -377,11 +416,36 @@ def begin(context):
     if not paths:
         raise ValueError(
             pgettext(
-                "Nothing here can be resampled.  Select a continuous chain of edges, a "
-                "closed edge loop, or a row of points that edges run through."
+                "Nothing here can be resampled.  Select a continuous chain of edges or "
+                "points."
             )
         )
-    session = ResampleSession(obj, live_bm.copy(), paths)
+    # Two chains that run alongside each other but stop at different columns are the one
+    # shape a band between them cannot be read from: the surface stops where the short
+    # chain does, and the long chain's leftover segment has nothing opposite it.  Ask the
+    # capture where each chain would have to stop, cut them there once, and every step
+    # after this sees a pair it already knows how to rebuild.  This is the only place the
+    # cut is ever decided, which is what keeps the fitted curve, the entry counts and the
+    # frozen rung indices all speaking the same shortened rail.
+    _, trims = capture_adjacent_strips(live_bm, paths, quiet=True)
+    if trims:
+        # A cut that leaves some *other* band asking for more is one that only moved the
+        # problem along, so the whole selection goes back as it was and the capture refuses
+        # it in the words it would have used without this code existing.
+        _, after = capture_adjacent_strips(
+            live_bm, _apply_trims(paths, trims), quiet=True
+        )
+        if after:
+            trims = {}
+    for index, (head, tail) in sorted(trims.items()):
+        vertices = paths[index][0]
+        print(
+            "[Loop Resample][diagnostic] rail-trim "
+            f"path={index} kept={len(vertices) - head - tail}/{len(vertices)} "
+            f"dropped_head={head} dropped_tail={tail}"
+        )
+    paths = _apply_trims(paths, trims)
+    session = ResampleSession(obj, live_bm.copy(), paths, trims)
     _release()
     _ACTIVE = session
     _ACTIVE_KEY = obj.data.as_pointer()

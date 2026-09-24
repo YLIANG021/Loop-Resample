@@ -387,7 +387,11 @@ def _resample(session, bm, counts, shape=None):
         plan = None
         if kind == "FAN":
             rebuilt_faces = rebuild_triangle_fan(
-                bm, inner_vertices, region["pole_vertex"], region
+                bm,
+                inner_vertices,
+                region["pole_vertex"],
+                region,
+                closed=region["closed"],
             )
         elif kind == "NGON_CAP":
             rebuilt_faces = rebuild_ngon_cap(bm, inner_vertices, region)

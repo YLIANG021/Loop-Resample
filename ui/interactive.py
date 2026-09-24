@@ -32,7 +32,6 @@ and a spacing is the same question -- can a strip be laid between these two rail
 """
 
 import bpy
-from mathutils import Vector
 
 from ..core import session as sessions
 from ..i18n import pgettext
@@ -114,34 +113,19 @@ def _show_refusal(context, error):
 
     Called from ``invoke`` before anything has started, so there is no chip row to write
     into and ``self.report`` alone would leave the user staring at an unchanged viewport.
-
-    The coordinates come off the raise in local space -- the selection is read from a bmesh
-    that does not know which object it was copied from -- and ``matrix_world`` is what makes
-    them a position on screen.
     """
-    matrix = context.active_object.matrix_world
-    show_notice(
-        context,
-        _viewport_area(context),
-        str(error),
-        points=tuple(matrix @ Vector(co) for co in getattr(error, "vertices", ())),
-        segments=tuple(
-            (matrix @ Vector(start), matrix @ Vector(end))
-            for start, end in getattr(error, "edges", ())
-        ),
-    )
+    show_notice(_viewport_area(context), str(error))
 
 
 class MESH_OT_loop_resample_interactive(bpy.types.Operator):
     """Scroll to set the locked paths' counts, shape and spacing, live."""
 
     bl_idname = "mesh.loop_resample_interactive"
-    bl_label = pgettext("Adjust Resample by Wheel")
+    bl_label = "Adjust Resample by Wheel"
     bl_description = pgettext(
-        "Lock what is selected, then scroll to set its segment count.  Hold Shift and "
-        "scroll to smooth the locked curve(s), or Ctrl and scroll to spread their points "
-        "more evenly -- every tick strengthens whichever effect the held key armed, and "
-        "left-click keeps it while right-click goes back to what was there before"
+        "Lock the selection, then scroll to set its segment count.  Shift scrolls smooth "
+        "the curve, Ctrl scrolls spread its points, and each tick strengthens that effect.  "
+        "Left-click keeps it, right-click reverts."
     )
     bl_options = {"REGISTER", "UNDO"}
 
@@ -509,7 +493,7 @@ class MESH_OT_loop_resample_interactive_entry(bpy.types.Operator):
     """
 
     bl_idname = "mesh.loop_resample_interactive_entry"
-    bl_label = pgettext("Adjust Loops by Wheel")
+    bl_label = "Adjust Loops by Wheel"
     # Not a thing to search for: the operator it forwards to is the one that belongs in the
     # list, and two entries worded identically would read as one of them being broken.
     bl_options = {"INTERNAL"}

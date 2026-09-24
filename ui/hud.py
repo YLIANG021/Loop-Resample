@@ -26,8 +26,10 @@ That lesson is why the second half of this file exists.  A refusal can also happ
 session starts -- the selection on screen is not one the tool can use -- and then there is no
 modal, no chip row and no operator left to report through, so the only thing the user gets is
 a header message that a single click wipes out.  So the notice lives here rather than on the
-operator: a warning chip of its own, the offending vertices and edges marked red on the mesh
-under it, and a timer that takes it away again.
+operator: a warning chip of its own and a timer that takes it away again.  Nothing is painted
+on the mesh for it, because the sentence already says "this selection will not work", and
+marking up the model to point at *which bit* asks the user to read element numbers off a
+viewport -- a job no modeler takes up.
 """
 
 import blf
@@ -76,21 +78,13 @@ _HIGHLIGHT = {
     "geometry_key": None,
 }
 
-# A refusal that came before any session existed.  Unlike the highlight, this one holds
-# coordinates rather than reading them off the mesh: the mesh was never touched, and what
-# has to be marked is the selection the tool refused.
-_NOTICE_COLOR = (1.0, 0.2, 0.2, 1.0)
-_NOTICE_WIDTH = 3.0
-_NOTICE_POINT_SIZE = 10.0
-_NOTICE_SECONDS = 8.0
+# A refusal that came before any session existed.  It is a sentence and nothing else: the
+# mesh was never touched, so there is nothing of ours to mark on it.
+_NOTICE_SECONDS = 1.5
 _NOTICE = {
     "text": "",
-    "points": (),
-    "segments": (),
     "area": None,
     "pixel_handler": None,
-    "view_handler": None,
-    "batches": None,
 }
 
 _CHIP_FONT_PIXELS = 18
@@ -804,7 +798,7 @@ def draw_highlight(operator, context):
     gpu.state.blend_set("NONE")
 
 
-def show_notice(context, area, message, points=(), segments=()):
+def show_notice(area, message):
     """Say in the viewport why an action was refused when there is no session to say it.
 
     A refusal can come before the operator has started: the selection on screen is not one
@@ -812,9 +806,10 @@ def show_notice(context, area, message, points=(), segments=()):
     to us -- no chip row, no numbers, and a header report that the next click wipes out.
     That is the exact shape of "I pressed it and nothing happened".
 
-    ``points`` and ``segments`` are world-space coordinates for the elements to blame, and
-    either can be empty, because a refusal with nothing selected has no *where* to show --
-    only a *what to select instead*.
+    The sentence is the whole of it.  Where the trouble sits used to be dotted onto the mesh
+    in red, and that was taken out: it needed a handler that survives a viewport swap, it
+    drew through the geometry, and what it pointed at was one vertex in a hundred the user
+    has no way to pick out anyway.
 
     ``area`` is the viewport to draw in rather than the caller's own, because a call deferred
     out of a menu has no area of its own to hand over -- see ``_viewport_area``.
@@ -824,18 +819,10 @@ def show_notice(context, area, message, points=(), segments=()):
     if area is None or not text:
         return
     _NOTICE["text"] = text
-    _NOTICE["points"] = tuple(Vector(point) for point in points)
-    _NOTICE["segments"] = tuple(
-        (Vector(start), Vector(end)) for start, end in segments
-    )
     _NOTICE["area"] = area
     _NOTICE["pixel_handler"] = bpy.types.SpaceView3D.draw_handler_add(
         _draw_notice, (area,), "WINDOW", "POST_PIXEL"
     )
-    if _NOTICE["points"] or _NOTICE["segments"]:
-        _NOTICE["view_handler"] = bpy.types.SpaceView3D.draw_handler_add(
-            _draw_notice_geometry, (area, context), "WINDOW", "POST_VIEW"
-        )
     bpy.app.timers.register(_notice_expired, first_interval=_NOTICE_SECONDS)
     area.tag_redraw()
 
@@ -861,11 +848,8 @@ def _clear_notice():
     if _NOTICE["pixel_handler"] is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_NOTICE["pixel_handler"], "WINDOW")
         _NOTICE["pixel_handler"] = None
-    if _NOTICE["view_handler"] is not None:
-        bpy.types.SpaceView3D.draw_handler_remove(_NOTICE["view_handler"], "WINDOW")
-        _NOTICE["view_handler"] = None
     area = _NOTICE["area"]
-    _NOTICE.update(text="", points=(), segments=(), batches=None, area=None)
+    _NOTICE.update(text="", area=None)
     if area is not None:
         try:
             area.tag_redraw()
@@ -888,60 +872,6 @@ def _draw_notice(area):
     if region is None:
         return
     _draw_warning(region, _NOTICE["text"], _CHIP_BOTTOM_MARGIN)
-
-
-def _draw_notice_geometry(area, context):
-    """Red dots and segments over the elements the refusal named.
-
-    Drawn through the mesh instead of depth tested against it: the vertex to blame is
-    usually the one buried in the shape, and a mark that hides behind a face has not told
-    anyone where to look.  Like the session highlight, these coordinates are left exactly
-    where they are -- no lift toward the eye, which drifts in an orthographic view.
-    """
-    points = _NOTICE["points"]
-    segments = _NOTICE["segments"]
-    if not points and not segments:
-        return
-    if _NOTICE["batches"] is None:
-        coordinates = []
-        for start, end in segments:
-            coordinates.extend((start, end))
-        _NOTICE["batches"] = (
-            batch_for_shader(_polyline_shader(), "LINES", {"pos": coordinates})
-            if coordinates
-            else None,
-            batch_for_shader(_point_shader(), "POINTS", {"pos": list(points)})
-            if points
-            else None,
-        )
-    lines, dots = _NOTICE["batches"]
-
-    viewport = gpu.state.viewport_get()
-    gpu.state.blend_set("ALPHA")
-    gpu.state.depth_test_set("NONE")
-
-    if lines is not None:
-        shader = _polyline_shader()
-        shader.bind()
-        shader.uniform_float("viewportSize", (viewport[2], viewport[3]))
-        shader.uniform_float("lineWidth", _NOTICE_WIDTH)
-        shader.uniform_float("color", _NOTICE_COLOR)
-        lines.draw(shader)
-    if dots is not None:
-        scale = max(0.1, context.preferences.system.ui_scale)
-        size = _NOTICE_POINT_SIZE * scale
-        shader = _point_shader()
-        gpu.state.program_point_size_set(True)
-        gpu.state.point_size_set(size)
-        shader.bind()
-        shader.uniform_float("color", _NOTICE_COLOR)
-        shader.uniform_float("size", size)
-        dots.draw(shader)
-        gpu.state.point_size_set(1.0)
-        gpu.state.program_point_size_set(False)
-
-    gpu.state.depth_test_set("NONE")
-    gpu.state.blend_set("NONE")
 
 
 def clear_box_cache():

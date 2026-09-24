@@ -5,20 +5,17 @@ and only the words around them move.
 """
 
 TRANSLATIONS = {
-    # Operator names and tooltips.
-    ("*", "Adjust Resample by Wheel"): "滚轮调整环带段数",
+    # Operator tooltips.  The two operator names are not here on purpose: they stay English
+    # in every locale.
     (
         "*",
-        "Lock what is selected, then scroll to set its segment count.  Hold Shift and "
-        "scroll to smooth the locked curve(s), or Ctrl and scroll to spread their points "
-        "more evenly -- every tick strengthens whichever effect the held key armed, and "
-        "left-click keeps it while right-click goes back to what was there before",
+        "Lock the selection, then scroll to set its segment count.  Shift scrolls smooth "
+        "the curve, Ctrl scrolls spread its points, and each tick strengthens that effect.  "
+        "Left-click keeps it, right-click reverts.",
     ): (
-        "锁定当前选择，然后滚动滚轮设置它的段数。按住 Shift 滚动可平滑锁定的曲线，"
-        "按住 Ctrl 滚动可让点分布更均匀——每滚动一格都会加强当前按键选中的效果，"
-        "左键保留结果，右键回到之前的状态"
+        "锁定当前选择，滚轮设置段数。按住 Shift 滚动可平滑曲线，"
+        "按住 Ctrl 滚动可让点分布更均匀，每滚一格加强一档。左键保留，右键还原之前的状态"
     ),
-    ("*", "Adjust Loops by Wheel"): "滚轮调整环带",
     ("*", "Enter Loop Resample"): "进入环带重采样",
     ("*", "Lock the current mesh and selection as the resample source"): "把当前网格与选择锁定为重采样源",
     ("*", "Loop Resample"): "环带重采样",
@@ -70,44 +67,41 @@ TRANSLATIONS = {
     ("*", "The strip plan did not consume the full inner boundary."): "条带方案没有用尽整条内边界。",
     ("*", "The strip plan did not consume the full outer boundary."): "条带方案没有用尽整条外边界。",
     ("*", "The strip plan contains a degenerate face."): "条带方案中包含退化面。",
-    ("*", "Select one continuous edge chain or edge loop."): "请选择一条连续的边链或边环。",
+    ("*", "Select a continuous chain of edges or points."): "请选择一条连续的边或者点。",
     (
         "*",
-        "The selection branches at point {where}: a path can only run through points "
-        "that join one or two selected edges.",
-    ): (
-        "选中的边在 {where} 号点处分叉了：路径只能穿过只连着一条或两条选中边的点。"
-    ),
+        "The selected edges cross each other.  Keep only one direction of them.",
+    ): "选中的边有交叉，请只选一个方向。",
     (
         "*",
-        "The selected edges form neither one open chain nor one closed loop.",
-    ): "选中的边既不构成一条开放链，也不构成一个闭合环。",
+        "The selected edges are not joined, so they cannot form one continuous chain.",
+    ): "选择的边未相连，无法构成连续边。",
     (
         "*",
-        "{count} of the selected edges are not joined to this chain, so the selection "
-        "is broken in between.",
-    ): "有 {count} 条选中的边没有连到这条链上，中间断开了。",
+        "The selected edges are not continuous; there is a gap in between.",
+    ): "选中的边不连续，中间存在断点。",
     (
         "*",
-        "The selected edges do not run end to end as one open chain.",
-    ): "选中的边没有首尾连成一条开放链。",
+        "The selected edges close back into a ring.  Break the loop and try again.",
+    ): "选中边已连成圈，请取消闭环。",
     ("*", "No valid ordered strip path was found."): "未找到有效的有序条带路径。",
     ("*", "The ordered strip contains intersecting edges."): "有序条带中包含相交的边。",
     ("*", "The inner curve has too few points."): "内侧曲线点数过少。",
     ("*", "The outer curve has too few points."): "外侧曲线点数过少。",
     (
         "*",
-        "{attached} of {total} rail edges still hold faces the capture left out "
-        "(edge {edge} holds face {face}): the selected path does not run between two "
-        "supported strips.",
-    ): (
-        "{attached} 条（共 {total} 条）轨道边仍留有捕获未覆盖的面"
-        "（边 {edge} 上有面 {face}）：所选路径没有走在两条有支撑的条带之间。"
-    ),
+        "The faces beside this chain all close in on one point, so it has to be "
+        "resampled as a whole ring.",
+    ): "这条边旁边的面全部收拢到同一个点上，所以要选整圈才能重采样。",
+    (
+        "*",
+        "This chain of edges does not run between two matching strips of faces, so "
+        "there is nothing here to resample.",
+    ): "边的位置不正确，缺少可重采样的面。",
     (
         "*",
         "The selected path contains a branch that cannot be resampled safely.",
-    ): "所选路径包含无法安全重采样的分叉。",
+    ): "所选路径包含无法重采样的分叉。",
     ("*", "The target path would duplicate an existing edge."): "目标路径会重复已有的边。",
     ("*", "The triangle-fan cap is no longer valid."): "三角扇盖已失效。",
     ("*", "An n-gon cap needs at least three boundary vertices."): "n 边形盖至少需要三个边界顶点。",
@@ -121,10 +115,6 @@ TRANSLATIONS = {
     ): "请选择一条路径，或多条以四边形相连的并行路径。",
     (
         "*",
-        "Nothing here can be resampled.  Select a continuous chain of edges, a closed "
-        "edge loop, or a row of points that edges run through.",
-    ): (
-        "这里没有可以重采样的东西。请选一条连续的边、一圈闭合的边，"
-        "或者一排有边穿过的点。"
-    ),
+        "Nothing here can be resampled.  Select a continuous chain of edges or points.",
+    ): "这里没有可重采样的东西。请选一条连续的边或者点。",
 }

@@ -6,15 +6,13 @@ here, and a locale that has not caught up simply answers with the English.
 """
 
 MESSAGES = [
-    # Operator names and tooltips.
-    "Adjust Resample by Wheel",
+    # Operator tooltips.  The two operator names are deliberately absent: they stay English
+    # in every locale, so there is nothing here for a locale to answer.
     (
-        "Lock what is selected, then scroll to set its segment count.  Hold Shift and "
-        "scroll to smooth the locked curve(s), or Ctrl and scroll to spread their points "
-        "more evenly -- every tick strengthens whichever effect the held key armed, and "
-        "left-click keeps it while right-click goes back to what was there before"
+        "Lock the selection, then scroll to set its segment count.  Shift scrolls smooth "
+        "the curve, Ctrl scrolls spread its points, and each tick strengthens that effect.  "
+        "Left-click keeps it, right-click reverts."
     ),
-    "Adjust Loops by Wheel",
     "Enter Loop Resample",
     "Lock the current mesh and selection as the resample source",
     "Loop Resample",
@@ -56,25 +54,22 @@ MESSAGES = [
     "The strip plan did not consume the full inner boundary.",
     "The strip plan did not consume the full outer boundary.",
     "The strip plan contains a degenerate face.",
-    "Select one continuous edge chain or edge loop.",
-    (
-        "The selection branches at point {where}: a path can only run through points "
-        "that join one or two selected edges."
-    ),
-    "The selected edges form neither one open chain nor one closed loop.",
-    (
-        "{count} of the selected edges are not joined to this chain, so the selection "
-        "is broken in between."
-    ),
-    "The selected edges do not run end to end as one open chain.",
+    "Select a continuous chain of edges or points.",
+    "The selected edges cross each other.  Keep only one direction of them.",
+    "The selected edges are not joined, so they cannot form one continuous chain.",
+    "The selected edges are not continuous; there is a gap in between.",
+    "The selected edges close back into a ring.  Break the loop and try again.",
     "No valid ordered strip path was found.",
     "The ordered strip contains intersecting edges.",
     "The inner curve has too few points.",
     "The outer curve has too few points.",
     (
-        "{attached} of {total} rail edges still hold faces the capture left out "
-        "(edge {edge} holds face {face}): the selected path does not run between two "
-        "supported strips."
+        "The faces beside this chain all close in on one point, so it has to be "
+        "resampled as a whole ring."
+    ),
+    (
+        "This chain of edges does not run between two matching strips of faces, so "
+        "there is nothing here to resample."
     ),
     "The selected path contains a branch that cannot be resampled safely.",
     "The target path would duplicate an existing edge.",
@@ -86,8 +81,7 @@ MESSAGES = [
     "The source no longer matches the locked selection.",
     "Select one path or multiple quad-connected parallel paths.",
     (
-        "Nothing here can be resampled.  Select a continuous chain of edges, a closed "
-        "edge loop, or a row of points that edges run through."
+        "Nothing here can be resampled.  Select a continuous chain of edges or points."
     ),
 ]
 
