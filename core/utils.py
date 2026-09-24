@@ -9,7 +9,7 @@ def _point_view(vertex):
     """The same coordinates ``_point`` returns, minus the copy.
 
     For readers only: the result may alias the vertex's own data, so never
-    write through it.  ``face_quality_cost`` only ever subtracts and crosses,
-    which mathutils answers with a new Vector.
+    write through it.  Everything ``geometry`` does with one -- subtract, cross,
+    read a component -- is answered by mathutils with a new Vector or a float.
     """
     return vertex.co if hasattr(vertex, "co") else vertex

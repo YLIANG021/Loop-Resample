@@ -7,7 +7,11 @@ from mathutils.geometry import tessellate_polygon
 
 from ..i18n import pgettext
 from .diagnostics import accumulate_scan
-from .geometry import _plan_rungs, reference_normal as _reference_normal
+from .geometry import (
+    _plan_rungs,
+    cached_reference_normals,
+    reference_normal as _reference_normal,
+)
 from .planner import build_ordered_strip_plan
 from .utils import _point
 
@@ -211,7 +215,10 @@ def apply_ordered_strip_plan(bm, plan, region):
     """Create the faces from a previously validated strip plan."""
     new_faces = []
     sample_count = len(region.get("normal_samples", ()))
-    for face_vertices in plan.faces:
+    # Validation already found each face's source normal; asking again would repeat a
+    # search over every source face in the region for a list that has not moved since.
+    references = cached_reference_normals(plan, region)
+    for face_index, face_vertices in enumerate(plan.faces):
         started = time.perf_counter()
         face = bm.faces.new(face_vertices)
         face.material_index = region["material_index"]
@@ -219,7 +226,11 @@ def apply_ordered_strip_plan(bm, plan, region):
         face.normal_update()
         accumulate_scan("bmesh-new-face", time.perf_counter() - started, 1)
         started = time.perf_counter()
-        reference_normal = _reference_normal(face_vertices, region)
+        reference_normal = (
+            references[face_index]
+            if references is not None
+            else _reference_normal(face_vertices, region)
+        )
         accumulate_scan("reference-normal", time.perf_counter() - started, sample_count)
         if (
             reference_normal is not None

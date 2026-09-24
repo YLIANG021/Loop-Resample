@@ -17,6 +17,9 @@ MIN_AREA_RATIO = 1e-8
 NORMAL_ALIGNMENT_WARNING = 0.05
 NORMAL_MISMATCH_WEIGHT = 25.0
 
+# Where a validated plan's per-face source normals wait for the rebuild that applies it.
+_REFERENCE_NORMALS = "reference_normals"
+
 
 def _boxes_overlap(first_start, first_end, second_start, second_end, epsilon):
     """Axis-aligned bounding box overlap for two segments.
@@ -214,7 +217,12 @@ def _diagnose_intersecting_edges(
 
 
 def validate_ordered_strip_plan(plan, inner_vertices, outer_vertices, region):
-    """Reject only degenerate or structurally incomplete strip plans."""
+    """Reject only degenerate or structurally incomplete strip plans.
+
+    Each face is scored once, and the source normal that score was measured against is
+    kept: turning the face the right way round a moment later asks for exactly the same
+    normal, so it is handed over through the region instead of being searched for again.
+    """
     is_closed = region["closed"]
     inner_steps = len(inner_vertices) if is_closed else len(inner_vertices) - 1
     outer_steps = len(outer_vertices) if is_closed else len(outer_vertices) - 1
@@ -224,13 +232,18 @@ def validate_ordered_strip_plan(plan, inner_vertices, outer_vertices, region):
         raise ValueError(pgettext("The strip plan did not consume the full inner boundary."))
     if sum(kind in {"QUAD", "OUTER_TRI"} for kind in plan.transitions) != outer_steps:
         raise ValueError(pgettext("The strip plan did not consume the full outer boundary."))
+    references = []
     for face_index, face_vertices in enumerate(plan.faces):
-        if face_quality_cost(face_vertices, region) is None:
+        cost, reference, signed = _score_face(face_vertices, region)
+        if cost is None:
             print_degenerate_face("degenerate-final-face", face_index, face_vertices)
             raise ValueError(pgettext("The strip plan contains a degenerate face."))
-        alignment = face_normal_alignment(face_vertices, region)
-        if alignment is not None and alignment <= NORMAL_ALIGNMENT_WARNING:
-            print_normal_mismatch(face_index, face_vertices, alignment)
+        references.append(reference)
+        if signed is not None:
+            alignment = abs(signed)
+            if alignment <= NORMAL_ALIGNMENT_WARNING:
+                print_normal_mismatch(face_index, face_vertices, alignment)
+    region[_REFERENCE_NORMALS] = (plan, tuple(references))
 
 
 def diagnose_ordered_strip_geometry(plan, inner_vertices, outer_vertices, region):
@@ -262,16 +275,95 @@ def diagnose_ordered_strip_geometry(plan, inner_vertices, outer_vertices, region
     )
 
 
-def reference_normal(face_vertices, region):
-    samples = region.get("normal_samples", ())
-    if not samples:
-        return None
-    coordinates = [_point(vertex) for vertex in face_vertices]
-    center = coordinates[0].copy()
+def _sample_table(region):
+    """The region's source-face centres as plain doubles, unpacked once per step.
+
+    ``normal_samples`` pairs a centre Vector with a normal Vector, and the search below
+    walks every one of them once per rebuilt face.  At that rate the cost is not the
+    comparison but the wrapping: a component read and a difference Vector allocated per
+    pair.  Centres are therefore lifted into floats and the normals kept beside them.
+    The table hangs off the region, which is rebuilt every step, so it can never outlive
+    the mesh it was read from.
+    """
+    table = region.get("sample_table")
+    if table is None:
+        table = tuple(
+            (centre.x, centre.y, centre.z, normal)
+            for centre, normal in region.get("normal_samples", ())
+        )
+        region["sample_table"] = table
+    return table
+
+
+def _nearest_sample_normal(centre, table):
+    """The normal whose sample centre sits nearest ``centre``, or None when there are none.
+
+    ``min(samples, key=...)`` written out longhand.  It has to be the same arithmetic to
+    the last bit -- three subtractions and a left-to-right sum of three squares in double,
+    and a strict ``<`` so an exact tie is still won by the earliest sample, which is what
+    ``min`` does.  ``inf`` seeds the search because every finite distance beats it, so the
+    first sample is the first winner.
+    """
+    centre_x, centre_y, centre_z = centre
+    best = None
+    best_distance = float("inf")
+    for sample_x, sample_y, sample_z, normal in table:
+        offset_x = sample_x - centre_x
+        offset_y = sample_y - centre_y
+        offset_z = sample_z - centre_z
+        distance = offset_x * offset_x + offset_y * offset_y + offset_z * offset_z
+        if distance < best_distance:
+            best_distance = distance
+            best = normal
+    return best
+
+
+def _face_centre(coordinates):
+    """A face's corner mean as three doubles.
+
+    The Vector accumulation it replaces -- copy the first corner, add the rest, divide by
+    the count -- componentwise in double, in the same order.
+    """
+    first = coordinates[0]
+    centre_x = first.x
+    centre_y = first.y
+    centre_z = first.z
     for coordinate in coordinates[1:]:
-        center += coordinate
-    center /= len(coordinates)
-    return min(samples, key=lambda sample: (sample[0] - center).length_squared)[1]
+        centre_x += coordinate.x
+        centre_y += coordinate.y
+        centre_z += coordinate.z
+    count = len(coordinates)
+    return centre_x / count, centre_y / count, centre_z / count
+
+
+def _reference_normal_from(coordinates, region):
+    """``reference_normal`` for a caller that already built the corner list."""
+    table = _sample_table(region)
+    if not table:
+        return None
+    return _nearest_sample_normal(_face_centre(coordinates), table)
+
+
+def reference_normal(face_vertices, region):
+    """The source normal nearest a rebuilt face, or None when the region carries none."""
+    return _reference_normal_from(
+        [_point_view(vertex) for vertex in face_vertices], region
+    )
+
+
+def cached_reference_normals(plan, region):
+    """The normals a validated plan's faces were scored against, or None.
+
+    Validation picks one source normal per face and the rebuild that applies the plan asks
+    for the same list a moment later, with nothing between the two that could move a
+    vertex.  The entry holds the plan itself and is answered by identity, so a plan that
+    was never validated -- or one that arrived after a refused replay -- simply misses and
+    searches again rather than reading somebody else's normals.
+    """
+    cached = region.get(_REFERENCE_NORMALS)
+    if cached is not None and cached[0] is plan:
+        return cached[1]
+    return None
 
 
 def _face_area_and_normal(coordinates):
@@ -290,28 +382,23 @@ def _face_area_and_normal(coordinates):
     return area, normal_vector
 
 
-def face_normal_alignment(face_vertices, region):
-    signed_alignment = _signed_face_normal_alignment(face_vertices, region)
-    return abs(signed_alignment) if signed_alignment is not None else None
-
-
-def _signed_face_normal_alignment(face_vertices, region):
-    reference = reference_normal(face_vertices, region)
+def _signed_alignment(normal_vector, reference):
+    """How far a face's own normal swings from the source normal it was matched to."""
     if reference is None or reference.length <= MIN_EDGE_LENGTH:
         return None
-    coordinates = [_point(vertex) for vertex in face_vertices]
-    _, normal_vector = _face_area_and_normal(coordinates)
     if normal_vector.length <= MIN_EDGE_LENGTH:
         return None
     return normal_vector.normalized().dot(reference.normalized())
 
 
-def face_quality_cost(face_vertices, region):
-    """Score one candidate face, or None when it is degenerate.
+def _score_face(face_vertices, region):
+    """One candidate face as ``(cost, source normal, signed alignment)``.
 
-    ``region=None`` drops the normal-alignment term.  The transition search has
-    no reference surface to match against, and passing an empty sample tuple
-    only reached the same ``None`` through a dict build and three calls.
+    The last two are the by-products the validation and the rebuild both want, and they
+    come out of the same corner list and the same face normal the cost is built from --
+    which is the only reason the search for a source normal happens once per face instead
+    of three times.  All three are None for a degenerate face, and the last two are None
+    whenever the region carries no samples to match against.
     """
     coordinates = [_point_view(vertex) for vertex in face_vertices]
     point_count = len(coordinates)
@@ -321,14 +408,14 @@ def face_quality_cost(face_vertices, region):
             if (
                 coordinate - coordinates[previous_index]
             ).length_squared <= MIN_POINT_DISTANCE_SQUARED:
-                return None
+                return None, None, None
     edge_lengths = [
         (coordinates[(index + 1) % point_count] - coordinates[index]).length
         for index in range(point_count)
     ]
     minimum_edge = min(edge_lengths)
     if minimum_edge <= MIN_EDGE_LENGTH:
-        return None
+        return None, None, None
 
     area, normal_vector = _face_area_and_normal(coordinates)
     local_scale = sum(edge_lengths) / len(edge_lengths)
@@ -336,13 +423,31 @@ def face_quality_cost(face_vertices, region):
         area <= local_scale * local_scale * MIN_AREA_RATIO
         or normal_vector.length <= MIN_EDGE_LENGTH
     ):
-        return None
+        return None, None, None
 
     aspect = max(edge_lengths) / minimum_edge
     compactness = local_scale * local_scale / area
-    normal_cost = 0.0
-    if region is not None:
-        alignment = face_normal_alignment(face_vertices, region)
-        if alignment is not None:
-            normal_cost = NORMAL_MISMATCH_WEIGHT * (1.0 - alignment) ** 2
-    return 0.7 * (aspect - 1.0) ** 2 + 0.15 * compactness + normal_cost
+    shape_cost = 0.7 * (aspect - 1.0) ** 2 + 0.15 * compactness
+    if region is None:
+        return shape_cost, None, None
+
+    reference = _reference_normal_from(coordinates, region)
+    signed = _signed_alignment(normal_vector, reference)
+    if signed is None:
+        return shape_cost, reference, None
+    alignment = abs(signed)
+    return (
+        shape_cost + NORMAL_MISMATCH_WEIGHT * (1.0 - alignment) ** 2,
+        reference,
+        signed,
+    )
+
+
+def face_quality_cost(face_vertices, region):
+    """Score one candidate face, or None when it is degenerate.
+
+    ``region=None`` drops the normal-alignment term.  The transition search has
+    no reference surface to match against, and passing an empty sample tuple
+    only reached the same ``None`` through a dict build and three calls.
+    """
+    return _score_face(face_vertices, region)[0]
