@@ -57,6 +57,14 @@ REFLEX_PENALTY_WEIGHT = 40.0
 # in corners; lower it if the straight reaches fill up and the leftovers crowd
 # somewhere worse.
 REFLEX_BEND_WEIGHT = 2.5
+# What one face over the source band's count costs.  The count used to be a hard
+# pin: the sweep was forced to buy every wide face the budget named, however ugly
+# the kite -- so a 9-on-19 band pinned at 15 faces grew four long diagonal kites
+# where its geometry wanted clean short spokes.  Now the count is a bid: a final
+# short of the budget pays this per missing wide face, and the geometry decides
+# whether the wide is worth its kite.  Raise it if rebuilt bands drift off the
+# source's count too easily; lower it if kites still win where they should not.
+FACE_COUNT_SOFT_WEIGHT = 2.0
 # What burning one surplus step more (or fewer) than the band's own pattern had burned by
 # this column costs, squared -- so a strip that dumped eight spokes on its first column when
 # the source stacked four on its fourth pays at every column after it: 0.15 a step, a run of
@@ -1822,9 +1830,11 @@ def _sweep_ladder(
 
     ``wide_pruning`` drops every state whose remaining dense-rail columns can no longer
     fund the wide faces the budget still asks for -- two columns apiece -- because such
-    a state is dead however cheap it was to reach.  The caller enables it only when the
-    budget is arithmetically reachable and repeats the sweep without it when the run
-    comes home short, so the answer matches an unpruned search in both cases.
+    a state is dead however cheap it was to reach.  The planner no longer enables it:
+    the soft face-count bid (:data:`FACE_COUNT_SOFT_WEIGHT`) prices finals short of the
+    budget instead of discarding them, which is exactly the set pruning would have
+    thrown away.  The parameter stays for the out-of-Blender sweep tests, which assert
+    a pruned and an unpruned run still land on the same state.
     """
     triangle_count = abs(inner_steps - outer_steps)
     # What is left of the rectangle once the round structure is fixed.  Only the steps
@@ -2060,72 +2070,49 @@ def _build_transitions(
         inner_steps,
         outer_steps,
     )
-    dense_steps = max(inner_steps, outer_steps)
-    sparse_steps = min(inner_steps, outer_steps)
-    # A wide face spends two columns of the denser rail and none of the sparser one, so
-    # the most a strip can ever spend is half the rails' length difference.  A budget
-    # inside that reach is pinned hard and the search prunes its dead states toward it;
-    # a budget past it cannot be met however the steps are ordered, so the sweep runs
-    # unpruned and the pin below settles for the closest shortfall rather than throwing
-    # the runner-up finals away with the dead states.
-    wide_pruning = (
-        budget > 0
-        and not waypoints
-        and budget <= (dense_steps - sparse_steps) // 2
-    )
     for level_reject in ((reflex_reject, False) if reflex_reject else (False,)):
-        for pruning in ((True, False) if wide_pruning else (False,)):
-            states, parents, expanded = _sweep_ladder(
-                inner,
-                outer,
-                inner_boundary,
-                outer_boundary,
-                is_closed,
-                boundary_geometry,
-                waypoints,
-                allowed,
-                budget,
-                inner_steps,
-                outer_steps,
-                pruning,
-                level_reject,
-            )
-            accumulate_scan("plan-expand", 0.0, expanded)
-            if not states:
-                if pruning:
-                    continue
-                break
-            wide_final = 0
-            if budget:
-                # The band's face count is a hard target, not a preference: the source
-                # reported how many of its dense rail's columns go unjoined, and a ladder
-                # ending on any other wide count builds a band of a different size.  The
-                # pin therefore stands on the budget alone -- the pairing profile prices
-                # *where* the wide faces sit and can be absent altogether (a phase-locked
-                # region records no nodes); it was never a say in *how many*.  No reachable
-                # final can pass the budget, since the prefix cap forbids it, so when the
-                # exact count survives no final -- seam waypoints can pen the surplus into
-                # columns no wide face may span -- the closest shortfall is taken, and the
-                # ladder line prints it as wide=got/budget instead of letting the count
-                # drift in silence.
-                wide_final = max(key[3] for key in states)
-                final_keys = [key for key in states if key[3] == wide_final]
-            else:
-                final_keys = list(states)
-            candidates = [
-                (states[key], _replay_transitions(key, parents))
-                for key in final_keys
-            ]
-            if not pruning or wide_final >= budget:
-                break
-            # A pruned sweep that still comes home short of the budget met geometry its
-            # arithmetic could not see; repeat it unpruned so the shortfall the pin
-            # reports is the one an unpruned search would have found.
+        states, parents, expanded = _sweep_ladder(
+            inner,
+            outer,
+            inner_boundary,
+            outer_boundary,
+            is_closed,
+            boundary_geometry,
+            waypoints,
+            allowed,
+            budget,
+            inner_steps,
+            outer_steps,
+            False,
+            level_reject,
+        )
+        accumulate_scan("plan-expand", 0.0, expanded)
         if states:
             break
     else:
         raise ValueError(pgettext("No valid ordered strip path was found."))
+    # The band's face count is a bid, not a decree: the source reported how many of
+    # its dense rail's columns go unjoined, and a ladder honouring exactly that count
+    # buys a wide face for each -- but a wide face is only worth buying where it sits
+    # clean.  Every final, whatever wide count it reached, is therefore priced with
+    # FACE_COUNT_SOFT_WEIGHT per face it would add over the source band's count, so a
+    # band whose budget only buys ugly kites drifts up to the face count its geometry
+    # actually wants (the ladder line then prints wide=got/budget short), while a band
+    # whose wides sit clean keeps the source's count for free.  The prefix cap above
+    # still forbids *exceeding* the budget -- fewer faces than the source drew is the
+    # direction kites come from, and that trade is never for sale.
+    candidates = [
+        (
+            states[key] + FACE_COUNT_SOFT_WEIGHT * max(0, budget - key[3]),
+            _replay_transitions(key, parents),
+        )
+        for key in states
+    ]
     best = min(candidates, key=lambda state: state[0])
+    wide_final = sum(
+        _face_count_credit(kind, inner_steps, outer_steps)
+        for kind in best[1]
+    )
     if DIAGNOSE_LADDER and region is not None:
         print_ladder_dp(
             region,
