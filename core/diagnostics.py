@@ -175,6 +175,15 @@ def print_seam_crossing_skipped(region, reason, detail):
     )
 
 
+def print_reflex_fallback(region, detail):
+    """Report a strip that shipped a re-entrant wide face because nothing else fit."""
+    print(
+        "[Loop Resample][diagnostic] reflex-fallback "
+        f"region={region.get('region_index')} path={region.get('path_index')} "
+        f"{detail}"
+    )
+
+
 # --- temporary ladder diagnostic ----------------------------------------------
 # Added to find which step moved a strip's connectivity while only a shape axis was
 # being scrolled.  ``ladder``'s ``gap`` is the margin the search won by, so it says
