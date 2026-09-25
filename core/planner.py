@@ -27,7 +27,7 @@ from .geometry import (
     validate_ordered_strip_plan,
 )
 from .types import StripPlan
-from .utils import _point
+from .utils import _point, _point_view
 
 RUNG_CONTINUITY_VECTOR_WEIGHT = 0.75
 TRIANGLE_DISTRIBUTION_WEIGHT = 0.9
@@ -166,15 +166,134 @@ def _rotate_nearest(vertices, point):
     return vertices[start:] + vertices[:start], start
 
 
+def _rail_fractions(points, is_closed):
+    """Every vertex's place along its own rail, as a fraction of that rail's length.
+
+    An index says how many vertices into a rail something sits, which stops meaning
+    anything as soon as the rail is resampled; a fraction says how far around it sits,
+    and a resampled rail is the same curve, so the two agree where an index cannot.
+    """
+    count = len(points)
+    spans = count if is_closed else count - 1
+    if spans < 1:
+        return ()
+    cumulative = [0.0]
+    for index in range(spans):
+        following = points[index + 1] if index + 1 < count else points[0]
+        length = (following - points[index]).length
+        if length <= 1e-12:
+            return ()
+        cumulative.append(cumulative[-1] + length)
+    total = cumulative[-1]
+    return tuple(value / total for value in cumulative[:count])
+
+
+def _rail_columns(source_fractions, rail_fractions):
+    """Which vertex of the rail being built stands where each source vertex stood.
+
+    Both lists ascend from their rail's own first vertex, so one forward walk answers
+    every source vertex at once.
+    """
+    columns = []
+    position = 0
+    last = len(rail_fractions) - 1
+    for fraction in source_fractions:
+        while (
+            position < last
+            and abs(rail_fractions[position + 1] - fraction)
+            <= abs(rail_fractions[position] - fraction)
+        ):
+            position += 1
+        columns.append(position)
+    return columns
+
+
+def _rungs_on_rail(region, outer_vertices, is_closed):
+    """The captured pairing counted the way the rail being built numbers itself.
+
+    ``source_rungs`` was read off the band as the user drew it, so its outer numbers name
+    the *source* rail's vertices, while the rail handed to the aligner has already been
+    resampled to the count asked for now.  Folding a source number into a shorter rail
+    does not name nothing, it names the wrong vertex: the rung one short of a 32-gon's
+    start is the rung one short of this rail's start, and taken as an index it lands a
+    third of the way around instead.  A rail is moved across by how far around it each
+    rung sits, which is why the two rails' lengths are measured here.
+    """
+    rungs = (region or {}).get("source_rungs") or ()
+    points = ((region or {}).get("frames") or {}).get("outer", {}).get("points") or ()
+    if not rungs or len(outer_vertices) < 2:
+        return rungs
+    source_fractions = _rail_fractions(points, is_closed)
+    rail_fractions = _rail_fractions(
+        [_point_view(vertex) for vertex in outer_vertices], is_closed
+    )
+    if not source_fractions or not rail_fractions:
+        return rungs
+    columns = _rail_columns(source_fractions, rail_fractions)
+    return tuple((inner, columns[outer]) for inner, outer in rungs)
+
+
+def _continued(place, anchor, span):
+    """The copy of ``place`` that carries on from where the walk stood last column.
+
+    A closed band's ladder goes once around the ring, so its outer index runs past the
+    rail's own last vertex and picks up at the first again.  Folding that advance back
+    into ``0..span-1`` reads as a step backwards, and steps backwards are exactly what
+    the ranking counts, so a rung is compared with the rung before it instead.
+    """
+    return place + ((anchor - place + span // 2) // span) * span
+
+
+def _column_arc(places, span, is_closed):
+    """One column's rungs as the short arc they sit on: where it starts, the rest's offsets.
+
+    Two rungs leave one vertex and land next to each other on the other rail, so they
+    belong a step apart -- except where the rail's own cut falls between them, which makes
+    the pair read as the long way around instead.  Taken that way the column looks as
+    though it spans the ring, and nothing advances across a whole ring, so the ranking
+    refuses a pairing the source band uses happily and buys the advance back by rotating
+    the rail off the vertex it starts at -- which is a whole row of faces sheared by one
+    column.  An open rail has no cut for anything to fall between, so its places stand
+    exactly as counted.
+    """
+    ordered = sorted(places)
+    if len(ordered) < 2 or not is_closed:
+        return ordered[0], tuple(place - ordered[0] for place in ordered)
+    gaps = [
+        (ordered[index + 1] - ordered[index], index)
+        for index in range(len(ordered) - 1)
+    ]
+    gaps.append((ordered[0] + span - ordered[-1], len(ordered) - 1))
+    _, widest = max(gaps)
+    arc = [
+        ordered[(widest + 1 + offset) % len(ordered)]
+        for offset in range(len(ordered))
+    ]
+    offsets = [0]
+    for index in range(len(arc) - 1):
+        offsets.append(offsets[-1] + (arc[index + 1] - arc[index]) % span)
+    return arc[0], tuple(offsets)
+
+
 def _rung_ranking(rungs, outer_count, is_closed):
     """Every ``(orientation, rotate)`` ranked by how many source rungs it contradicts.
 
     Under a decision the outer rail is walked as ``j -> (walked(j) - rotate) % M``, with
     ``walked`` the identity for a forward walk and the mirror for a reversed one, and a
-    ladder that only ever advances can realize a rung ``(i, j)`` only where that column
-    runs non-decreasing with ``i``.  Counting the columns where it drops is therefore a
-    structural verdict on the decision rather than a distance opinion, and the first
-    column's offset says whether the cut it opens is one the source band itself uses.
+    ladder that only ever advances realizes those rungs only as a sequence that never
+    steps back.  Counting the columns where it does is a structural verdict on the
+    decision rather than a distance opinion, and it is kept on an unwrapped ring: both the
+    rail's own cut and each column's own spread are read as arcs, so what the count can see
+    is a band turning around, not where the rail happens to start.
+
+    The count cannot see a shift that moves every rung along the ring by the same amount,
+    because such a shift leaves the sequence just as monotone, and that shift is the
+    pairing's phase.  ``head`` asks how far the first rung sits from the cut, which finds a
+    phase the source band really uses; ``shift`` then prefers the rail that stays where it
+    was numbered, so a band whose diagonals merely lean the other way is not answered by
+    sliding a whole row off the vertex above it.  What still ties after both is left to
+    :func:`_pairing_cost`, which is the measure that asks the two rails to stand opposite
+    each other.
     """
     if not rungs or outer_count < 2:
         return []
@@ -184,29 +303,54 @@ def _rung_ranking(rungs, outer_count, is_closed):
     columns = sorted(grouped)
     ranking = []
     for orientation in (0, 1):
+        arcs = [
+            _column_arc(
+                [
+                    outer_index
+                    if orientation == 0
+                    else outer_count - 1 - outer_index
+                    for outer_index in grouped[inner_index]
+                ],
+                outer_count,
+                is_closed,
+            )
+            for inner_index in columns
+        ]
         rotations = range(outer_count) if is_closed else (0,)
         for rotate in rotations:
             highest = -1
             conflicts = 0
             head = 0
-            for position, inner_index in enumerate(columns):
-                places = [
-                    (
-                        outer_index
-                        if orientation == 0
-                        else outer_count - 1 - outer_index
-                    )
-                    - (rotate if is_closed else 0)
-                    for outer_index in grouped[inner_index]
-                ]
-                if is_closed:
-                    places = [place % outer_count for place in places]
-                if min(places) < highest:
+            anchor = None
+            for position, (base, offsets) in enumerate(arcs):
+                start = (base - rotate) % outer_count if is_closed else base
+                if anchor is not None:
+                    start = _continued(start, anchor, outer_count)
+                places = [start + offset for offset in offsets]
+                lowest = min(places)
+                if anchor is not None and lowest < highest:
                     conflicts += 1
                 highest = max(highest, max(places))
                 if not position:
-                    head = min(places)
-            ranking.append(((conflicts, head), (orientation, rotate)))
+                    head = (
+                        min(
+                            min(place % outer_count, outer_count - place % outer_count)
+                            for place in places
+                        )
+                        if is_closed
+                        else lowest
+                    )
+                anchor = lowest
+            ranking.append(
+                (
+                    (
+                        conflicts,
+                        head,
+                        min(rotate, outer_count - rotate) if is_closed else 0,
+                    ),
+                    (orientation, rotate),
+                )
+            )
     return ranking
 
 
@@ -251,13 +395,13 @@ def align_outer_boundary(inner_vertices, outer_vertices, is_closed, region=None)
     originally asked to cover.
     """
     outer = list(outer_vertices)
-    rungs = (region or {}).get("source_rungs") or ()
+    rungs = _rungs_on_rail(region, outer, is_closed)
     decided = _rung_decision(inner_vertices, outer, rungs, is_closed)
     if decided is not None:
         decision, rank, tied = decided
         if DIAGNOSE_LADDER and region is not None:
             print_outer_rungs(
-                region, rungs, rank[0], rank[1], tied, decision, is_closed
+                region, rungs, rank, tied, decision, is_closed
             )
         return apply_outer_decision(outer, decision, is_closed), decision
     inner_start = _point(inner_vertices[0])

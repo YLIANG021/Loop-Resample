@@ -132,7 +132,9 @@ def region_source_rungs(region, paths):
     The band the user drew answers it exactly.  An edge of a region face with one end on
     each rail *is* a rung of the source pairing, so the set of them is a description of
     the pairing rather than an opinion about it.  Indices are used because they are what
-    survives the session's frozen capture.
+    survives the session's frozen capture -- they name the source rail's own vertices, and
+    a step hands the aligner a rail already resampled to another count, which is
+    :func:`.planner._rungs_on_rail`'s job to reconcile.
     """
     inner_vertices, outer_vertices = region_rails(region, paths)
     if not inner_vertices or not outer_vertices:

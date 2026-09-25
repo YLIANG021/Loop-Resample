@@ -190,13 +190,17 @@ def _ladder_sequence(transitions):
     return "".join(_LADDER_KIND_LETTER.get(kind, "?") for kind in transitions)
 
 
-def print_outer_rungs(region, rungs, conflicts, head, tied, decision, is_closed):
+def print_outer_rungs(region, rungs, rank, tied, decision, is_closed):
     """The outer rail was walked into the order the source band already used.
 
     ``rungs`` are the ``(inner, outer)`` column pairs the source faces joined with an
-    edge, so ``conflicts`` counts how many of them the chosen ``(orientation, rotate)``
-    would contradict and ``head`` breaks the ties that leaves.  ``tied=1`` means the
-    source band's own connectivity settled the cut; more means distance still had to.
+    edge, counted in the numbers of the rail being rebuilt now, so ``conflicts`` counts how
+    many of them the chosen ``(orientation, rotate)`` would contradict.  ``head`` is how far
+    the first rung sits from the ring's cut and ``shift`` how many columns the rail was
+    moved off its own starting vertex: a pairing the band really uses scores 0 on all
+    three, and a row that merely leans the other way at the cut is separated from a sheared
+    one by ``shift``.  ``tied=1`` means the source band's own connectivity settled it; more
+    means distance still had to.
     """
     shown = ", ".join(f"{inner}->{outer}" for inner, outer in rungs[:8])
     if len(rungs) > 8:
@@ -204,7 +208,7 @@ def print_outer_rungs(region, rungs, conflicts, head, tied, decision, is_closed)
     print(
         "[Loop Resample][diagnostic] align "
         f"region={region.get('region_index')} rungs=[{shown}] "
-        f"conflicts={conflicts} head={head} tied={tied} "
+        f"conflicts={rank[0]} head={rank[1]} shift={rank[2]} tied={tied} "
         f"chosen={decision[0]} rotate={decision[1]} closed={int(is_closed)}"
     )
 
