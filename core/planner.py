@@ -873,7 +873,7 @@ def _seam_waypoint_nodes(waypoints, allowed, inner_steps, outer_steps):
     return nodes, tuple(sorted(dropped))
 
 
-def _pairing_profile(nodes, inner_steps, outer_steps):
+def _pairing_profile(nodes, inner_steps, outer_steps, is_closed):
     """How many of this band's own spokes were meant to leave each of its columns.
 
     A rebuilt rail answers its source with a *count*, not a position.  The source stacked
@@ -910,13 +910,15 @@ def _pairing_profile(nodes, inner_steps, outer_steps):
     sparse_steps = inner_steps if sparse_is_inner else outer_steps
     if not nodes or sparse_steps <= 0:
         return (), ()
-    counts = [0] * sparse_steps
+    # A closed band's last column is its first, and the record names it either way.  An
+    # open band's last column is a column of its own: folding it into the first would
+    # charge a pinch that sits at the strip's end as surplus spent at its start.
+    counts = [0] * (sparse_steps if is_closed else sparse_steps + 1)
     for inner_index, outer_index in nodes:
         place = inner_index if sparse_is_inner else outer_index
         if not 0 <= place <= sparse_steps:
             continue
-        # A closed band's last column is its first, and the record names it either way.
-        counts[place % sparse_steps] += 1
+        counts[place % sparse_steps if is_closed else place] += 1
     spent = 0
     profile = [0]
     for count in counts:
@@ -2302,6 +2304,7 @@ def build_ordered_strip_plan(
             pairing_nodes,
             inner_steps,
             outer_steps,
+            closed,
         )
         if DIAGNOSE_LADDER and region is not None and pairing_nodes:
             print_pairing_profile(
