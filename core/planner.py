@@ -47,16 +47,17 @@ REFLEX_SIN_EPSILON = 1e-6
 # truncated shape budget is 0.75 * 50 -- so a reflex face is bought only when the
 # sweep literally finds nothing else.
 REFLEX_PENALTY_WEIGHT = 40.0
-# What a two-column face pays for bending its dense rail, per point of sharpest
-# corner sine.  The skipped-column rung is shortest exactly where the rails draw
-# close -- a turn -- so the rung-length term alone steers wide faces into corners,
-# the one place spanning two columns looks worst.  This term reads the same span
-# the other way: a straight reach bends nothing and pays nothing, a corner bends
-# hard and pays for it, so the wide faces drift out of the turns and onto the
-# straightest stretches the band still has.  Raise it if wide faces still gather
-# in corners; lower it if the straight reaches fill up and the leftovers crowd
-# somewhere worse.
-REFLEX_BEND_WEIGHT = 2.5
+# What a two-column face pays for its worst corner, squared: the largest |cosine| of
+# an interior angle, zero for a rectangle and toward one as a corner spikes or runs
+# straight -- the two corners every long diagonal kite shows.  Edge ratios cannot
+# tell that kite from the plain elongated quads a 9-on-19 band is full of (the
+# measured saving for removing one was 0.75, nowhere near the soft face-count bid),
+# but its angles give it away: ~30 degrees at the sparse vertex, ~165 at the
+# skipped column.  Squared, so a slightly off-square wide on otherwise clean rails
+# -- the kind a pinned count is worth keeping for -- pays almost nothing while the
+# kite pays in full.  Raise it if kites still outbid the face they save; lower it
+# if honest wide faces start losing to the triangles they replace.
+WIDE_ANGLE_WEIGHT = 8.0
 # What one face over the source band's count costs.  The count used to be a hard
 # pin: the sweep was forced to buy every wide face the budget named, however ugly
 # the kite -- so a 9-on-19 band pinned at 15 faces grew four long diagonal kites
@@ -1476,9 +1477,10 @@ def _step_base_cost(
 
     A step spanning two columns of one rail is read once more before it is priced:
     :func:`wide_face_reflex_metrics` says whether the span re-enters -- an interior
-    angle past 180 degrees, which the strict sweep refuses outright -- and how hard
-    the span bends its rail, which every sweep charges, because the rung-length term
-    below otherwise steers the span into the very turns where it looks worst.
+    angle past 180 degrees, which the strict sweep refuses outright -- and how
+    extreme its worst corner runs, which every sweep charges, because the edge-ratio
+    shape terms cannot tell a long diagonal kite from the band's plain elongated
+    quads and the kite is the face nobody wants to look at.
     """
     quality = face_quality_cost(face, None)
     if quality is None:
@@ -1486,12 +1488,12 @@ def _step_base_cost(
     advance = TRANSITION_ADVANCE[kind]
     reflex_cost = 0.0
     if advance[0] > 1 or advance[1] > 1:
-        reflex, bend = wide_face_reflex_metrics(face)
+        reflex, extremity = wide_face_reflex_metrics(face)
         if reflex > REFLEX_SIN_EPSILON:
             if reflex_reject:
                 return None
             reflex_cost = REFLEX_PENALTY_WEIGHT
-        reflex_cost += REFLEX_BEND_WEIGHT * bend
+        reflex_cost += WIDE_ANGLE_WEIGHT * extremity * extremity
     rung = (
         boundary_geometry.inner_points[next_inner % len(inner)]
         - boundary_geometry.outer_points[next_outer % len(outer)]

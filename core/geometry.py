@@ -471,17 +471,22 @@ def face_quality_cost(face_vertices, region):
 
 
 def wide_face_reflex_metrics(face_vertices):
-    """How far a face spanning two columns of one rail bends, and which way.
+    """How a face spanning two columns of one rail turns at its corners.
 
-    Returns ``(reflex, bend)``.  ``reflex`` is the largest minus-sine among the
+    Returns ``(reflex, extremity)``.  ``reflex`` is the largest minus-sine among the
     face's corner turns -- positive exactly when some interior angle passes 180
     degrees.  A face covering two of one rail's columns grows that re-entrant
     corner whenever the rail bends toward the other rail across the span, which
     is why the turns are read against the face's own winding: a convex corner
-    turns with it, a re-entrant one turns against it.  ``bend`` is the largest
-    absolute sine, zero for a face whose corners run straight, so a caller can
-    steer the span toward the straightest reach of the rail even while every
-    candidate stays convex.
+    turns with it, a re-entrant one turns against it.
+
+    ``extremity`` is the largest absolute cosine of an interior angle: zero for a
+    rectangle, running toward one as any corner closes to a spike or opens to a
+    straight angle -- which are precisely the two corners a long diagonal kite
+    shows, the sharp one at its sparse-rail vertex and the straight one at the
+    column it skipped.  Edge-length ratios cannot see either corner (a kite's
+    aspect can sit within a plain elongated quad's), so this is the term the
+    search reads when it decides whether the face earns the column it skips.
 
     A triangle cannot re-enter, and only two-column faces are asked here, so
     shorter corner lists come back as ``(0.0, 0.0)``.  A face too broken to
@@ -498,7 +503,7 @@ def wide_face_reflex_metrics(face_vertices):
         return 1.0, 1.0
     direction = normal_vector.normalized()
     reflex = 0.0
-    bend = 0.0
+    extremity = 0.0
     for index in range(point_count):
         previous = coordinates[index - 1]
         current = coordinates[index]
@@ -509,9 +514,9 @@ def wide_face_reflex_metrics(face_vertices):
         outgoing_length = outgoing.length
         if incoming_length <= MIN_EDGE_LENGTH or outgoing_length <= MIN_EDGE_LENGTH:
             return 1.0, 1.0
-        sine = incoming.cross(outgoing).dot(direction) / (
-            incoming_length * outgoing_length
-        )
-        bend = max(bend, abs(sine))
+        scale = incoming_length * outgoing_length
+        sine = incoming.cross(outgoing).dot(direction) / scale
+        cosine = -incoming.dot(outgoing) / scale
+        extremity = max(extremity, abs(cosine))
         reflex = max(reflex, -sine)
-    return reflex, bend
+    return reflex, extremity
