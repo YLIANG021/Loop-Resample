@@ -17,6 +17,7 @@ from .diagnostics import (
     print_outer_replay,
     print_outer_align,
     print_outer_rungs,
+    print_pairing_profile,
     print_seam_crossing_skipped,
 )
 from .geometry import (
@@ -26,11 +27,36 @@ from .geometry import (
     face_quality_cost,
     validate_ordered_strip_plan,
 )
-from .types import StripPlan
+from .types import TRANSITION_ADVANCE, StripPlan
 from .utils import _point, _point_view
 
 RUNG_CONTINUITY_VECTOR_WEIGHT = 0.75
 TRIANGLE_DISTRIBUTION_WEIGHT = 0.9
+RUNG_LENGTH_WEIGHT = 1.2
+# What burning one surplus step more (or fewer) than the band's own pattern had burned by
+# this column costs, squared -- so a strip that dumped eight spokes on its first column when
+# the source stacked four on its fourth pays at every column after it: 0.15 a step, a run of
+# seven columns wrong by three pays 1.35 each.  That is the intended order: the band says how
+# many spokes leave each of its columns, the rails settle where the pattern's slack lands.
+# Raise it if a fan still refuses to move; lower it if rungs start stretching to pay for a
+# pattern the geometry does not want.
+PAIRING_TARGET_WEIGHT = 0.15
+# Where a region keeps the ladder nodes its own source band named, recorded once per step
+# beside the outer order they were counted in.  The solve reads them, and only to price a
+# step -- see :func:`_pairing_profile`.  Nothing else writes.
+_PAIRING_NODES = "pairing_nodes"
+
+
+def _rail_shift(kind):
+    """Which way one step moves the ladder's ``d = outer - inner``, in columns.
+
+    The band's length difference is only ever closed by steps that shift ``d``, and the
+    search's pruning assumes they all shift it the same way, so that assumption is read
+    off here rather than written as a kind name.
+    """
+    inner_step, outer_step = TRANSITION_ADVANCE[kind]
+    return outer_step - inner_step
+
 
 # Temporary: how a shape axis moved a strip's connectivity.  Off costs nothing but the
 # branch; nothing below reads it to decide anything.
@@ -47,14 +73,22 @@ def _triangle_distribution_cost(
     outer_steps,
     triangle_count=0,
 ):
-    """Prefer triangle transitions at evenly spaced strip positions.
+    """Prefer the strip's surplus steps at evenly spaced positions.
 
-    A strip spends ``abs(inner_steps - outer_steps)`` triangles whatever the search
-    does, so the k-th one is pulled to k/(count+1) of the strip's length.  Counting
-    over the whole strip rather than over a piece of it is what lets a triangle sit on
-    either side of the column a seam happened to take.
+    A strip spends ``abs(inner_steps - outer_steps)`` steps that shift ``d`` whatever the
+    search does -- a spoke or a face spanning two columns of the denser rail both move it
+    one column over -- so the k-th one is pulled to k/(count+1) of the strip's length.
+    Counting over the whole strip rather than over a piece of it is what lets a triangle
+    sit on either side of the column a seam happened to take.
+
+    Only steps that close the length gap are in that count, so a step which opens one --
+    the pinch a band's own pairing bought it (:func:`_pairing_pinches`) -- is not spread
+    against it.  No strip has ever had one of those, which is why the test is free.
     """
-    if kind not in {"INNER_TRI", "OUTER_TRI"} or triangle_count <= 0:
+    shift = _rail_shift(kind)
+    if not shift or triangle_count <= 0:
+        return 0.0
+    if shift * (outer_steps - inner_steps) < 0:
         return 0.0
     triangle_index = abs(outer_index - inner_index) + 1
     start_progress = (
@@ -76,23 +110,31 @@ RUNG_CONTINUITY_LENGTH_WEIGHT = 0.25
 
 
 def _previous_node(kind, inner_index, outer_index):
-    if kind == "QUAD":
-        return inner_index - 1, outer_index - 1
-    if kind == "INNER_TRI":
-        return inner_index - 1, outer_index
-    if kind == "OUTER_TRI":
-        return inner_index, outer_index - 1
-    return None
+    """Where the step that arrived at this node started, or None for the strip's own start."""
+    advance = TRANSITION_ADVANCE.get(kind)
+    if advance is None:
+        return None
+    return inner_index - advance[0], outer_index - advance[1]
 
 
-def _rung_vector(boundary_geometry, inner_index, outer_index):
+def _rung_vector(boundary_geometry, inner_index, outer_index, cache=None):
+    if cache is not None:
+        key = (inner_index, outer_index)
+        vector = cache.get(key)
+        if vector is not None:
+            return vector
     inner = boundary_geometry.inner_points[
         inner_index % len(boundary_geometry.inner_points)
     ]
     outer = boundary_geometry.outer_points[
         outer_index % len(boundary_geometry.outer_points)
     ]
-    return outer - inner
+    vector = outer - inner
+    if cache is not None:
+        # Callers only ever read these -- subtraction and length leave the operands
+        # alone -- so one vector per node is safe to hand out repeatedly.
+        cache[key] = vector
+    return vector
 
 
 def _rung_continuity_cost(
@@ -102,6 +144,7 @@ def _rung_continuity_cost(
     outer_index,
     next_inner,
     next_outer,
+    vector_cache=None,
 ):
     """Penalize sudden second-order changes in rung direction and width."""
     previous_node = _previous_node(previous_kind, inner_index, outer_index)
@@ -113,16 +156,19 @@ def _rung_continuity_cost(
         boundary_geometry,
         previous_inner,
         previous_outer,
+        vector_cache,
     )
     current_vector = _rung_vector(
         boundary_geometry,
         inner_index,
         outer_index,
+        vector_cache,
     )
     next_vector = _rung_vector(
         boundary_geometry,
         next_inner,
         next_outer,
+        vector_cache,
     )
     scale = max(boundary_geometry.boundary_scale, 1e-12)
     vector_acceleration = (
@@ -208,6 +254,49 @@ def _rail_columns(source_fractions, rail_fractions):
     return columns
 
 
+def _paired_columns(source_points, rail_vertices, is_closed, align_start=False):
+    """One entry per source rail vertex: the column of the rail being built under it.
+
+    Empty when either rail cannot be measured, which is the caller's cue to say nothing
+    about the pairing rather than to name columns by a fraction it never read.
+
+    Both fraction walks start at their own rail's first vertex, which only pairs points
+    that stand in the same place when the two starts do.  An open rail's start is the
+    shared endpoint, but a closed rail being built starts wherever the sampler's anchor
+    put it -- the seam's pinned vertex, not the source rail's first -- so with
+    ``align_start`` the two starts are registered by position first: the built vertex
+    standing where the source's first vertex stood becomes the walk's origin, and the
+    columns still come out in the built rail's own numbering.  Callers whose later
+    transform already carries the start difference -- the outer rail's orientation and
+    rotation -- leave it off; the inner rail has no such transform, and without the
+    registration every column it names sits the anchor's shift away from the point it
+    means.
+    """
+    if not source_points or len(rail_vertices) < 2:
+        return ()
+    source_fractions = _rail_fractions(tuple(source_points), is_closed)
+    rail_points = [_point_view(vertex) for vertex in rail_vertices]
+    rail_fractions = _rail_fractions(rail_points, is_closed)
+    if not source_fractions or not rail_fractions:
+        return ()
+    if is_closed and align_start:
+        start = min(
+            range(len(rail_points)),
+            key=lambda index: (rail_points[index] - source_points[0]).length_squared,
+        )
+        count = len(rail_points)
+        offset = rail_fractions[start]
+        rail_fractions = tuple(
+            (rail_fractions[(start + step) % count] - offset) % 1.0
+            for step in range(count)
+        )
+        return tuple(
+            (start + column) % count
+            for column in _rail_columns(source_fractions, rail_fractions)
+        )
+    return _rail_columns(source_fractions, rail_fractions)
+
+
 def _rungs_on_rail(region, outer_vertices, is_closed):
     """The captured pairing counted the way the rail being built numbers itself.
 
@@ -223,14 +312,91 @@ def _rungs_on_rail(region, outer_vertices, is_closed):
     points = ((region or {}).get("frames") or {}).get("outer", {}).get("points") or ()
     if not rungs or len(outer_vertices) < 2:
         return rungs
-    source_fractions = _rail_fractions(points, is_closed)
-    rail_fractions = _rail_fractions(
-        [_point_view(vertex) for vertex in outer_vertices], is_closed
-    )
-    if not source_fractions or not rail_fractions:
+    columns = _paired_columns(points, outer_vertices, is_closed)
+    if not columns:
         return rungs
-    columns = _rail_columns(source_fractions, rail_fractions)
     return tuple((inner, columns[outer]) for inner, outer in rungs)
+
+
+def _rungs_on_inner_rail(region, inner_vertices, rungs, is_closed):
+    """The captured pairing with its inner numbers carried onto the rail being built.
+
+    :func:`_rungs_on_rail` carries the outer numbers; the inner side still names the
+    source rail's vertices.  A closed inner rail is resampled starting at the seam's
+    anchor rather than at the source rail's first vertex, so its columns sit the
+    anchor's shift away from the source's numbers -- and a decision ranked against
+    those numbers registers the outer rail to a frame the ladder never walks, which
+    leaves the pairing's pattern that many columns off the place the source band drew
+    it.  Carrying the inner side across the same way is what lines the decision, the
+    pairing notes and the ladder up on one frame.
+    """
+    points = ((region or {}).get("frames") or {}).get("inner", {}).get("points") or ()
+    if not rungs or len(inner_vertices) < 2:
+        return rungs
+    columns = _paired_columns(
+        points, inner_vertices, is_closed, align_start=True
+    )
+    if not columns:
+        return rungs
+    return tuple((columns[inner], outer) for inner, outer in rungs)
+
+
+def _source_pairing_nodes(region, inner_vertices, outer_vertices, decision, is_closed):
+    """The source band's own rungs, as ladder nodes.
+
+    :func:`align_outer_boundary` already reads these pairs, and all it asks them is which
+    way to walk the outer rail and where to cut it.  What it never asks is where the
+    rebuilt band's rungs should sit, so a strip whose rails differ by twelve columns spends
+    those twelve one-column steps wherever the local costs happen to leave them -- on the
+    band this was written for, nine spokes off a single inner vertex, twice a healthy rung's
+    length, where the source drew one rung and three faces two columns wide.
+
+    The nodes are what :func:`_pairing_profile` counts into that per-column tally, which is
+    to say they price a step rather than forbid one: a band rebuilt onto fewer inner columns
+    than the source drew can never stand on the recorded nodes at the face count the source
+    drew, but it can still be told how many of its own spokes were meant to leave each
+    column, and that tally it can hit exactly.
+
+    Each rail's numbers are carried across by arc length, because a rung names a *place* on
+    a rail and both rails here have been resampled since the record was read.  The inner
+    carry registers the two rails' starts first (:func:`_paired_columns` with
+    ``align_start``): a closed inner rail begins at the seam's anchor, not at the source
+    rail's first vertex, and without the registration every column named here sits the
+    anchor's shift away from the point it means.  The outer side needs no such help --
+    the walk order is the one ``decision`` chose, applied the way
+    :func:`apply_outer_decision` applies it: a node named in a numbering the rail is not
+    walked in blames the wrong vertex by exactly the rotation that hid it.
+    """
+    rungs = (region or {}).get("source_rungs") or ()
+    frames = (region or {}).get("frames") or {}
+    if not rungs or decision is None:
+        return ()
+    inner_columns = _paired_columns(
+        (frames.get("inner") or {}).get("points") or (),
+        inner_vertices,
+        is_closed,
+        align_start=True,
+    )
+    outer_columns = _paired_columns(
+        (frames.get("outer") or {}).get("points") or (), outer_vertices, is_closed
+    )
+    if not inner_columns or not outer_columns:
+        return ()
+    orientation, rotate = decision
+    outer_count = len(outer_vertices)
+    nodes = set()
+    for inner_index, outer_index in rungs:
+        if not 0 <= inner_index < len(inner_columns):
+            continue
+        if not 0 <= outer_index < len(outer_columns):
+            continue
+        place = outer_columns[outer_index]
+        if orientation:
+            place = outer_count - 1 - place
+        if is_closed and rotate:
+            place = (place - rotate) % outer_count
+        nodes.add((inner_columns[inner_index], place))
+    return tuple(sorted(nodes))
 
 
 def _continued(place, anchor, span):
@@ -396,6 +562,7 @@ def align_outer_boundary(inner_vertices, outer_vertices, is_closed, region=None)
     """
     outer = list(outer_vertices)
     rungs = _rungs_on_rail(region, outer, is_closed)
+    rungs = _rungs_on_inner_rail(region, inner_vertices, rungs, is_closed)
     decided = _rung_decision(inner_vertices, outer, rungs, is_closed)
     if decided is not None:
         decision, rank, tied = decided
@@ -444,42 +611,201 @@ def apply_outer_decision(outer_vertices, decision, is_closed):
 
 
 def _transition_face(inner, outer, inner_index, outer_index, kind):
-    current_inner = inner[inner_index % len(inner)]
-    current_outer = outer[outer_index % len(outer)]
+    """The corners of one step, wound the way the quad that starts there is wound."""
+    inner_count = len(inner)
+    outer_count = len(outer)
+    current_inner = inner[inner_index % inner_count]
+    current_outer = outer[outer_index % outer_count]
     if kind == "QUAD":
         return (
             current_inner,
-            inner[(inner_index + 1) % len(inner)],
-            outer[(outer_index + 1) % len(outer)],
+            inner[(inner_index + 1) % inner_count],
+            outer[(outer_index + 1) % outer_count],
             current_outer,
         )
     if kind == "INNER_TRI":
         return (
             current_inner,
-            inner[(inner_index + 1) % len(inner)],
+            inner[(inner_index + 1) % inner_count],
+            current_outer,
+        )
+    if kind == "OUTER_WIDE":
+        return (
+            current_inner,
+            outer[(outer_index + 2) % outer_count],
+            outer[(outer_index + 1) % outer_count],
+            current_outer,
+        )
+    if kind == "INNER_WIDE":
+        return (
+            current_inner,
+            inner[(inner_index + 1) % inner_count],
+            inner[(inner_index + 2) % inner_count],
             current_outer,
         )
     return (
         current_inner,
-        outer[(outer_index + 1) % len(outer)],
+        outer[(outer_index + 1) % outer_count],
         current_outer,
     )
 
 
 def _advance(kind, inner_index, outer_index):
-    if kind == "QUAD":
-        return inner_index + 1, outer_index + 1
-    if kind == "INNER_TRI":
-        return inner_index + 1, outer_index
-    return inner_index, outer_index + 1
+    inner_step, outer_step = TRANSITION_ADVANCE[kind]
+    return inner_index + inner_step, outer_index + outer_step
 
 
-def _allowed_transitions(inner_steps, outer_steps):
+def _pairing_pinches(nodes, inner_steps, outer_steps):
+    """How many of this band's own spokes sit on a column its rail has already left.
+
+    A rung is one pair of columns, so walking the band's recorded rungs in the order the
+    outer rail meets them gives a sequence of ``d = outer - inner`` offsets.  Every step the
+    ladder takes moves ``d`` by at most one column, and only the kinds that spend the
+    *sparser* rail's column move it backwards, so a place where the recorded offset drops
+    is a spoke no path built from the denser rail's vocabulary can stand on.  The total
+    drop is therefore the number of those steps this band's own connectivity asks for --
+    two on the band this was written for, where the source runs one spoke from each of two
+    adjacent inner columns into the same outer one.
+
+    Read this as a demand, not an order: :func:`_band_vocabulary` hands it to
+    :func:`_allowed_transitions` as a budget, and a band whose pattern never leans back
+    keeps exactly the kinds it has always had.
+    """
+    if not nodes or inner_steps <= 0 or outer_steps <= 0:
+        return 0
+    offset = 0
+    pinches = 0
+    for inner_index, outer_index in sorted(nodes, key=lambda node: (node[1], node[0])):
+        if not 0 <= inner_index <= inner_steps or not 0 <= outer_index <= outer_steps:
+            continue
+        place = outer_index - inner_index
+        if place < offset:
+            pinches += offset - place
+        offset = place
+    final_offset = outer_steps - inner_steps
+    if final_offset < offset:
+        pinches += offset - final_offset
+    return min(pinches, inner_steps, outer_steps)
+
+
+def _wide_face_budget(region, inner_steps, outer_steps):
+    """How many faces in this band may cover two columns of its denser rail.
+
+    A source band holding fewer faces than the denser of its two rails has columns that
+    were never joined to the far side -- the model's own faces stand two columns wide
+    there.  Until the search had a kind for that it had to spend a spoke on every column
+    to reach the rail's end, and the surplus landed wherever the cost happened to leave
+    it, which on a band whose far rail is an untouched part of the model is most of them.
+    The budget says how many such faces the band itself reported, and nothing here reads
+    coordinates, so a band that never needed one keeps exactly the two kinds it had.
+
+    The count is anchored to the face records -- the row the ladder actually rebuilds --
+    not to the region's whole face set: a region deeper than one row holds faces with no
+    inner-rail corner that no ladder will ever draw, and counting them shrinks the budget
+    by exactly their number, so the rebuilt band comes out that many faces heavier than
+    the row it replaces.
+
+    Rails of equal length are left alone however the source reads: a surplus on one rail
+    has to be paid back on the other then, which is a different question than the one a
+    wide face answers.
+    """
+    if inner_steps == outer_steps:
+        return 0
+    dense_steps = max(inner_steps, outer_steps)
+    records = ((region or {}).get("source_faces") or {}).get("records") or ()
+    faces = len(records) if records else len((region or {}).get("faces") or ())
+    if not faces or faces >= dense_steps:
+        return 0
+    return min(
+        dense_steps - faces,
+        dense_steps // 2,
+        min(inner_steps, outer_steps),
+    )
+
+
+def _allowed_transitions(
+    inner_steps,
+    outer_steps,
+    wide_budget=0,
+    pinch_budget=0,
+):
+    """The kinds one band's ladder may spend, in the order the search tries them.
+
+    The dense rail's surplus is what decides the ordinary kinds, so a band whose inner rail
+    is the short loop is never offered a face that spends the outer rail's column -- except
+    when its own source band drew one, which is what ``pinch_budget`` says
+    (:func:`_pairing_pinches`).  Without that exception the connectivity a fan and a pinch
+    describe is simply not a path in the graph being searched, and no price can reach it.
+
+    Both extra kinds go last, the wide one before the pinching one, so a band that does not
+    need them answers with the kinds it has always had at an equal cost.
+    """
     if inner_steps == outer_steps:
         return ("QUAD",)
     if inner_steps < outer_steps:
-        return ("QUAD", "OUTER_TRI")
-    return ("QUAD", "INNER_TRI")
+        surplus, wide, pinch = "OUTER_TRI", "OUTER_WIDE", "INNER_TRI"
+    else:
+        surplus, wide, pinch = "INNER_TRI", "INNER_WIDE", "OUTER_TRI"
+    allowed = ["QUAD", surplus]
+    if wide_budget > 0:
+        allowed.append(wide)
+    if pinch_budget > 0:
+        allowed.append(pinch)
+    return tuple(allowed)
+
+
+def _band_vocabulary(region, inner_steps, outer_steps):
+    """What this band's rails and its own source pairing permit, as one unit.
+
+    Returns ``(allowed, wide_budget, pinch_budget)``.  Both call sites -- the solve and
+    the seam's waypoint pruning -- have to agree, because a waypoint reachable under one
+    reading of the vocabulary and unreachable under the other would drop a crossing the
+    strip can actually route through.
+    """
+    budget = _wide_face_budget(region, inner_steps, outer_steps)
+    pinches = _pairing_pinches(
+        tuple((region or {}).get(_PAIRING_NODES) or ()),
+        inner_steps,
+        outer_steps,
+    ) if budget else 0
+    # A step that spends the sparser rail's column widens the strip by one face, and only a
+    # wide face pays it back, so the band is never granted a pinch it has no wide face to
+    # trade for.  That keeps the ceiling on the face count exactly where the source band put
+    # it however many spokes the pairing stacks on one column.
+    return (
+        _allowed_transitions(inner_steps, outer_steps, budget, min(pinches, budget)),
+        budget,
+        min(pinches, budget),
+    )
+
+
+def _face_count_credit(kind, inner_steps, outer_steps):
+    """What one step of this kind does to how many faces the band needs.
+
+    A strip's face count is its denser rail's columns minus its wide faces plus its
+    pinches: a face spanning two of the dense rail's columns saves one, and a spoke that
+    spends the sparse rail's column costs one, because the length gap it should have closed
+    now needs a wide face of its own.  Counting the two against each other, rather than
+    counting wide faces alone, is what lets a band keep the source's face count while
+    standing on the rungs the source drew.
+
+    A band whose pairing asks for nothing has no kind here with a negative credit, so the
+    count it spends is the wide count it always spent.
+    """
+    inner_step, outer_step = TRANSITION_ADVANCE[kind]
+    shift = outer_step - inner_step
+    if not shift:
+        return 0
+    if outer_steps > inner_steps:
+        dense_step, sparse_step = outer_step, inner_step
+    else:
+        dense_step, sparse_step = inner_step, outer_step
+    toward_dense = (shift > 0) == (outer_steps > inner_steps)
+    if toward_dense:
+        # A one-column surplus triangle keeps the count; every further dense column the
+        # same face covers saves one.
+        return dense_step - 1
+    return -1 if dense_step == 0 and sparse_step else 0
 
 
 def _seam_waypoint_nodes(waypoints, allowed, inner_steps, outer_steps):
@@ -500,9 +826,16 @@ def _seam_waypoint_nodes(waypoints, allowed, inner_steps, outer_steps):
     final_offset = outer_steps - inner_steps
     low = min(0, final_offset)
     high = max(0, final_offset)
-    # INNER_TRI is the only move that shrinks d.  A QUAD-only strip is pinned to d == 0 by
-    # the band above, so either direction reads the same there.
-    direction = -1 if "INNER_TRI" in allowed else 1
+    # An inner step is the only move that shrinks d, whether it spends one column of the
+    # inner rail or two.  A QUAD-only strip is pinned to d == 0 by the band above, so
+    # either direction reads the same there.  Where the pairing bought the strip a kind in
+    # each direction, d can be walked back and forth at will, so no crossing is refused on
+    # the order of the ones before it and the whole in-band set is kept.
+    shifts = {_rail_shift(kind) for kind in allowed if _rail_shift(kind)}
+    if len(shifts) > 1:
+        direction = 0
+    else:
+        direction = -1 if any(shift < 0 for shift in shifts) else 1
     candidates = []
     dropped = []
     for inner_index, outer_index in sorted(set(waypoints)):
@@ -540,6 +873,98 @@ def _seam_waypoint_nodes(waypoints, allowed, inner_steps, outer_steps):
     return nodes, tuple(sorted(dropped))
 
 
+def _pairing_profile(nodes, inner_steps, outer_steps):
+    """How many of this band's own spokes were meant to leave each of its columns.
+
+    A rebuilt rail answers its source with a *count*, not a position.  The source stacked
+    four rungs on one inner column; a strip with fewer columns than the source drew can
+    still spend four of its one-column steps there.  What it cannot do is stand on the outer
+    columns the record names -- those belong to a rail with a different number of them, and
+    the faces that would carry it from one to the next are the faces this band was never
+    given: the count is fixed by the source, so a pattern that asks for nineteen faces at
+    fifteen is not a price away from working, it is a different band.  A target only an
+    untouched rail can hit prices nothing, so this counts spokes instead.
+
+    The count is a thing the search *can* hit: once both rails and the face count are fixed,
+    which steps are one-column steps is already settled arithmetic, and which column spends
+    them is entirely the ladder's choice.
+
+    It is returned cumulative rather than per column, because that is the form a step can be
+    charged in -- "how many surplus steps should be burned before entering this column" --
+    and it is the same information: a tally that matches at every entry matches column by
+    column.  Where the source's columns survive the resample the two readings agree exactly,
+    positions included; where they do not, this one still can.  The per column counts come
+    back alongside because they are the reading of this record a person can check.
+
+    The tally is stepped by ``count - 1`` and *not* by how many spokes sit above one, because
+    the ladder's own arithmetic is signed: the number of surplus steps it has burned at any
+    point is ``dense - sparse - wide``, which counts a column it jumps over as a step it
+    *gained back*.  Clamping at zero would therefore hand a band with one empty column a
+    total one bigger than any ladder at this face count can spend, and the shortfall would
+    then be charged at every column after it -- the same uncatchable cliff that made the
+    position target useless.  Signed, the tally sums to exactly what the pinned face count
+    must spend, so a strip that stands all of these spokes where the source stood them scores
+    zero and an empty column is a single column's miss rather than a debt to the end.
+    """
+    sparse_is_inner = inner_steps <= outer_steps
+    sparse_steps = inner_steps if sparse_is_inner else outer_steps
+    if not nodes or sparse_steps <= 0:
+        return (), ()
+    counts = [0] * sparse_steps
+    for inner_index, outer_index in nodes:
+        place = inner_index if sparse_is_inner else outer_index
+        if not 0 <= place <= sparse_steps:
+            continue
+        # A closed band's last column is its first, and the record names it either way.
+        counts[place % sparse_steps] += 1
+    spent = 0
+    profile = [0]
+    for count in counts:
+        spent += count - 1
+        profile.append(spent)
+    return tuple(profile), tuple(counts)
+
+
+def _pairing_offset(
+    boundary_geometry,
+    kind,
+    next_inner,
+    next_outer,
+    net_wide,
+    inner_steps,
+    outer_steps,
+):
+    """How many surplus steps this column burns over what the band's own pattern spent there.
+
+    Read as the ladder walks off the column, because that is the last moment at which what
+    stood on it can still be counted -- a step that stays on the rail's column has left the
+    tally open.  And read off arithmetic the state already carries rather than off a counter
+    of its own: a node on the dense rail's side of a ladder that has spent ``net_wide`` wide
+    faces has burned ``dense - sparse - net_wide`` of its one-column steps, in whatever order
+    it burned them, which is why pricing the profile costs one subtraction.
+    """
+    profile = boundary_geometry.pairing_profile
+    if not profile:
+        return 0.0
+    inner_step, outer_step = TRANSITION_ADVANCE[kind]
+    if outer_steps >= inner_steps:
+        if inner_step != 1:
+            return 0.0
+        return float(next_outer - next_inner - net_wide - profile[next_inner])
+    if outer_step != 1:
+        return 0.0
+    return float(next_inner - next_outer - net_wide - profile[next_outer])
+
+
+def _surplus_names(allowed):
+    """Which kinds this strip may spend a rail column with, for the seam-skip line.
+
+    A band that was allowed a wide face has two surplus kinds to spend, so the single name
+    this used to print is now a list.
+    """
+    return "+".join(kind for kind in allowed if kind != "QUAD") or "none"
+
+
 def _waypoint_reach_diagnostic(nodes, dropped, allowed):
     """The pruned crossings with the rule that cut them off, for the seam-skip line.
 
@@ -558,7 +983,7 @@ def _waypoint_reach_diagnostic(nodes, dropped, allowed):
     )
     return (
         f"dropped=[{dropped_text}] kept=[{kept_text}] "
-        f"triangle={next((kind for kind in allowed if kind != 'QUAD'), 'none')}"
+        f"triangle={_surplus_names(allowed)}"
     )
 
 
@@ -578,7 +1003,7 @@ def _waypoint_diagnostic(nodes, allowed, boundary_geometry):
     )
     return (
         f"nodes={nodes} d=[{offsets}] cross=[{crossed}] "
-        f"triangle={next((kind for kind in allowed if kind != 'QUAD'), 'none')}"
+        f"triangle={_surplus_names(allowed)}"
     )
 
 
@@ -634,6 +1059,7 @@ class _BoundaryGeometry:
         "buckets",
         "rung_cross_cache",
         "boundary_records",
+        "pairing_profile",
     )
 
     def __init__(
@@ -656,6 +1082,11 @@ class _BoundaryGeometry:
         self.buckets = buckets
         self.rung_cross_cache = {}
         self.boundary_records = boundary_records
+        # The one thing here that is not measured from the rails: how many spokes this band's
+        # own source rungs spent on each of its columns, filled in by the plan that owns the
+        # search.  It rides along because the search and the local swap both price a step, and
+        # the swap has to see the same money the search did.
+        self.pairing_profile = ()
 
 
 def _boundary_bounds_from_points(points):
@@ -914,8 +1345,32 @@ def _consecutive_rungs_cross(
     )
 
 
-def _step_cost(
+def _skipped_column_cost(boundary_geometry, kind, next_inner, next_outer):
+    """What the rung inside a two-column face would have cost had it been drawn.
+
+    Such a face leaves one column of the denser rail without a spoke, which is what the
+    source band did with it.  Charging nothing there would let the search buy the skip
+    wherever the missing rung is worst, so the rung is still measured -- it is simply
+    never written into the mesh.
+    """
+    inner_step, outer_step = TRANSITION_ADVANCE[kind]
+    skipped_inner = next_inner - max(0, inner_step - 1)
+    skipped_outer = next_outer - max(0, outer_step - 1)
+    if skipped_inner == next_inner and skipped_outer == next_outer:
+        return 0.0
+    inner_points = boundary_geometry.inner_points
+    outer_points = boundary_geometry.outer_points
+    rung = (
+        inner_points[skipped_inner % len(inner_points)]
+        - outer_points[skipped_outer % len(outer_points)]
+    ).length
+    normalized_rung = rung / boundary_geometry.boundary_scale
+    return RUNG_LENGTH_WEIGHT * normalized_rung * normalized_rung
+
+
+def _step_base_cost(
     face,
+    kind,
     inner,
     outer,
     next_inner,
@@ -926,6 +1381,12 @@ def _step_cost(
     outer_steps,
     boundary_geometry,
 ):
+    """What one step costs before the pairing pattern is consulted.
+
+    Everything in here reads only the step's own geometry, so the search caches it per
+    ``(inner, outer, kind)`` and adds the pairing term -- the one part that depends on
+    how many wide faces the path has already spent -- on top of the cached value.
+    """
     quality = face_quality_cost(face, None)
     if quality is None:
         return None
@@ -944,19 +1405,63 @@ def _step_cost(
     shape_weight = 1.35 if len(face) == 3 else 0.75
     return (
         shape_weight * min(quality, 50.0)
-        + 1.2 * normalized_rung * normalized_rung
+        + RUNG_LENGTH_WEIGHT * normalized_rung * normalized_rung
         + 0.08 * progress_error
         + 0.8 * normalized_error
+        + _skipped_column_cost(
+            boundary_geometry, kind, next_inner, next_outer
+        )
     )
 
 
+def _step_cost(
+    face,
+    kind,
+    inner,
+    outer,
+    next_inner,
+    next_outer,
+    net_wide,
+    inner_boundary,
+    outer_boundary,
+    inner_steps,
+    outer_steps,
+    boundary_geometry,
+):
+    base_cost = _step_base_cost(
+        face,
+        kind,
+        inner,
+        outer,
+        next_inner,
+        next_outer,
+        inner_boundary,
+        outer_boundary,
+        inner_steps,
+        outer_steps,
+        boundary_geometry,
+    )
+    if base_cost is None:
+        return None
+    pairing_offset = _pairing_offset(
+        boundary_geometry,
+        kind,
+        next_inner,
+        next_outer,
+        net_wide,
+        inner_steps,
+        outer_steps,
+    )
+    return base_cost + PAIRING_TARGET_WEIGHT * pairing_offset * pairing_offset
+
+
 def _transition_pair_balance_penalty(transitions, start, end):
-    """Give a small local penalty to repeated same-side triangle steps."""
+    """Give a small local penalty to repeated same-side surplus steps."""
     left = max(0, start - 1)
     right = min(len(transitions), end + 1)
     penalty = 0.0
     for first, second in zip(transitions[left:right], transitions[left + 1:right]):
-        if first == second and first in {"INNER_TRI", "OUTER_TRI"}:
+        if first == second and _rail_shift(first):
             penalty += 0.18
     return penalty
 
@@ -975,10 +1480,18 @@ def _local_transition_pair_score(
     is_closed,
     boundary_geometry,
     triangle_count=0,
+    vector_cache=None,
 ):
     """Score two adjacent transitions without rebuilding the whole strip."""
     inner_index = start_inner
     outer_index = start_outer
+    # The wide tally the search would have been carrying at this point, recovered by adding
+    # up what the steps before it each cost.  A swap only ever trades two steps at
+    # ``start_index``, so the run in front of it is the same run in either order.
+    net_wide = sum(
+        _face_count_credit(kind, inner_steps, outer_steps)
+        for kind in transitions[:start_index]
+    )
     score = 0.0
     previous_kind = transitions[start_index - 1] if start_index else None
     for kind in transitions[start_index : start_index + 2]:
@@ -1000,12 +1513,15 @@ def _local_transition_pair_score(
         ):
             return None
         face = _transition_face(inner, outer, inner_index, outer_index, kind)
+        net_wide += _face_count_credit(kind, inner_steps, outer_steps)
         step_cost = _step_cost(
             face,
+            kind,
             inner,
             outer,
             next_inner,
             next_outer,
+            net_wide,
             inner_boundary,
             outer_boundary,
             inner_steps,
@@ -1032,6 +1548,7 @@ def _local_transition_pair_score(
             outer_index,
             next_inner,
             next_outer,
+            vector_cache,
         )
         previous_kind = kind
         inner_index, outer_index = next_inner, next_outer
@@ -1059,6 +1576,7 @@ def _beautify_transitions(
     inner_steps = len(inner) if is_closed else len(inner) - 1
     outer_steps = len(outer) if is_closed else len(outer) - 1
     triangle_count = abs(inner_steps - outer_steps)
+    vector_cache = {}
 
     for _pass in range(2):
         changed = False
@@ -1098,6 +1616,7 @@ def _beautify_transitions(
                 is_closed,
                 boundary_geometry,
                 triangle_count,
+                vector_cache,
             )
             if current_score is None:
                 inner_index, outer_index = _advance(
@@ -1127,6 +1646,7 @@ def _beautify_transitions(
                 is_closed,
                 boundary_geometry,
                 triangle_count,
+                vector_cache,
             )
             alternate_balance = _transition_pair_balance_penalty(
                 transitions,
@@ -1152,60 +1672,104 @@ def _beautify_transitions(
     return tuple(transitions)
 
 
-def _build_transitions(
+def _sweep_ladder(
     inner,
     outer,
     inner_boundary,
     outer_boundary,
     is_closed,
     boundary_geometry,
-    waypoints=(),
-    region=None,
+    waypoints,
+    allowed,
+    budget,
+    inner_steps,
+    outer_steps,
+    wide_pruning,
 ):
-    """Solve the whole ladder: cheapest monotone path between two ordered rails.
+    """One full sweep of the ladder's dynamic program: the states at the far corner.
 
-    Every outer rail index is attained by any monotone path, so whichever vertex a
-    crossing punctured is already guaranteed to carry a rung once this returns -- see
-    :func:`.seams.region_seam_rungs`.  That guarantee is not enough: the rung it finds
-    can sit a column off the vertex the sampler pinned, and the face in between then
-    straddles two UV islands.  ``waypoints`` are the nodes :func:`.seams` says a seam
-    crossing needs, and the search may not route around them.
+    A quad moves inner+outer by two and a triangle by one, so diagonal d is fed by
+    round d-2 (quads and wide faces, which both spend two columns) then round d-1
+    (triangles) and a round must read every part in that order.  One flat dict plus a
+    diagonal filter made every round re-scan all history -- ~800k dead iterations to
+    reach ~24k live ones.  The fourth part of a state key counts the wide faces spent,
+    less any pinch that has to be paid back with one, because a wide face is cheaper
+    than the two it replaces and a search left to price its own face count would take
+    every chance it was given.  The budget is what the source band reported, so the
+    count is what pins the rebuilt band to the same number of faces.  Where there is no
+    pinch to fund the count never leaves the wide count it has always been, which
+    leaves the states -- and the answer -- exactly as they were.
+
+    Returns ``(states, parents, expanded)``: the far corner's states as
+    ``key -> cost``, one ``key -> (parent key, kind)`` link per state ever written,
+    and the number of states expanded.  A state carries no transition list of its
+    own -- copying the whole run onto every candidate cost more than the geometry it
+    was priced with -- so the winner's run is replayed off the parent links instead.
+    Every step advances at least one column, so a layer is final by the time it is
+    expanded and a link can never be rewritten from under a child that already read
+    it.
+
+    ``wide_pruning`` drops every state whose remaining dense-rail columns can no longer
+    fund the wide faces the budget still asks for -- two columns apiece -- because such
+    a state is dead however cheap it was to reach.  The caller enables it only when the
+    budget is arithmetically reachable and repeats the sweep without it when the run
+    comes home short, so the answer matches an unpruned search in both cases.
     """
-    inner_steps = len(inner) if is_closed else len(inner) - 1
-    outer_steps = len(outer) if is_closed else len(outer) - 1
-    allowed = _allowed_transitions(inner_steps, outer_steps)
     triangle_count = abs(inner_steps - outer_steps)
-    # A quad moves inner+outer by two and a triangle by one, so diagonal d is fed by
-    # round d-2 (quads) then round d-1 (triangles) and a round must read both parts in
-    # that order.  One flat dict plus a diagonal filter made every round re-scan all
-    # history -- ~800k dead iterations to reach ~24k live ones.
-    layers = {0: {(0, 0, None): (0.0, ())}}
-    # What is left of the rectangle once the round structure is fixed.  Only the one
-    # triangle direction that closes this strip's length gap is authorized, so d moves
-    # one way only and every prefix of a completable path has to stay between the start
-    # and the goal offsets.  A state outside that band is not merely lost on its own
-    # account: its parents are outside too, so no surviving state is reached through it
-    # and dropping it cannot reorder, reprice or retie anything.  The band is therefore
-    # tied to the single-direction rule rather than assumed, and gives up by itself if
-    # both triangle directions are ever authorized -- a wider search, not a wrong one.
+    # What is left of the rectangle once the round structure is fixed.  Only the steps
+    # that shift d one way close this strip's length gap, so d moves one way only and
+    # every prefix of a completable path has to stay between the start and the goal
+    # offsets.  A state outside that band is not merely lost on its own account: its
+    # parents are outside too, so no surviving state is reached through it and dropping
+    # it cannot reorder, reprice or retie anything.  The band is therefore tied to the
+    # one-direction rule rather than assumed, and gives up by itself if a kind ever
+    # shifts d the other way -- a wider search, not a wrong one.
     final_offset = outer_steps - inner_steps
     low_offset = min(0, final_offset)
     high_offset = max(0, final_offset)
-    band_limited = sum(1 for kind in allowed if kind != "QUAD") <= 1
+    band_limited = (
+        len({_rail_shift(kind) > 0 for kind in allowed if _rail_shift(kind)}) <= 1
+    )
+    layers = {0: {(0, 0, None, 0): 0.0}}
+    parents = {}
+    # One geometric price per (column pair, kind): the boundary checks, the face's own
+    # quality and the column bookkeeping below read nothing about how the path arrived
+    # here, so every predecessor and wide-count variant of the same step reuses them.
+    # Only the pairing pattern and the rung continuity stay priced per variant, because
+    # those two do read the path.  False marks a step no path may take at all.
+    step_cache = {}
+    # One rung vector per node, shared by the three reads one continuity price makes.
+    vector_cache = {}
     expanded = 0
     for total in range(inner_steps + outer_steps):
         tri_layer = {}
         quad_layer = {}
-        for (inner_index, outer_index, previous_kind), state in layers.pop(total).items():
+        wide_layer = {}
+        for (inner_index, outer_index, previous_kind, wide_used), state in layers.pop(
+            total
+        ).items():
+            if wide_pruning:
+                if outer_steps >= inner_steps:
+                    remaining_dense = outer_steps - outer_index
+                else:
+                    remaining_dense = inner_steps - inner_index
+                if wide_used + remaining_dense // 2 < budget:
+                    continue
             expanded += 1
-            prior_cost, prior_transitions = state
+            prior_cost = state
             for kind in allowed:
-                next_inner, next_outer = _advance(
-                    kind,
-                    inner_index,
-                    outer_index,
-                )
+                advance = TRANSITION_ADVANCE[kind]
+                next_inner = inner_index + advance[0]
+                next_outer = outer_index + advance[1]
                 if next_inner > inner_steps or next_outer > outer_steps:
+                    continue
+                width = advance[0] + advance[1]
+                next_wide = wide_used + _face_count_credit(
+                    kind,
+                    inner_steps,
+                    outer_steps,
+                )
+                if next_wide > budget:
                     continue
                 if band_limited and not (
                     low_offset <= next_outer - next_inner <= high_offset
@@ -1222,59 +1786,76 @@ def _build_transitions(
                     )
                 ):
                     continue
-                if (
-                    is_closed
-                    and next_inner == inner_steps
-                    and next_outer == outer_steps
-                ):
-                    crosses_boundary = False
-                else:
-                    crosses_boundary = _rung_crosses_boundary(
-                        boundary_geometry,
-                        next_inner,
-                        next_outer,
-                    )
-                if crosses_boundary:
+                cache_key = (inner_index, outer_index, kind)
+                cached = step_cache.get(cache_key)
+                if cached is None:
+                    if (
+                        is_closed
+                        and next_inner == inner_steps
+                        and next_outer == outer_steps
+                    ):
+                        crosses_boundary = False
+                    else:
+                        crosses_boundary = _rung_crosses_boundary(
+                            boundary_geometry,
+                            next_inner,
+                            next_outer,
+                        )
+                    if not crosses_boundary:
+                        crosses_boundary = _consecutive_rungs_cross(
+                            boundary_geometry,
+                            inner_index,
+                            outer_index,
+                            next_inner,
+                            next_outer,
+                        )
+                    if crosses_boundary:
+                        cached = False
+                    else:
+                        face = _transition_face(
+                            inner,
+                            outer,
+                            inner_index,
+                            outer_index,
+                            kind,
+                        )
+                        base_cost = _step_base_cost(
+                            face,
+                            kind,
+                            inner,
+                            outer,
+                            next_inner,
+                            next_outer,
+                            inner_boundary,
+                            outer_boundary,
+                            inner_steps,
+                            outer_steps,
+                            boundary_geometry,
+                        )
+                        if base_cost is None:
+                            cached = False
+                        else:
+                            cached = base_cost + _triangle_distribution_cost(
+                                kind,
+                                inner_index,
+                                outer_index,
+                                next_inner,
+                                next_outer,
+                                inner_steps,
+                                outer_steps,
+                                triangle_count,
+                            )
+                    step_cache[cache_key] = cached
+                if cached is False:
                     continue
-                consecutive_cross = _consecutive_rungs_cross(
+                pairing_offset = _pairing_offset(
                     boundary_geometry,
-                    inner_index,
-                    outer_index,
-                    next_inner,
-                    next_outer,
-                )
-                if consecutive_cross:
-                    continue
-                face = _transition_face(
-                    inner,
-                    outer,
-                    inner_index,
-                    outer_index,
                     kind,
-                )
-                step_cost = _step_cost(
-                    face,
-                    inner,
-                    outer,
                     next_inner,
                     next_outer,
-                    inner_boundary,
-                    outer_boundary,
+                    next_wide,
                     inner_steps,
                     outer_steps,
-                    boundary_geometry,
-                )
-                if step_cost is None:
-                    continue
-                triangle_cost = _triangle_distribution_cost(
-                    kind,
-                    inner_index,
-                    outer_index,
-                    next_inner,
-                    next_outer,
-                    inner_steps,
-                    outer_steps,
-                    triangle_count,
                 )
                 continuity_cost = _rung_continuity_cost(
                     boundary_geometry,
@@ -1283,26 +1864,141 @@ def _build_transitions(
                     outer_index,
                     next_inner,
                     next_outer,
+                    vector_cache,
                 )
-                candidate = (
-                    prior_cost + step_cost + triangle_cost + continuity_cost,
-                    (*prior_transitions, kind),
+                candidate_cost = (
+                    prior_cost
+                    + cached
+                    + PAIRING_TARGET_WEIGHT * pairing_offset * pairing_offset
+                    + continuity_cost
                 )
-                key = (next_inner, next_outer, kind)
-                layer = quad_layer if kind == "QUAD" else tri_layer
+                key = (next_inner, next_outer, kind, next_wide)
+                if width == 2:
+                    layer = quad_layer
+                elif width == 1:
+                    layer = tri_layer
+                else:
+                    layer = wide_layer
                 previous = layer.get(key)
-                if previous is None or candidate[0] < previous[0]:
-                    layer[key] = candidate
-        layers[total + 2] = quad_layer
-        ahead = layers.get(total + 1)
-        if ahead is None:
-            layers[total + 1] = tri_layer
+                if previous is None or candidate_cost < previous:
+                    layer[key] = candidate_cost
+                    parents[key] = (
+                        (inner_index, outer_index, previous_kind, wide_used),
+                        kind,
+                    )
+        # Each step lands in the round its own width reaches.  None of the three may
+        # assign: round total-1's wide face has already arrived in total+2, and the
+        # quad that lands there one round later has to join it rather than replace it.
+        # A key names its kind, so two rounds can never offer the same state and an
+        # update has nothing to overwrite.
+        for offset, layer in ((1, tri_layer), (2, quad_layer), (3, wide_layer)):
+            ahead = layers.get(total + offset)
+            if ahead is None:
+                layers[total + offset] = layer
+            else:
+                ahead.update(layer)
+    return layers[inner_steps + outer_steps], parents, expanded
+
+
+def _replay_transitions(key, parents):
+    """The run of kinds that produced one state, walked back off the parent links."""
+    kinds = []
+    link = parents.get(key)
+    while link is not None:
+        key, kind = link
+        kinds.append(kind)
+        link = parents.get(key)
+    kinds.reverse()
+    return tuple(kinds)
+
+
+def _build_transitions(
+    inner,
+    outer,
+    inner_boundary,
+    outer_boundary,
+    is_closed,
+    boundary_geometry,
+    waypoints=(),
+    region=None,
+):
+    """Solve the whole ladder: cheapest monotone path between two ordered rails.
+
+    Every rail column is attained by any monotone path that spends no wide step, so on a
+    band that needs none whichever vertex a crossing punctured is already guaranteed to
+    carry a rung once this returns -- see :func:`.seams.region_seam_rungs`.  That
+    guarantee is not enough either way: the rung it finds can sit a column off the vertex
+    the sampler pinned, and the face in between then straddles two UV islands.
+    ``waypoints`` are the nodes :func:`.seams` says a seam crossing needs, and the search
+    may not route around them -- which is also what stops a wide face from ever hiding
+    the one column a crossing landed on.
+    """
+    inner_steps = len(inner) if is_closed else len(inner) - 1
+    outer_steps = len(outer) if is_closed else len(outer) - 1
+    allowed, budget, _pinch_budget = _band_vocabulary(
+        region,
+        inner_steps,
+        outer_steps,
+    )
+    dense_steps = max(inner_steps, outer_steps)
+    sparse_steps = min(inner_steps, outer_steps)
+    # A wide face spends two columns of the denser rail and none of the sparser one, so
+    # the most a strip can ever spend is half the rails' length difference.  A budget
+    # inside that reach is pinned hard and the search prunes its dead states toward it;
+    # a budget past it cannot be met however the steps are ordered, so the sweep runs
+    # unpruned and the pin below settles for the closest shortfall rather than throwing
+    # the runner-up finals away with the dead states.
+    wide_pruning = (
+        budget > 0
+        and not waypoints
+        and budget <= (dense_steps - sparse_steps) // 2
+    )
+    for pruning in ((True, False) if wide_pruning else (False,)):
+        states, parents, expanded = _sweep_ladder(
+            inner,
+            outer,
+            inner_boundary,
+            outer_boundary,
+            is_closed,
+            boundary_geometry,
+            waypoints,
+            allowed,
+            budget,
+            inner_steps,
+            outer_steps,
+            pruning,
+        )
+        accumulate_scan("plan-expand", 0.0, expanded)
+        if not states:
+            if pruning:
+                continue
+            raise ValueError(pgettext("No valid ordered strip path was found."))
+        wide_final = 0
+        if budget:
+            # The band's face count is a hard target, not a preference: the source
+            # reported how many of its dense rail's columns go unjoined, and a ladder
+            # ending on any other wide count builds a band of a different size.  The
+            # pin therefore stands on the budget alone -- the pairing profile prices
+            # *where* the wide faces sit and can be absent altogether (a phase-locked
+            # region records no nodes); it was never a say in *how many*.  No reachable
+            # final can pass the budget, since the prefix cap forbids it, so when the
+            # exact count survives no final -- seam waypoints can pen the surplus into
+            # columns no wide face may span -- the closest shortfall is taken, and the
+            # ladder line prints it as wide=got/budget instead of letting the count
+            # drift in silence.
+            wide_final = max(key[3] for key in states)
+            final_keys = [key for key in states if key[3] == wide_final]
         else:
-            ahead.update(tri_layer)
-    accumulate_scan("plan-expand", 0.0, expanded)
-    candidates = list(layers[inner_steps + outer_steps].values())
-    if not candidates:
-        raise ValueError(pgettext("No valid ordered strip path was found."))
+            final_keys = list(states)
+        candidates = [
+            (states[key], _replay_transitions(key, parents))
+            for key in final_keys
+        ]
+        if not pruning or wide_final >= budget:
+            break
+        # A pruned sweep that still comes home short of the budget met geometry its
+        # arithmetic could not see; repeat it unpruned so the shortfall the pin
+        # reports is the one an unpruned search would have found.
     best = min(candidates, key=lambda state: state[0])
     if DIAGNOSE_LADDER and region is not None:
         print_ladder_dp(
@@ -1312,6 +2008,8 @@ def _build_transitions(
             allowed,
             sorted(candidates, key=lambda state: state[0])[:2],
             waypoints,
+            boundary_geometry.pairing_profile,
+            (wide_final, budget) if budget else (),
         )
     return best
 
@@ -1360,24 +2058,32 @@ def outer_boundary_order(inner_vertices, outer_vertices, region, decision=None):
     A ``decision`` from :func:`align_outer_boundary` is replayed instead of a new one
     being made, and comes back out again so the caller can freeze the two rails'
     pairing as one unit with the ladder solved on it.
+
+    The replayed order is also what the source band's own rungs are counted in, so both
+    branches record that reading for :func:`build_ordered_strip_plan` to solve against:
+    a frozen ladder never saw the nodes, and the one solved on the next tick has to be
+    pinned by the same numbering the rail is actually walked in.
     """
     if region.get("phase_locked"):
+        region[_PAIRING_NODES] = ()
         return list(outer_vertices), None
-    if decision is not None:
+    if decision is None:
+        started = time.perf_counter()
+        aligned, chosen = align_outer_boundary(
+            inner_vertices,
+            outer_vertices,
+            region["closed"],
+            region=region,
+        )
+        accumulate_scan("plan-align", time.perf_counter() - started, 1)
+    else:
         if DIAGNOSE_LADDER:
             print_outer_replay(region, decision)
-        return (
-            apply_outer_decision(outer_vertices, decision, region["closed"]),
-            decision,
-        )
-    started = time.perf_counter()
-    aligned, chosen = align_outer_boundary(
-        inner_vertices,
-        outer_vertices,
-        region["closed"],
-        region=region,
+        aligned = apply_outer_decision(outer_vertices, decision, region["closed"])
+        chosen = decision
+    region[_PAIRING_NODES] = _source_pairing_nodes(
+        region, inner_vertices, outer_vertices, chosen, region["closed"]
     )
-    accumulate_scan("plan-align", time.perf_counter() - started, 1)
     return aligned, chosen
 
 
@@ -1518,12 +2224,19 @@ def build_ordered_strip_plan(
 ):
     """Resample two ordered curves into one direct, monotone strip.
 
-    The solve sees geometry, with one authorized exception: ``waypoints`` are the
-    ladder nodes :func:`.seams.region_seam_waypoints` says a seam crossing needs, and
-    the search may not route around them.  They name two vertices the sampler already
-    pinned, so this connects what the pin created rather than shaping anything new.
-    ``outer_vertices`` arrives in the direction :func:`outer_boundary_order` chose,
-    because that is the order the seam looks its rung up in as well.
+    The solve sees geometry, with two authorized exceptions.  ``waypoints`` are the ladder
+    nodes :func:`.seams.region_seam_waypoints` says a seam crossing needs, and the search may
+    not route around them.  The region's :data:`_PAIRING_NODES` are the rungs its own source
+    band drew; those refuse no step either -- they price one, and where the pattern they
+    describe needs a face the dense rail's kinds do not supply they buy the strip that kind
+    (:func:`_pairing_pinches`).  What they never do is name a node the search has to stand on,
+    because a band rebuilt onto fewer inner columns than the source has cannot stand on the
+    recorded nodes at the face count the source drew -- what it can match is how many of them
+    leave each of its columns, which is the tally :func:`_pairing_profile` counts out and
+    :func:`_pairing_offset` prices.
+    ``outer_vertices`` arrives in the direction :func:`outer_boundary_order` chose, because
+    that is the order the seam looks its rung up in and the order the pairing nodes were
+    counted in.
 
     ``frozen`` is the entry :func:`frozen_ladder` says this step may replay: the search
     and the local swap are skipped outright and only the two rails' coordinates move,
@@ -1576,9 +2289,31 @@ def build_ordered_strip_plan(
             0.0,
             len(boundary_geometry.rung_cross_cache),
         )
-        allowed = _allowed_transitions(inner_steps, outer_steps)
+        pairing_nodes = tuple((region or {}).get(_PAIRING_NODES) or ())
+        allowed, _budget, pinch_budget = _band_vocabulary(
+            region,
+            inner_steps,
+            outer_steps,
+        )
+        (
+            boundary_geometry.pairing_profile,
+            pairing_counts,
+        ) = _pairing_profile(
+            pairing_nodes,
+            inner_steps,
+            outer_steps,
+        )
+        if DIAGNOSE_LADDER and region is not None and pairing_nodes:
+            print_pairing_profile(
+                region,
+                inner_steps,
+                outer_steps,
+                pairing_nodes,
+                pairing_counts,
+                pinch_budget,
+            )
         seam_nodes, dropped_nodes = _seam_waypoint_nodes(
-            waypoints,
+            tuple(waypoints),
             allowed,
             inner_steps,
             outer_steps,

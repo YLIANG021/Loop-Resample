@@ -8,6 +8,7 @@ from .diagnostics import (
     print_degenerate_face,
     print_normal_mismatch,
 )
+from .types import TRANSITION_ADVANCE
 from .utils import _point, _point_view
 
 
@@ -228,9 +229,15 @@ def validate_ordered_strip_plan(plan, inner_vertices, outer_vertices, region):
     outer_steps = len(outer_vertices) if is_closed else len(outer_vertices) - 1
     if not plan.transitions or not plan.faces:
         raise ValueError(pgettext("The strip plan contains no complete face sequence."))
-    if sum(kind in {"QUAD", "INNER_TRI"} for kind in plan.transitions) != inner_steps:
+    consumed_inner = 0
+    consumed_outer = 0
+    for kind in plan.transitions:
+        advance = TRANSITION_ADVANCE[kind]
+        consumed_inner += advance[0]
+        consumed_outer += advance[1]
+    if consumed_inner != inner_steps:
         raise ValueError(pgettext("The strip plan did not consume the full inner boundary."))
-    if sum(kind in {"QUAD", "OUTER_TRI"} for kind in plan.transitions) != outer_steps:
+    if consumed_outer != outer_steps:
         raise ValueError(pgettext("The strip plan did not consume the full outer boundary."))
     references = []
     for face_index, face_vertices in enumerate(plan.faces):
@@ -379,6 +386,16 @@ def _face_area_and_normal(coordinates):
         )
         area += 0.5 * second_cross.length
         normal_vector += second_cross
+    else:
+        # A triangle re-enters here with an empty range.  A face spanning two columns of
+        # one rail needs the whole fan: reading only the first triangle would call a
+        # wide face a third of its area and score it as a cramped face.
+        for index in range(2, len(coordinates) - 1):
+            fan_cross = (coordinates[index] - coordinates[0]).cross(
+                coordinates[index + 1] - coordinates[0]
+            )
+            area += 0.5 * fan_cross.length
+            normal_vector += fan_cross
     return area, normal_vector
 
 

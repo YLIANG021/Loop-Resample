@@ -3,6 +3,23 @@
 from dataclasses import dataclass
 
 
+# What one ladder step consumes of each rail, in columns.  The search advances its grid
+# by these, the validator totals up what a whole sequence consumed and the diagnostics
+# print one letter per kind, so all three read this instead of restating the arithmetic.
+# A wide face is a quad that covers two columns of the denser rail and none of the
+# sparser one -- the surplus triangle with its far corner opened onto the column the
+# ladder already stands on.  It is the kind the source band already uses when its face
+# count sits below the column count of its denser rail, and it never draws a face with
+# more than four corners.
+TRANSITION_ADVANCE = {
+    "QUAD": (1, 1),
+    "INNER_TRI": (1, 0),
+    "OUTER_TRI": (0, 1),
+    "INNER_WIDE": (2, 0),
+    "OUTER_WIDE": (0, 2),
+}
+
+
 @dataclass(frozen=True)
 class BoundaryParameters:
     """Geometry-only parameterization of an ordered mesh boundary."""
