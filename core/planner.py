@@ -58,6 +58,16 @@ REFLEX_PENALTY_WEIGHT = 40.0
 # kite pays in full.  Raise it if kites still outbid the face they save; lower it
 # if honest wide faces start losing to the triangles they replace.
 WIDE_ANGLE_WEIGHT = 8.0
+# The largest |cosine| of an interior angle a two-column face may show in the strict
+# sweep: this one cuts at 150 degrees flat and 30 degrees sharp, the same reading the
+# cost above prices on.  A spike is not a cheaper flat -- it is the same skipped column
+# seen from the far corner -- so the gate takes the worst corner whichever way it runs.
+# The priced term alone cannot be the gate: replacing the wide costs two triangles, and
+# a triangle's shape term is read at 1.35 against the wide's 0.75, which on a tight band
+# outbids the 2.0 face-count bid no matter how flat the corner goes.  Past this angle the
+# step is refused outright and the band drifts up to the spokes, which is what the
+# degraded sweep below exists for when even that leaves no path.
+WIDE_ANGLE_VETO_COS = 0.866
 # What one face over the source band's count costs.  The count used to be a hard
 # pin: the sweep was forced to buy every wide face the budget named, however ugly
 # the kite -- so a 9-on-19 band pinned at 15 faces grew four long diagonal kites
@@ -1477,10 +1487,11 @@ def _step_base_cost(
 
     A step spanning two columns of one rail is read once more before it is priced:
     :func:`wide_face_reflex_metrics` says whether the span re-enters -- an interior
-    angle past 180 degrees, which the strict sweep refuses outright -- and how
-    extreme its worst corner runs, which every sweep charges, because the edge-ratio
-    shape terms cannot tell a long diagonal kite from the band's plain elongated
-    quads and the kite is the face nobody wants to look at.
+    angle past 180 degrees -- and how extreme its worst corner runs.  The strict sweep
+    refuses the re-entry and any corner past :data:`WIDE_ANGLE_VETO_COS` outright; every
+    sweep charges the extremity, because the edge-ratio shape terms cannot tell a long
+    diagonal kite from the band's plain elongated quads and the kite is the face nobody
+    wants to look at.
     """
     quality = face_quality_cost(face, None)
     if quality is None:
@@ -1493,6 +1504,8 @@ def _step_base_cost(
             if reflex_reject:
                 return None
             reflex_cost = REFLEX_PENALTY_WEIGHT
+        elif extremity > WIDE_ANGLE_VETO_COS and reflex_reject:
+            return None
         reflex_cost += WIDE_ANGLE_WEIGHT * extremity * extremity
     rung = (
         boundary_geometry.inner_points[next_inner % len(inner)]
@@ -2059,7 +2072,8 @@ def _build_transitions(
     the one column a crossing landed on.
 
     ``reflex_reject`` refuses every two-column face that re-enters -- an interior angle
-    past 180 degrees.  A band whose budget pins wide faces onto a rail that bends
+    past 180 degrees -- and every one whose worst corner runs past
+    :data:`WIDE_ANGLE_VETO_COS`.  A band whose budget pins wide faces onto a rail that bends
     toward the sparse rail everywhere it can span them then has no path at all, so the
     caller (:func:`_search_ladder`) repeats this once with the refusal dropped: the
     re-entrant face is priced at :data:`REFLEX_PENALTY_WEIGHT` instead, bought only
@@ -2342,8 +2356,8 @@ def _search_ladder(
                 raise strict_error from None
             print_reflex_fallback(
                 region,
-                "degraded: a wide face re-enters past 180 degrees; "
-                "no clean placement survived the band's budget",
+                "degraded: every wide face the band's budget asks for either re-enters "
+                "past 180 degrees or turns worse than the strict sweep permits",
             )
     accumulate_scan("plan-build", time.perf_counter() - started, attempts)
     started = time.perf_counter()
