@@ -1174,6 +1174,7 @@ class _BoundaryGeometry:
         "minimum",
         "cell_size",
         "buckets",
+        "cell_candidate_cache",
         "rung_cross_cache",
         "boundary_records",
         "pairing_profile",
@@ -1201,6 +1202,8 @@ class _BoundaryGeometry:
         self.minimum = minimum
         self.cell_size = cell_size
         self.buckets = buckets
+        # Cell box -> the two boundaries' candidate sets, for as long as the buckets are frozen.
+        self.cell_candidate_cache = {}
         self.rung_cross_cache = {}
         self.boundary_records = boundary_records
         # The one thing here that is not measured from the rails: how many spokes this band's
@@ -1327,7 +1330,20 @@ def _indexed_segments(boundary_geometry, cell_ranges):
     so walking the grid once per boundary rebuilt every cell tuple and re-asked every cell a
     second time just to hear the other bucket's answer.  The list costs one allocation per rung
     and replaces the second walk, which is what the sweep spends most of its time on.
+
+    The boxes repeat far more often than the positions do: a box is only three integer intervals,
+    and neighbouring rungs of similar length fall inside the same one, so 100x200 asks 5369
+    positions through 997 distinct boxes.  An answer depends on nothing but the box and the frozen
+    buckets, so it is remembered for the life of the plan and the later caller iterates the very
+    set the first one built.  Walking the occupied cells instead of the box was measured as the
+    other way to cut this, and it loses: a real rung's box averages 12-36 cells while the two
+    rails together occupy 59-154, so the box is already the smaller question.
     """
+    key = tuple(cell_ranges)
+    cache = boundary_geometry.cell_candidate_cache
+    hits = cache.get(key)
+    if hits is not None:
+        return hits
     cells = [
         (x_index, y_index, z_index)
         for x_index in cell_ranges[0]
@@ -1340,6 +1356,8 @@ def _indexed_segments(boundary_geometry, cell_ranges):
         for cell in cells:
             indices.update(bucket.get(cell, ()))
         hits.append(indices)
+    hits = tuple(hits)
+    cache[key] = hits
     return hits
 
 
@@ -1371,8 +1389,8 @@ def _position_crosses_boundary(boundary_geometry, position):
 
     The hoisted pieces below are the same float operations the pair test
     performs; they are moved out of the candidate loop because a position fixes
-    one segment and sweeps dozens of the others.  ``probes`` counts the bucket
-    lookups the finer grid buys, since a long rung can cover many empty cells.
+    one segment and sweeps dozens of the others.  ``probes`` counts the cells a
+    rung's box covers, which is what the index would be asked were every box new.
     """
     epsilon_squared = boundary_geometry.epsilon_squared
     first = boundary_geometry.inner_points[position[0]]
