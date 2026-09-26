@@ -564,7 +564,13 @@ def _rung_ranking(rungs, outer_count, is_closed):
             anchor = None
             for position, (base, offsets) in enumerate(arcs):
                 start = (base - rotate) % outer_count if is_closed else base
-                if anchor is not None:
+                # The fold asks which way round the ring is nearer, and an open rail has no
+                # way round: an advance of more than half its length is just a long step, not
+                # a step back.  Folding it anyway books a conflict that no source rung drew,
+                # and conflicts outrank head and shift -- so a rail too short to hold an
+                # interior rung (one edge segment) is walked backwards to dodge it, shearing
+                # the whole band against the neighbour that stayed forward.
+                if anchor is not None and is_closed:
                     start = _continued(start, anchor, outer_count)
                 places = [start + offset for offset in offsets]
                 lowest = min(places)

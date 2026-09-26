@@ -481,15 +481,75 @@ def print_uv_note(region, detail):
     print(f"[Loop Resample][uvdiag] {_region_tag(region)} {detail}")
 
 
+def print_uv_records(region, records, rails, uv_key):
+    """What the transfer reads from: each island's rail polyline, and each source face.
+
+    A rebuilt face is matched to a source face along the *inner* rail, and every corner
+    then reads through that one answer -- so the two questions this cannot answer from the
+    face lines alone are where each source face actually sits on the *outer* rail, and
+    which copy of a cut vertex a source face keeps.  ``src#`` is the position in the list
+    the vote walks, ``face`` the source face itself; the vote ranks by ``inner`` and only
+    asks ``outer`` when two candidates cannot be told apart that way.  A face whose
+    ``outer_vote`` winner is not the ``src#`` it was given is being read from two islands'
+    worth of corners at once, and that is the chord.
+    """
+    for rail, chains in enumerate(rails or ()):
+        for index, chain in enumerate(chains):
+            print(
+                f"[Loop Resample][uvdiag] {_region_tag(region)} "
+                f"rail{rail} chain{index} closed={int(chain['closed'])} knots="
+                + " ".join(
+                    f"{u:.6f}@{_uv_text(values, uv_key)}" for u, values in chain["knots"]
+                )
+            )
+    for record in records:
+        print(
+            f"[Loop Resample][uvdiag] {_region_tag(region)} "
+            f"src#{record['diag_id']} face={record['face_index']} "
+            f"inner=[{record['u_start']:.6f},{record['u_end']:.6f}] "
+            f"outer={_span_text(record['outer_span'])} "
+            f"center={record['u_center']:.6f} "
+            f"tied="
+            + (
+                " ".join(
+                    f"r{rail}@{u:.6f}@{_uv_text(values, uv_key)}"
+                    for (rail, u), values in sorted(
+                        record["tied"].items(), key=lambda item: (item[0][0], item[0][1])
+                    )
+                )
+                or "-"
+            )
+        )
+
+
+def _span_text(span):
+    """A (start, end) u arc as ``[a,b]``, or ``none`` when that rail has no corner."""
+    return "none" if span is None else f"[{span[0]:.6f},{span[1]:.6f}]"
+
+
+def _uv_text(values, uv_key):
+    """The active layer's corner value as ``(x,y)``, or ``-`` when it holds none."""
+    value = (values or {}).get(uv_key)
+    if value is None:
+        return "-"
+    return f"({value[0]:.4f},{value[1]:.4f})"
+
+
 def print_uv_faces(region, rows, total):
     """Every rebuilt face the UV transfer could not place cleanly.
 
     A line is emitted when a corner was clamped to a chain end, when a corner took the
     value its matched source face keeps on a doubled rail vertex instead of
     interpolating, when the face fell through to the nearest-centre guess, when several
-    source faces tied for it, when it sits where a seam crosses, or when the island vote
-    had to replace the face its overlap vote picked -- the ways a wrong island can win,
-    and the last one is what keeps a wire off the map.
+    source faces tied for it, when it sits where a seam crosses, when the island vote
+    had to replace the face its overlap vote picked, or when the two rails of the same
+    rebuilt face would have picked different source faces -- the ways a wrong island can
+    win, and the first of those is what keeps a wire off the map.  Each flagged face is
+    followed by its two votes, ``gap`` being how much each winner won by.
+
+    ``decided=`` on the summary line counts every face by the rule that settled it: a
+    face not settled by ``inner`` is one whose inner rail could not place it on its own,
+    which is where the outer coverage and the centre distance take over.
     """
     flagged = [
         row
@@ -498,27 +558,43 @@ def print_uv_faces(region, rows, total):
         or row["fallback"]
         or row["tied"] > 1
         or row["near_seam"]
+        or row.get("votes_diverge")
         or any(probe["clamped"] or probe.get("tied") for probe in row["probes"])
     ]
     print(
         f"[Loop Resample][uvdiag] {_region_tag(region)} faces={total} "
         f"flagged={len(flagged)} "
-        f"moved={sum(bool(row['island_vote']) for row in rows)}"
+        f"moved={sum(bool(row['island_vote']) for row in rows)} "
+        "decided="
+        + ",".join(
+            f"{how}{sum(bool(row['resolved'] == how) for row in rows)}"
+            for how in ("inner", "outer", "centre")
+        )
     )
+    for row in rows:
+        # The flagged lines above only say what the transfer found suspicious.  Every face's
+        # final uv corners are what an overlap or a torn edge is actually measured on, and
+        # only here -- in the bmesh the transfer just wrote -- can the whole network be read
+        # back without the object being in the right mode for a script to touch it.
+        print(
+            f"[Loop Resample][uvdiag] {_region_tag(region)} "
+            f"all seq={row['face_seq']} face={row['face_index']} "
+            f"verts=[{row['vertices']}] uv=[{row['uvs']}]"
+        )
     for row in flagged:
         center = row["center"]
         print(
             f"[Loop Resample][uvdiag] {_region_tag(region)} "
-            f"face={row['face_index']} verts=[{row['vertices']}] "
+            f"face={row['face_index']} seq={row['face_seq']} verts=[{row['vertices']}] "
             f"rails={row['corner_rails']} "
             f"at=({center.x:.4f},{center.y:.4f},{center.z:.4f}) "
             f"corners=inner{row['inner_corners']}/outer{row['outer_corners']} "
             f"inner_span=[{row['inner_start']:.6f},{row['inner_end']:.6f}] "
-            f"outer_span=[{row['outer_start']:.6f},{row['outer_end']:.6f}] "
+            f"outer_span={_span_text(row['outer_span'])} "
             f"record_span=[{row['record_start']:.6f},{row['record_end']:.6f}] "
             f"record_center={row['record_center']:.6f} "
             f"overlap={row['overlap']:.6f} tied={row['tied']} "
-            f"fallback={int(row['fallback'])} "
+            f"fallback={int(row['fallback'])} decided={row['resolved']} "
             f"near_seam={int(row['near_seam'])} "
             f"island={int(row['island_vote'])} mat={row['material']} "
             f"uv=[{row['uvs']}] "
@@ -527,6 +603,34 @@ def print_uv_faces(region, rows, total):
                 f"u={probe['u']:.6f} in[{probe['low']:.6f},{probe['high']:.6f}]"
                 + (" CLAMPED" if probe["clamped"] else "")
                 + (" TIED" if probe.get("tied") else "")
+                + (
+                    f" CUT{'AHEAD' if probe['side'] > 0 else 'BEHIND'}"
+                    if probe.get("side")
+                    else ""
+                )
                 for probe in row["probes"]
             )
         )
+        votes = row.get("votes")
+        if votes:
+            print(
+                f"[Loop Resample][uvdiag] {_region_tag(region)} "
+                f"face#{row['face_seq']} src=#{row['record_id']} "
+                + (" DIVERGED " if row["votes_diverge"] else "")
+                + " ".join(
+                    f"{name}_vote=["
+                    + ",".join(f"#{source_id}:{value:.6f}" for source_id, value in entry["ranked"])
+                    + f"] ties={entry['ties']} gap={entry['gap']:.3e}"
+                    + (
+                        " centre=["
+                        + ",".join(
+                            f"#{source_id}:{value:.6f}"
+                            for source_id, value in entry["centre"]
+                        )
+                        + f"] cgap={entry['centre_gap']:.3e}"
+                        if "centre" in entry
+                        else ""
+                    )
+                    for name, entry in votes.items()
+                )
+            )

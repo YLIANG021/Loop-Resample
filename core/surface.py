@@ -40,6 +40,7 @@ from .diagnostics import (
     accumulate_scan,
     print_uv_faces,
     print_uv_note,
+    print_uv_records,
     print_uv_region,
 )
 from .regions import region_rails
@@ -52,14 +53,22 @@ _UV_MERGE_DECIMALS = 6
 # here would hand it a stored value that belongs to its neighbour.
 _TIED_CORNER_TOLERANCE = 1e-6
 
-# Where the two things a step asks for hundreds of times but never changes wait between
-# the asks: one source face's footprint split at the seam, and one chain's knots with the
-# wrap-around copy appended.  Both hang off dicts the capture built once and writes never
-# again, and ``_freeze_region`` hands ``source_faces`` to the next step as it stands, so
-# the same objects -- and what is cached on them -- ride out the whole session.
+# Knots closer than this along a rail are the same position, so a query landing on them is
+# choosing between copies of one point rather than interpolating between two points.
+_CUT_KNOT_TOLERANCE = 1e-9
+
+# Where the things a step asks for hundreds of times but never changes wait between
+# the asks: one source face's footprint split at the seam (along each rail), one
+# chain's knots with the wrap-around copy appended, and which two ends of the island a
+# chain's cut column separates.  All hang off dicts the capture built
+# once and writes never again, and ``_freeze_region`` hands ``source_faces`` to the next
+# step as it stands, so the same objects -- and what is cached on them -- ride out the
+# whole session.
 _RECORD_ARCS = "arcs"
+_RECORD_OUTER_ARCS = "outer_arcs"
 _CHAIN_POINTS = "points"
 _CHAIN_KNOT_US = "us"
+_CHAIN_CUT = "cut_ends"
 
 # Stays True while the add-on is being tuned; the [uvdiag] block it gates is removed
 # in one go at the end.  Set False to silence those lines without touching geometry.
@@ -157,6 +166,16 @@ def capture_region_faces(bm, region, paths):
             continue
         start, end = _u_span(inner_us, closed)
         center = _u_center(start, end, closed)
+        # Where this face sits along the rail the vote does not read, taken before the
+        # centre fills in the corners that stand on neither rail.  Kept because the inner
+        # rail is not always the one holding the answer: a face the inner vote cannot
+        # separate is placed by this instead -- see :func:`_match_face`.
+        outer_us = [
+            corner["u"]
+            for corner in corners
+            if corner["rail"] == 1 and corner["u"] is not None
+        ]
+        outer_span = _u_span(outer_us, closed) if outer_us else None
         for corner in corners:
             if corner["u"] is None:
                 corner["u"] = center
@@ -188,6 +207,8 @@ def capture_region_faces(bm, region, paths):
                 "u_start": start,
                 "u_end": end,
                 "u_center": center,
+                "outer_span": outer_span,
+                "face_index": face.index,
                 "chains": chains,
                 "corners": {
                     (corner["rail"], corner["u"]): corner["values"]
@@ -206,7 +227,7 @@ def capture_region_faces(bm, region, paths):
     # Only now that every face is in can a rail say which of its u values carry more
     # than one corner, so the faces keep their raw corners until this point.
     doubled = [builder.doubled_parameters() for builder in builders]
-    for record in records:
+    for order, record in enumerate(records):
         chains = {}
         for rail, token in record["chains"].items():
             chains[rail] = (
@@ -220,6 +241,10 @@ def capture_region_faces(bm, region, paths):
             for position, values in record.pop("corners").items()
             if position[1] in doubled[position[0]]
         }
+        if DIAGNOSE_UV:
+            # The position in the list the vote walks, which is the order that used to
+            # break a tie; the dump names candidates by it.
+            record["diag_id"] = order
     unmarked_cuts = _unmarked_boundaries(
         region, doubled, inner_vertices, outer_vertices,
         inner_segments, outer_segments,
@@ -430,6 +455,8 @@ def apply_region_faces(
             (inner_parameters, outer_parameters),
         )
     uv_layer = bm.loops.layers.uv.active if DIAGNOSE_UV else None
+    if DIAGNOSE_UV and records and "diag_id" in records[0]:
+        print_uv_records(region, records, rails, ("uv", uv_layer.name))
     rows = []
 
     for face in rebuilt_faces:
@@ -456,8 +483,9 @@ def apply_region_faces(
         start, end = _u_span(inner_us, closed)
         center = _u_center(start, end, closed=closed)
         corner_us = (inner_us, outer_us)
+        outer_span = _u_span(outer_us, closed) if outer_us else None
         vote = {} if DIAGNOSE_UV else None
-        record = _match_face(records, start, end, closed, vote)
+        record = _match_face(records, start, end, closed, vote, outer_span)
         off_island = not _island_reaches(record, corner_us, rails)
         if off_island:
             record = (
@@ -466,7 +494,6 @@ def apply_region_faces(
             )
         face.material_index = record["material_index"]
         face.smooth = record["smooth"]
-        outer_span = _u_span(outer_us, closed) if DIAGNOSE_UV else None
         chains = record["chains"]
         record_pole_uv = record.get("pole_uv")
         probes = [] if DIAGNOSE_UV else None
@@ -481,7 +508,7 @@ def apply_region_faces(
             sample = _tied_corner(record, rail, position, closed)
             if sample is None:
                 sample = _sample_chain(
-                    rails[rail][chain_index], position, periodic, probes
+                    rails[rail][chain_index], position, periodic, probes, corner_us[rail]
                 )
             elif DIAGNOSE_UV:
                 probes.append(
@@ -491,6 +518,7 @@ def apply_region_faces(
                         "high": position,
                         "clamped": False,
                         "tied": True,
+                        "side": 0,
                     }
                 )
             if DIAGNOSE_UV:
@@ -514,9 +542,18 @@ def apply_region_faces(
                         if kind == "uv":
                             loop[layer].uv = record_pole_uv
         if DIAGNOSE_UV:
+            votes = _diag_votes(records, ((start, end), outer_span), closed)
             rows.append(
                 {
                     "face_index": face.index,
+                    "face_seq": len(rows),
+                    "record_id": record.get("diag_id"),
+                    "votes": votes,
+                    "votes_diverge": bool(
+                        votes
+                        and votes["inner"]["ranked"][0][0]
+                        != votes["outer"]["ranked"][0][0]
+                    ),
                     "vertices": ",".join(
                         str(vertex.index) for vertex in face.verts
                     ),
@@ -530,14 +567,14 @@ def apply_region_faces(
                     "outer_corners": len(corners) - len(inner_us),
                     "inner_start": start,
                     "inner_end": end,
-                    "outer_start": outer_span[0],
-                    "outer_end": outer_span[1],
+                    "outer_span": outer_span,
                     "record_start": record["u_start"],
                     "record_end": record["u_end"],
                     "record_center": record["u_center"],
                     "overlap": vote["overlap"],
                     "tied": vote["tied"],
                     "fallback": vote["fallback"],
+                    "resolved": vote["resolved"],
                     "near_seam": _crosses_seam(
                         start,
                         end,
@@ -607,9 +644,10 @@ def _match_island(records, start, end, closed, corner_us, rails):
 
     Only consulted once the overlap vote has been rejected.  A triangle step has a
     single inner corner, so its inner span is a point that overlaps nothing and the
-    vote falls back to the nearest centre -- which can land across the seam and hand
-    back the neighbouring island's corner set.  Overlap still ranks the candidates, so
-    a face that does cover a source face keeps following that one.
+    vote falls back to the outer coverage and the nearest centre -- which can still
+    land across the seam and hand back the neighbouring island's corner set.  Overlap
+    still ranks the candidates, so a face that does cover a source face keeps
+    following that one.
     """
     span = _arc_pieces(start, end, closed)
     center = _u_center(start, end, closed)
@@ -619,7 +657,7 @@ def _match_island(records, start, end, closed, corner_us, rails):
         if not _island_reaches(record, corner_us, rails):
             continue
         overlap = _arc_overlap(span, _record_arcs(record, closed))
-        key = (-overlap, _u_distance(record["u_center"], center, closed))
+        key = (-overlap, _u_distance(record["u_center"], center, closed), record["face_index"])
         if best is None or key < best_key:
             best, best_key = record, key
     return best
@@ -642,43 +680,141 @@ def _chain_reaches(chain, u):
     return low - 1e-9 <= u <= high + 1e-9
 
 
-def _match_face(records, start, end, closed, probe=None):
+def _diag_votes(records, spans, closed):
+    """The best and second-best source face along each rail, ranked as the real vote ranks.
+
+    The vote reads the inner rail first and the outer one only when the inner cannot
+    separate the candidates, so ranking the same candidates by each rail on its own shows
+    the case that hides inside those lines: a rebuilt face whose two rails point at
+    different source faces is reading both sides of the island's cut at once, and that is
+    what draws a face as a chord across its own island.  When a rail's corners all stand at
+    one u -- the face a triangle step left behind -- no overlap is won at all and the
+    choice falls through to the outer coverage and the nearest centre, so ``centre`` ranks
+    those same candidates by that distance too.
+    """
+    if not records or "diag_id" not in records[0]:
+        return None
+    center = _u_center(spans[0][0], spans[0][1], closed)
+    votes = {}
+    for rail, face_span in enumerate(spans):
+        span = () if face_span is None else _arc_pieces(*face_span, closed)
+        pairs = sorted(
+            (
+                (
+                    record["diag_id"],
+                    _arc_overlap(
+                        span,
+                        _record_arcs(record, closed)
+                        if rail == 0
+                        else _record_outer_arcs(record, closed),
+                    ),
+                )
+                for record in records
+            ),
+            key=lambda pair: (-pair[1], pair[0]),
+        )
+        entry = {
+            "ranked": pairs[:2],
+            "ties": sum(1 for _, overlap in pairs if overlap == pairs[0][1]),
+            # How much the winner won by.  Two candidates can print the same overlap and
+            # still be ranked, so this is what says whether the choice was a decision or a
+            # coin flip that the record order settled.
+            "gap": pairs[0][1] - pairs[min(1, len(pairs) - 1)][1],
+        }
+        if rail == 0 and pairs[0][1] <= 0.0:
+            # Nothing was covered on this rail, so the vote went to the outer coverage and
+            # the centre distance; rank those same candidates by the distance it uses too.
+            centre = sorted(
+                (
+                    (
+                        record["diag_id"],
+                        _u_distance(record["u_center"], center, closed),
+                    )
+                    for record in records
+                ),
+                key=lambda pair: (pair[1], pair[0]),
+            )[:2]
+            entry["centre"] = centre
+            entry["centre_gap"] = centre[min(1, len(centre) - 1)][1] - centre[0][1]
+        votes["inner" if rail == 0 else "outer"] = entry
+    return votes
+
+
+_MATCH_TIE_TOLERANCE = 1e-12
+"""How close two inner overlaps have to be to count as the same answer.
+
+Evenly spaced rails make this common: a rebuilt face straddling two source columns
+covers each of them by the same width, and the two overlaps come out equal to within a
+float.  ``1e-12`` sits nine orders below the smallest real column on a 200-segment band
+and four above the noise those columns produce, so it calls a coin flip a coin flip
+without merging a decision.
+"""
+
+
+def _match_face(records, start, end, closed, probe=None, outer=None):
     """The source face the rebuilt face mostly covers along the region.
 
-    Once counts change, a rebuilt face can straddle a material or shading
-    boundary, and a centre-only vote flips the whole face to whichever side the
-    centre happens to land on; the overlap majority follows the source face the
-    new face actually covers most of.  A span degenerate on the inner rail -- the
-    face a triangle step turned into a single inner corner -- overlaps nothing and
-    falls back to the nearest centre.
+    Once counts change, a rebuilt face can straddle a material or shading boundary, and a
+    centre-only vote flips the whole face to whichever side the centre happens to land on;
+    the overlap majority follows the source face the new face actually covers most of.
 
-    ``probe`` is the temporary diagnostic's dict: it learns whether the vote was
-    won outright and, if it was not, how many source faces tied for it.
+    The inner overlap on its own is not always a decision, and when it is not the answer
+    used to come from whichever candidate the walk reached first -- an order that changes
+    between Blender sessions, and the wrong side of an island's cut.  So every source face
+    within :data:`_MATCH_TIE_TOLERANCE` of the best is kept and re-ranked: the outer rail's
+    coverage first, because that is the rail the corner values are read from as well; then
+    the nearest centre, the rule a degenerate inner span always needed; then the source
+    face index, which settles the last exact tie the same way every time.
+
+    ``probe`` is the temporary diagnostic's dict: it learns whether the vote was won
+    outright, how many source faces tied for it, and which rule settled it.
     """
     started = time.perf_counter()
     span = _arc_pieces(start, end, closed)
     best = None
     best_overlap = 0.0
-    tied = 0
+    runner_overlap = 0.0
+    positive = 0
     for record in records:
         overlap = _arc_overlap(span, _record_arcs(record, closed))
         if overlap > best_overlap:
-            best, best_overlap, tied = record, overlap, 1
-        elif probe is not None and overlap > 0.0:
-            tied += 1
+            best, runner_overlap = record, best_overlap
+            best_overlap = overlap
+        elif overlap > runner_overlap:
+            runner_overlap = overlap
+        if overlap > 0.0:
+            positive += 1
     work = len(records)
     fallback = best is None
-    if fallback:
+    resolved = "inner"
+    if fallback or best_overlap - runner_overlap <= _MATCH_TIE_TOLERANCE:
         center = _u_center(start, end, closed)
-        best = min(
-            records,
-            key=lambda record: _u_distance(record["u_center"], center, closed),
+        outer_pieces = _arc_pieces(*outer, closed) if outer else ()
+        ranked = sorted(
+            (
+                (
+                    -_arc_overlap(outer_pieces, _record_outer_arcs(record, closed)),
+                    _u_distance(record["u_center"], center, closed),
+                    record["face_index"],
+                    record,
+                )
+                for record in records
+                if _arc_overlap(span, _record_arcs(record, closed))
+                >= best_overlap - _MATCH_TIE_TOLERANCE
+            ),
         )
-        work += len(records)
+        work += len(ranked)
+        resolved = (
+            "outer"
+            if ranked[0][0] < 0.0 and (len(ranked) < 2 or ranked[1][0] > ranked[0][0])
+            else "centre"
+        )
+        best = ranked[0][3]
     if probe is not None:
         probe["overlap"] = best_overlap
-        probe["tied"] = tied
+        probe["tied"] = max(0, positive - 1)
         probe["fallback"] = fallback
+        probe["resolved"] = resolved
     accumulate_scan("face-match", time.perf_counter() - started, work)
     return best
 
@@ -702,6 +838,22 @@ def _record_arcs(record, closed):
     if arcs is None:
         arcs = _arc_pieces(record["u_start"], record["u_end"], closed)
         record[_RECORD_ARCS] = arcs
+    return arcs
+
+
+def _record_outer_arcs(record, closed):
+    """A source face's footprint along the outer rail, split the way the inner one is.
+
+    Only the faces the inner vote could not separate ask for this, so a healthy band
+    never computes it.
+    """
+    span = record.get("outer_span")
+    if span is None:
+        return ()
+    arcs = record.get(_RECORD_OUTER_ARCS)
+    if arcs is None:
+        arcs = _arc_pieces(span[0], span[1], closed)
+        record[_RECORD_OUTER_ARCS] = arcs
     return arcs
 
 
@@ -737,6 +889,48 @@ def _tied_corner(record, rail, u, closed):
     return best
 
 
+def _chain_cut(chain):
+    """The two ends of the island a chain's cut column separates, worked out once.
+
+    Where the rail walk arrives at one uv and leaves from another, the chain holds that one
+    u twice -- and the walk can cross the seam anywhere along the rail, not just at the
+    chain's lowest u.  Sorting cannot say which copy starts the island and which ends it --
+    both sit at the same u -- so the island is asked: the copy lying nearer the knot the
+    chain moves on to starts it, the copy nearer the knot the chain comes back to ends it.
+    A cut column sits a whole island's width from its own far end, so neither is a close
+    call, and should a chain hold several such columns the one whose copies lie farthest
+    apart is the one that separates the island.  None means there is nothing to route: no
+    column is held twice, or a chain too short to have a side to come back to.
+    """
+    if _CHAIN_CUT not in chain:
+        knots = chain["knots"]
+        columns = []
+        for knot in knots:
+            if columns and abs(columns[-1][-1][0] - knot[0]) <= _CUT_KNOT_TOLERANCE:
+                columns[-1].append(knot)
+            else:
+                columns.append([knot])
+        ends = None
+        widest = 0.0
+        for index, column in enumerate(columns):
+            if len(column) < 2 or len(knots) - len(column) < 2:
+                continue
+            # The walk leaves the cut for the next column up the rail and comes back to it
+            # from the column below -- and a cut with no column below is met one turn on,
+            # from the chain's last knot.
+            ahead = columns[(index + 1) % len(columns)][0]
+            behind = columns[index - 1][-1]
+            head = min(column, key=lambda knot: _uv_distance(knot[1], ahead[1]))
+            tail = min(column, key=lambda knot: _uv_distance(knot[1], behind[1]))
+            if head is tail:
+                continue
+            distance = _uv_distance(head[1], tail[1])
+            if ends is None or distance > widest:
+                ends, widest = (head, tail), distance
+        chain[_CHAIN_CUT] = ends
+    return chain[_CHAIN_CUT]
+
+
 def _chain_points(chain):
     """A chain's knots, with the wrap-around copy a closed rail needs already on the end.
 
@@ -744,13 +938,38 @@ def _chain_points(chain):
     its first across u=1, and saying so costs a fresh list of every knot on the chain --
     once per sampled corner, which is several hundred times a step for a list that was
     settled when the capture finished.
+
+    At the island's own cut the chain holds two copies of one u, and continuing from the
+    first would jump across the island to where the walk started.  So the chain is turned to
+    start at the cut instead: one copy stays at the front, every knot from the cut up the
+    rail keeps its u, every knot below the cut -- which the walk reaches only after coming
+    around the rail's origin -- takes a whole turn, and the far copy closes the list one turn
+    on.  That is the order the island is really walked in, and a cut at the lowest u is the
+    case where the batch below it is empty.
     """
     points = chain.get(_CHAIN_POINTS)
     if points is None:
         knots = chain["knots"]
-        points = (
-            knots + [(knots[0][0] + 1.0, knots[0][1])] if chain["closed"] else knots
-        )
+        ends = _chain_cut(chain) if chain["closed"] else None
+        if ends is None:
+            points = (
+                knots + [(knots[0][0] + 1.0, knots[0][1])] if chain["closed"] else knots
+            )
+        else:
+            head, tail = ends
+            cut_u = head[0]
+            points = [head]
+            wrapped = []
+            for knot in knots:
+                if knot is head or knot is tail:
+                    continue
+                knot_u, knot_uv = knot
+                if knot_u > cut_u + _CUT_KNOT_TOLERANCE:
+                    points.append(knot)
+                else:
+                    wrapped.append((knot_u + 1.0, knot_uv))
+            points.extend(wrapped)
+            points.append((tail[0] + 1.0, tail[1]))
         chain[_CHAIN_POINTS] = points
     return points
 
@@ -759,8 +978,10 @@ def _chain_knot_us(chain):
     """The knot positions of :func:`_chain_points`, ascending.
 
     Ascending is what lets one jump replace the walk from the front.  It holds because
-    ``_RailBuilder.chains`` sorted the knots and every u is a position along the rail,
-    so the wrap copy -- the first knot plus a whole turn -- lands past the last one.
+    ``_RailBuilder.chains`` sorted the knots and every u is a position along the rail: a
+    routed chain starts at the cut, keeps the u of everything above it and adds a whole turn
+    to everything below, and rail us never reach past one turn -- so the batch below the cut
+    lands between the last knot above it and the far copy closing the list.
     """
     us = chain.get(_CHAIN_KNOT_US)
     if us is None:
@@ -769,12 +990,49 @@ def _chain_knot_us(chain):
     return us
 
 
-def _sample_chain(chain, u, periodic, probe=None):
+def _corner_side(rail_us, u, closed):
+    """Which way a face's other corners on this rail lie from ``u``: +1 ahead, -1 behind.
+
+    A rebuilt face never covers half the loop, so its corners are either all one way from
+    the cut or all the other.  Mixed, or nothing to compare against, is answered 0 because
+    there is no side to read the cut from.
+    """
+    ahead = False
+    behind = False
+    for other in rail_us:
+        if other is None or abs(other - u) <= _CUT_KNOT_TOLERANCE:
+            continue
+        delta = other - u
+        if closed:
+            ahead = ahead or 0.0 < delta < 0.5 or delta < -0.5
+            behind = behind or delta > 0.5 or -0.5 < delta < 0.0
+        else:
+            ahead = ahead or delta > 0.0
+            behind = behind or delta < 0.0
+    if ahead == behind:
+        return 0
+    return 1 if ahead else -1
+
+
+def _uv_distance(first, second):
+    total = 0.0
+    for key, vector in first.items():
+        other = second.get(key)
+        if other is None:
+            continue
+        for value, expected in zip(vector, other):
+            total += (value - expected) * (value - expected)
+    return total
+
+
+def _sample_chain(chain, u, periodic, probe=None, rail_us=()):
     """Interpolate one island's rail polyline at u, as {layer name: Vector}.
 
     ``probe`` is the temporary diagnostic's list: one entry per sample recording
     the u asked for, the u window the chain actually covers, and whether the
-    answer had to be clamped to an end knot.
+    answer had to be clamped to an end knot.  ``rail_us`` are the other corners
+    of the face being read, on this rail: a cut column has two copies and they
+    say which copy this face stands on.
     """
     knots = chain["knots"]
     if len(knots) == 1:
@@ -785,12 +1043,22 @@ def _sample_chain(chain, u, periodic, probe=None):
                     "low": knots[0][0],
                     "high": knots[0][0],
                     "clamped": abs(u - knots[0][0]) > 1e-9,
+                    "side": 0,
                 }
             )
         return knots[0][1]
     points = _chain_points(chain)
     if chain["closed"] and u < points[0][0]:
         u += 1.0
+    side = 0
+    asked = u
+    ends = _chain_cut(chain)
+    if ends is not None and abs(u - ends[0][0]) <= _CUT_KNOT_TOLERANCE:
+        # A face arriving at the cut from the far side of the loop wants the end the walk
+        # comes back to, which the chain now carries one turn on rather than at the front.
+        side = _corner_side(rail_us, u, chain["closed"])
+        if side < 0:
+            u += 1.0
     # ``bisect_left`` counts the knots strictly below u, so one less is the knot the walk
     # stopped on: the walk advanced exactly while u was past the *next* knot, which is the
     # same as saying the knot at or below u is the last one it passed.  Both ends clamp --
@@ -809,10 +1077,11 @@ def _sample_chain(chain, u, periodic, probe=None):
     if probe is not None:
         probe.append(
             {
-                "u": u,
+                "u": asked,
                 "low": points[0][0],
                 "high": points[-1][0],
                 "clamped": factor < 0.0 or factor > 1.0,
+                "side": side,
             }
         )
     factor = max(0.0, min(1.0, factor))
