@@ -131,8 +131,8 @@ def _rail_shift(kind):
 
 
 # Temporary: how a shape axis moved a strip's connectivity.  Off costs nothing but the
-# branch; nothing below reads it to decide anything.
-DIAGNOSE_LADDER = True
+# branch; nothing below reads it to decide anything.  Set True to bring the lines back.
+DIAGNOSE_LADDER = False
 
 
 def _triangle_distribution_cost(

@@ -70,9 +70,10 @@ _CHAIN_POINTS = "points"
 _CHAIN_KNOT_US = "us"
 _CHAIN_CUT = "cut_ends"
 
-# Stays True while the add-on is being tuned; the [uvdiag] block it gates is removed
-# in one go at the end.  Set False to silence those lines without touching geometry.
-DIAGNOSE_UV = True
+# The [uvdiag] block it gates is tuning instrumentation and is removed in one go at the
+# end; its out-parameters are read by nothing that decides a UV, so False here cannot
+# change a value -- it only silences the lines.  Set True to bring them back.
+DIAGNOSE_UV = False
 
 
 def _corner_layers(bm):
