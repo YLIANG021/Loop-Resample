@@ -68,6 +68,18 @@ WIDE_ANGLE_WEIGHT = 8.0
 # step is refused outright and the band drifts up to the spokes, which is what the
 # degraded sweep below exists for when even that leaves no path.
 WIDE_ANGLE_VETO_COS = 0.866
+# Whether a band may be offered a two-column step at all.  The budget is the only door the
+# wide kind and the pinching kind come through, so with this off they retire together with
+# the prefix cap, the soft face-count bid and the reflex gates above: each of those reads the
+# budget or a kind the budget buys.  What is left is a QUAD plus the one surplus kind the
+# dense rail's length asks for -- the vocabulary the rails were solved with before the
+# two-column step landed, which is the state the dense bands were last reported to spread
+# evenly in.  Off is no verdict on the step: a band whose source tally is stacked moves that
+# way with this off too, so the step never moved the surplus, it only paid for its own kites.
+# The anchor is the reason to be careful with it, though: the budget reads the *target* rail's
+# column count, so it keeps growing -- one wide face per sparse column at worst -- the higher
+# the count is scrolled.
+WIDE_FACES_ENABLED = False
 # What one face over the source band's count costs.  The count used to be a hard
 # pin: the sweep was forced to buy every wide face the budget named, however ugly
 # the kite -- so a 9-on-19 band pinned at 15 faces grew four long diagonal kites
@@ -90,6 +102,17 @@ PAIRING_TARGET_WEIGHT = 0.15
 # least one column -- otherwise every path doubles the same fixed number of columns
 # and the charge would be a constant that settles nothing.
 PINCH_PLACE_WEIGHT = 0.5
+# Whether the source band's spoke tally prices the ladder at all.  Off, the record is still
+# read for everything it was ever read for at the rail end -- which way to walk the outer
+# rail and where to cut it -- but it never reaches the per-step price, so the search
+# optimizes geometry alone: shape, rung length, progress, and how the surplus spreads over
+# the strip.  That is the reading the ladder was solved with before the tally landed, and the
+# tally is what moved a dense band's surplus: handed a source that stacked its spokes on one
+# column, a 40x80 band put thirteen of its forty triangles there and left the next eight
+# columns empty, and the same band with this off answers as it did before the tally existed.
+# Turn it back on only in a form that cannot order a pile the source's own geometry drew
+# somewhere else.
+LADDER_PAIRING_ENABLED = False
 # Where a region keeps the ladder nodes its own source band named, recorded once per step
 # beside the outer order they were counted in.  The solve reads them, and only to price a
 # step -- see :func:`_pairing_profile`.  Nothing else writes.
@@ -416,6 +439,8 @@ def _source_pairing_nodes(region, inner_vertices, outer_vertices, decision, is_c
     :func:`apply_outer_decision` applies it: a node named in a numbering the rail is not
     walked in blames the wrong vertex by exactly the rotation that hid it.
     """
+    if not LADDER_PAIRING_ENABLED:
+        return ()
     rungs = (region or {}).get("source_rungs") or ()
     frames = (region or {}).get("frames") or {}
     if not rungs or decision is None:
@@ -758,7 +783,7 @@ def _wide_face_budget(region, inner_steps, outer_steps):
     has to be paid back on the other then, which is a different question than the one a
     wide face answers.
     """
-    if inner_steps == outer_steps:
+    if not WIDE_FACES_ENABLED or inner_steps == outer_steps:
         return 0
     dense_steps = max(inner_steps, outer_steps)
     records = ((region or {}).get("source_faces") or {}).get("records") or ()
