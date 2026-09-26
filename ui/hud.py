@@ -104,9 +104,30 @@ _CHIP_BUTTON_SCALE = 0.96
 _CHIP_UI_SCALE = 1.3 * _CHIP_BUTTON_SCALE
 _CHIP_PADDING_X = 9.0
 _CHIP_PADDING_Y = 5.0
-_CHIP_GAP = 4.0
+# Written as the pixel measure it has to produce, because that is what the armed chip is
+# measured against: a plate has to stay clear of its neighbour's first glyph, which is one
+# gap plus one of the neighbour's own paddings away, and the 1.248 scale on top of a raw 4.0
+# did not leave room for a chip grown to 115%.
+_CHIP_GAP = 12.0 / _CHIP_UI_SCALE
 _CHIP_TEXT_LIFT = 3.0
 _CHIP_RADIUS = 8.0
+# The armed chip is also the bigger one.  Size says the thing the lit colour already said --
+# which axis the wheel is pointed at -- and says it at the instant the key goes down rather
+# than as a shade the eye has to compare against a neighbour.  Plate and glyphs grow together
+# about the chip's own centre, so the padding keeps its proportion whatever the multiplier;
+# what a multiplier buys is overlap: it spends pixels in proportion to the chip's own width,
+# so 15% on a wide chip reaches a good deal further than 15% on a narrow one.  The clearance
+# to a neighbour's glyphs is one gap plus that neighbour's own padding, 23 pixels.  The
+# 115% below costs the two shape chips 12 and 14 of those pixels, which is why they keep it.
+_CHIP_ARM_SCALE = 1.15
+# The counts chip is the one that can be long: several paths at several counts is one string
+# of a dozen characters, and it is the reading that grows as the wheel is turned.  At 115% it
+# spent 18 pixels of that clearance with a single count and 28 with four paths listed, so it
+# takes a smaller multiplier and still reads as the picked-up chip.  Note that the multiplier
+# only reaches the glyphs in whole points: 1.028 to 1.083 draws at 19 pixels, 1.084 to 1.138
+# at 20, 1.139 to 1.194 at 21, so between those numbers it is the plate being sized, and
+# crossing one of them moves the text a whole pixel either way.
+_CHIP_ARM_SCALE_COUNTS = 1.075
 _CHIP_STYLES = {
     "warning": (
         (0.40, 0.12, 0.12, 0.88),
@@ -404,8 +425,9 @@ def _chips(operator):
     all: the wheel is doing something other than what it does by default, and nothing on the
     mesh says why.
 
-    Only the armed axis is lit.  The count chip used to go red when the wheel was pointed
-    elsewhere, which read as a warning about a count that is doing exactly what it should.
+    Only the armed axis is lit, and it is the bigger chip of the row.  The count chip used
+    to go red when the wheel was pointed elsewhere, which read as a warning about a count
+    that is doing exactly what it should.
 
     The count reads entry → current, because a scroll carries every locked path by the same
     amount rather than driving them to one shared number: where the wheel started is the only
@@ -426,6 +448,7 @@ def _chips(operator):
                 current=_counts_text(operator.label_values, closed),
             ),
             "type": "hotkey_active" if mode == MODE_COUNT else "hotkey",
+            "arm_scale": _CHIP_ARM_SCALE_COUNTS,
         },
         {
             "text": pgettext("[Shift] Smooth")
@@ -458,23 +481,50 @@ def _strength_text(operator, attribute):
     return " " + str(int(round(value * 100))) + "%"
 
 
-def _draw_chip(chip, x, bottom, width, box_height, padding_x, padding_y, text_lift):
-    """One chip: yl_bevelflow's rounded box, his outline width, his text placement."""
+def _draw_chip(
+    chip,
+    x,
+    bottom,
+    width,
+    box_height,
+    padding_x,
+    padding_y,
+    text_lift,
+    text_size,
+    scale=1.0,
+):
+    """One chip: yl_bevelflow's rounded box, his outline width, his text placement.
+
+    ``width``/``box_height``/the two offsets are the chip's *resting* measures, the ones the
+    row was laid out with, and ``scale`` grows the drawing about the chip's own centre from
+    them.  So a grown chip cannot push its neighbours: the layout was settled before the
+    multiplier was ever applied, and only the plate and glyphs move.
+    """
     background, outline, text_color = _CHIP_STYLES.get(
         chip.get("type"), _CHIP_STYLES["label"]
     )
+    center_x = x + width * 0.5
+    center_y = bottom + box_height * 0.5
+    grown_width = width * scale
+    grown_height = box_height * scale
     _draw_rounded_box(
-        x,
-        bottom,
-        width,
-        box_height,
+        center_x - grown_width * 0.5,
+        center_y - grown_height * 0.5,
+        grown_width,
+        grown_height,
         background,
         outline,
-        _CHIP_RADIUS,
+        _CHIP_RADIUS * scale,
         1.0,
     )
+    blf.size(_FONT_ID, max(1, int(round(text_size * scale))))
     blf.color(_FONT_ID, *text_color)
-    blf.position(_FONT_ID, x + padding_x, bottom + padding_y + text_lift, 0.0)
+    blf.position(
+        _FONT_ID,
+        center_x + (x + padding_x - center_x) * scale,
+        center_y + (bottom + padding_y + text_lift - center_y) * scale,
+        0.0,
+    )
     blf.draw(_FONT_ID, chip["text"])
 
 
@@ -543,6 +593,7 @@ def _draw_warning(region, text, bottom):
         metrics["padding_x"],
         metrics["padding_y"],
         metrics["text_lift"],
+        text_size,
     )
 
 
@@ -583,18 +634,31 @@ def _draw_chip_row(operator, region):
         metrics = _chip_metrics(chips, text_size)
     bottom = _CHIP_BOTTOM_MARGIN
     x = (region.width - metrics["total"]) * 0.5
+    laid_out = []
     for chip, width in zip(chips, metrics["widths"]):
-        _draw_chip(
-            chip,
-            x,
-            bottom,
-            width,
-            metrics["height"],
-            metrics["padding_x"],
-            metrics["padding_y"],
-            metrics["text_lift"],
-        )
+        laid_out.append((chip, x, width))
         x += width + metrics["item_gap"]
+    # Resting measures all the way through the layout, so the armed chip is the only thing
+    # that moves -- a row that shuffled sideways every time a key went down would read as the
+    # whole band flickering rather than as one chip being picked up.  The armed chip does
+    # overhang its neighbours, and going last is what makes that a plate laid on the row
+    # instead of a neighbour with a bite taken out of it.
+    for armed in (False, True):
+        for chip, chip_x, width in laid_out:
+            if (chip["type"] == "hotkey_active") is not armed:
+                continue
+            _draw_chip(
+                chip,
+                chip_x,
+                bottom,
+                width,
+                metrics["height"],
+                metrics["padding_x"],
+                metrics["padding_y"],
+                metrics["text_lift"],
+                text_size,
+                (chip.get("arm_scale", _CHIP_ARM_SCALE) if armed else 1.0),
+            )
     return bottom + metrics["height"]
 
 
