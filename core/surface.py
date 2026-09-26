@@ -99,6 +99,21 @@ def capture_region_faces(bm, region, paths):
     inner_index = {vertex: index for index, vertex in enumerate(inner_vertices)}
     outer_index = {vertex: index for index, vertex in enumerate(outer_vertices)}
     value_layers = _corner_layers(bm)
+    is_fan = region.get("kind") == "FAN"
+    pole_vertex = region.get("pole_vertex")
+    pole_uv = None
+    if is_fan and pole_vertex:
+        # Find the UV of the pole vertex from any source face that contains it.
+        # The pole sits at the center of all its triangles in UV space.
+        for face in region["faces"]:
+            if not face.is_valid:
+                continue
+            for loop in face.loops:
+                if loop.vert is pole_vertex:
+                    pole_uv = loop[bm.loops.layers.uv.active].uv.copy()
+                    break
+            if pole_uv is not None:
+                break
 
     builders = (_RailBuilder(closed), _RailBuilder(closed))
     records = []
@@ -117,6 +132,9 @@ def capture_region_faces(bm, region, paths):
                 rail, u = 0, inner_index[vertex] / inner_segments
             elif vertex in outer_index:
                 rail, u = 1, outer_index[vertex] / outer_segments
+            elif is_fan and vertex is pole_vertex:
+                # Pole vertex: mark specially, don't add to rail chains
+                rail, u = -1, None
             else:
                 # A fan pole sits on neither rail; its u becomes the centre of
                 # the face's inner corners, resolved once they are all known.
@@ -161,6 +179,8 @@ def capture_region_faces(bm, region, paths):
                 if edge.verts[0] in by_vertex and edge.verts[1] in by_vertex
             ]
             chains[rail] = builders[rail].add(list(by_vertex.values()), pairs)
+        # Store pole UV in record for special handling during apply
+        record_pole_uv = pole_uv
         records.append(
             {
                 "material_index": int(face.material_index),
@@ -171,8 +191,9 @@ def capture_region_faces(bm, region, paths):
                 "chains": chains,
                 "corners": {
                     (corner["rail"], corner["u"]): corner["values"]
-                    for corner in corners
+                    for corner in corners if corner["rail"] >= 0
                 },
+                "pole_uv": record_pole_uv,
             }
         )
 
@@ -396,6 +417,8 @@ def apply_region_faces(
         # interpolate from.
         return
     closed = bool(captured.get("closed"))
+    is_fan = region.get("kind") == "FAN"
+    pole_vertex = region.get("pole_vertex")
     layers_by_key = _corner_layers(bm)
     periodic = captured.get("periodic", frozenset())
     rails = captured.get("rails") or ([], [])
@@ -445,8 +468,12 @@ def apply_region_faces(
         face.smooth = record["smooth"]
         outer_span = _u_span(outer_us, closed) if DIAGNOSE_UV else None
         chains = record["chains"]
+        record_pole_uv = record.get("pole_uv")
         probes = [] if DIAGNOSE_UV else None
         for loop, rail, u, corner_index in corners:
+            # Skip pole vertices - handled separately below
+            if rail == -1:
+                continue
             chain_index = chains.get(rail)
             if chain_index is None:
                 continue
@@ -479,6 +506,13 @@ def apply_region_faces(
                     loop[layer].uv = value
                 else:
                     loop[layer] = value
+        # Handle pole vertices for FAN regions
+        if is_fan and record_pole_uv is not None:
+            for loop in face.loops:
+                if loop.vert is pole_vertex:
+                    for key, (kind, layer) in layers_by_key.items():
+                        if kind == "uv":
+                            loop[layer].uv = record_pole_uv
         if DIAGNOSE_UV:
             rows.append(
                 {
