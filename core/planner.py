@@ -1540,6 +1540,11 @@ def _step_base_cost(
     )
 
 
+# Stands in for "this key has no entry yet", because a cached refusal is a legitimate
+# stored value (None) that ``dict.get`` cannot tell apart from a missing key.
+_NOT_CACHED = object()
+
+
 def _step_cost(
     face,
     kind,
@@ -1554,21 +1559,49 @@ def _step_cost(
     outer_steps,
     boundary_geometry,
     reflex_reject=True,
+    step_cache=None,
 ):
-    base_cost = _step_base_cost(
-        face,
-        kind,
-        inner,
-        outer,
-        next_inner,
-        next_outer,
-        inner_boundary,
-        outer_boundary,
-        inner_steps,
-        outer_steps,
-        boundary_geometry,
-        reflex_reject,
-    )
+    """One step's price: its own geometry plus what it does to the band's spoke tally.
+
+    ``step_cache`` memoizes the geometric half per ``(column pair, kind)``.  The local swap
+    asks for the same step from both sides of the pair it is comparing, and the face it
+    would rebuild to price it is the same face either way.
+    """
+    if step_cache is None:
+        base_cost = _step_base_cost(
+            face,
+            kind,
+            inner,
+            outer,
+            next_inner,
+            next_outer,
+            inner_boundary,
+            outer_boundary,
+            inner_steps,
+            outer_steps,
+            boundary_geometry,
+            reflex_reject,
+        )
+    else:
+        origin = _previous_node(kind, next_inner, next_outer)
+        key = (origin[0], origin[1], kind)
+        base_cost = step_cache.get(key, _NOT_CACHED)
+        if base_cost is _NOT_CACHED:
+            base_cost = _step_base_cost(
+                face,
+                kind,
+                inner,
+                outer,
+                next_inner,
+                next_outer,
+                inner_boundary,
+                outer_boundary,
+                inner_steps,
+                outer_steps,
+                boundary_geometry,
+                reflex_reject,
+            )
+            step_cache[key] = base_cost
     if base_cost is None:
         return None
     pairing_offset = _pairing_offset(
@@ -1610,8 +1643,14 @@ def _local_transition_pair_score(
     triangle_count=0,
     vector_cache=None,
     reflex_reject=True,
+    step_cache=None,
 ):
-    """Score two adjacent transitions without rebuilding the whole strip."""
+    """Score two adjacent transitions without rebuilding the whole strip.
+
+    ``step_cache`` rides along with ``vector_cache``: both let the caller's two visits of
+    the same step answer off the first one's arithmetic instead of rebuilding and
+    re-measuring its face.
+    """
     inner_index = start_inner
     outer_index = start_outer
     # The wide tally the search would have been carrying at this point, recovered by adding
@@ -1657,6 +1696,7 @@ def _local_transition_pair_score(
             outer_steps,
             boundary_geometry,
             reflex_reject,
+            step_cache,
         )
         if step_cost is None:
             return None
@@ -1708,6 +1748,13 @@ def _beautify_transitions(
     outer_steps = len(outer) if is_closed else len(outer) - 1
     triangle_count = abs(inner_steps - outer_steps)
     vector_cache = {}
+    # The swap prices the same step twice -- once with the pair in each order -- and a
+    # step's own geometry answers the same either way, so one cache spans the whole pass.
+    step_cache = {}
+    # The corners come off the coordinates the search already read, copied once per solve,
+    # instead of re-reading ``vertex.co`` for every priced face.
+    inner_rail = boundary_geometry.inner_points
+    outer_rail = boundary_geometry.outer_points
 
     for _pass in range(2):
         changed = False
@@ -1738,8 +1785,8 @@ def _beautify_transitions(
                 index,
                 inner_index,
                 outer_index,
-                inner,
-                outer,
+                inner_rail,
+                outer_rail,
                 inner_boundary,
                 outer_boundary,
                 inner_steps,
@@ -1749,6 +1796,7 @@ def _beautify_transitions(
                 triangle_count,
                 vector_cache,
                 reflex_reject,
+                step_cache,
             )
             if current_score is None:
                 inner_index, outer_index = _advance(
@@ -1769,8 +1817,8 @@ def _beautify_transitions(
                 index,
                 inner_index,
                 outer_index,
-                inner,
-                outer,
+                inner_rail,
+                outer_rail,
                 inner_boundary,
                 outer_boundary,
                 inner_steps,
@@ -1780,6 +1828,7 @@ def _beautify_transitions(
                 triangle_count,
                 vector_cache,
                 reflex_reject,
+                step_cache,
             )
             alternate_balance = _transition_pair_balance_penalty(
                 transitions,
@@ -1876,6 +1925,13 @@ def _sweep_ladder(
     step_cache = {}
     # One rung vector per node, shared by the three reads one continuity price makes.
     vector_cache = {}
+    # The two rails as coordinates rather than as mesh vertices.  Everything a priced step
+    # does with a corner is subtract it and measure it, and :func:`_prepare_boundary_geometry`
+    # already copied both rails once for that -- so the candidate faces are built off the
+    # copy.  Going through the vertices instead read ``vertex.co`` once per corner per
+    # priced face, and each of those reads hands back a fresh Vector.
+    inner_rail = boundary_geometry.inner_points
+    outer_rail = boundary_geometry.outer_points
     expanded = 0
     for total in range(inner_steps + outer_steps):
         tri_layer = {}
@@ -1949,8 +2005,8 @@ def _sweep_ladder(
                         cached = False
                     else:
                         face = _transition_face(
-                            inner,
-                            outer,
+                            inner_rail,
+                            outer_rail,
                             inner_index,
                             outer_index,
                             kind,
@@ -1958,8 +2014,8 @@ def _sweep_ladder(
                         base_cost = _step_base_cost(
                             face,
                             kind,
-                            inner,
-                            outer,
+                            inner_rail,
+                            outer_rail,
                             next_inner,
                             next_outer,
                             inner_boundary,
