@@ -83,6 +83,26 @@ def _mode_for(shift_held, ctrl_held):
     return MODE_SMOOTH if shift_held else MODE_EVEN if ctrl_held else MODE_COUNT
 
 
+# The viewport the menu item was clicked in, remembered for the call the timer defers.
+# Nothing else carries it: a timer callback runs without a UI context, so the deferred invoke
+# has no area to ask, and guessing one from ``windows`` guesses the first one -- which with
+# two Blender windows open on screen is the window the user is not in.
+_MENU_CLICK = {"area": None}
+
+
+def _clicked_viewport():
+    """The remembered click's viewport, if it is still one on screen."""
+    area = _MENU_CLICK["area"]
+    if area is None:
+        return None
+    try:
+        return area if area.type == "VIEW_3D" else None
+    except ReferenceError:
+        # Its window has been closed since the click.
+        _MENU_CLICK["area"] = None
+        return None
+
+
 def _viewport_area(context):
     """The 3D viewport the overlay belongs to, even when the caller has no area to hand over.
 
@@ -91,20 +111,27 @@ def _viewport_area(context):
     no area, and the overlay is pinned to the area captured here -- both draw handlers bail
     out whenever the area drawing them is not that pointer.  So a ``None`` here silences the
     whole readout while the wheel keeps rebuilding the mesh, which is what made the menu
-    entry read as a dumber version of the same tool.  Asking the window for its viewport
-    makes the entry point stop mattering.
+    entry read as a dumber version of the same tool.
+
+    The order is by how much is actually known.  The click is asked for second because the
+    menu that deferred this call did know which viewport it was in, and the sweep over the
+    screen's areas last because it does not: it returns whichever viewport comes first, and
+    on a two-window desktop that is the other window's -- the overlay then reads as having
+    jumped to the window the user is not scrolling in.
     """
     area = context.area
-    if area is not None and area.type == "VIEW_3D":
-        return area
-    window = context.window
-    if window is None:
-        for candidate in context.window_manager.windows:
-            window = candidate
-            break
-    for candidate in getattr(getattr(window, "screen", None), "areas", ()):
-        if candidate.type == "VIEW_3D":
-            return candidate
+    if area is None or area.type != "VIEW_3D":
+        area = _clicked_viewport()
+    if area is None:
+        window = context.window
+        if window is None:
+            for candidate in context.window_manager.windows:
+                window = candidate
+                break
+        for candidate in getattr(getattr(window, "screen", None), "areas", ()):
+            if candidate.type == "VIEW_3D":
+                area = candidate
+                break
     return area
 
 
@@ -513,6 +540,9 @@ class MESH_OT_loop_resample_interactive_entry(bpy.types.Operator):
         return MESH_OT_loop_resample_interactive.poll(context)
 
     def execute(self, context):
+        # This much is known here and nowhere later: the menu runs with the clicked viewport
+        # as its area, while the deferred invoke will not have one at all.
+        _MENU_CLICK["area"] = context.area
         # Guarded the way the session watcher guards its own: a second click before the
         # first callback runs would otherwise register the same function twice.
         if not bpy.app.timers.is_registered(_start_wheel_modal):
