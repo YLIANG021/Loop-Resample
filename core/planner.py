@@ -1169,6 +1169,7 @@ class _BoundaryGeometry:
         "inner_points",
         "outer_points",
         "epsilon_squared",
+        "epsilon",
         "boundary_scale",
         "minimum",
         "cell_size",
@@ -1193,6 +1194,9 @@ class _BoundaryGeometry:
         self.inner_points = inner_points
         self.outer_points = outer_points
         self.epsilon_squared = epsilon_squared
+        # Every rung test reads this same square root, and a rung position is tested once per
+        # plan, so taking it here rather than in the sweep keeps the exponent out of the loop.
+        self.epsilon = epsilon_squared ** 0.5
         self.boundary_scale = boundary_scale
         self.minimum = minimum
         self.cell_size = cell_size
@@ -1299,7 +1303,7 @@ def _prepare_boundary_geometry(inner, outer, is_closed):
 
 def _rung_cell_ranges(boundary_geometry, first, second):
     """The cell intervals a rung bounding box covers on each axis."""
-    epsilon = boundary_geometry.epsilon_squared ** 0.5
+    epsilon = boundary_geometry.epsilon
     minimum = boundary_geometry.minimum
     cell_size = boundary_geometry.cell_size
     cell_ranges = []
@@ -1316,15 +1320,27 @@ def _rung_cell_ranges(boundary_geometry, first, second):
     return cell_ranges
 
 
-def _indexed_segments(boundary_geometry, boundary_index, cell_ranges):
-    """Return indices of boundary segments whose cells overlap a rung box."""
-    indices = set()
-    buckets = boundary_geometry.buckets[boundary_index]
-    for x_index in cell_ranges[0]:
-        for y_index in cell_ranges[1]:
-            for z_index in cell_ranges[2]:
-                indices.update(buckets.get((x_index, y_index, z_index), ()))
-    return indices
+def _indexed_segments(boundary_geometry, cell_ranges):
+    """Return each boundary's segment indices whose cells overlap a rung box.
+
+    One list of cells serves both rails: the box a rung sweeps is fixed by its two endpoints,
+    so walking the grid once per boundary rebuilt every cell tuple and re-asked every cell a
+    second time just to hear the other bucket's answer.  The list costs one allocation per rung
+    and replaces the second walk, which is what the sweep spends most of its time on.
+    """
+    cells = [
+        (x_index, y_index, z_index)
+        for x_index in cell_ranges[0]
+        for y_index in cell_ranges[1]
+        for z_index in cell_ranges[2]
+    ]
+    hits = []
+    for bucket in boundary_geometry.buckets:
+        indices = set()
+        for cell in cells:
+            indices.update(bucket.get(cell, ()))
+        hits.append(indices)
+    return hits
 
 
 def _rung_crosses_boundary(boundary_geometry, inner_index, outer_index):
@@ -1361,7 +1377,7 @@ def _position_crosses_boundary(boundary_geometry, position):
     epsilon_squared = boundary_geometry.epsilon_squared
     first = boundary_geometry.inner_points[position[0]]
     second = boundary_geometry.outer_points[position[1]]
-    epsilon = epsilon_squared ** 0.5
+    epsilon = boundary_geometry.epsilon
     first_x = first[0]
     first_y = first[1]
     first_z = first[2]
@@ -1380,15 +1396,12 @@ def _position_crosses_boundary(boundary_geometry, position):
     probes = 0
     cell_ranges = _rung_cell_ranges(boundary_geometry, first, second)
     cell_footprint = len(cell_ranges[0]) * len(cell_ranges[1]) * len(cell_ranges[2])
+    candidates = _indexed_segments(boundary_geometry, cell_ranges)
     for boundary_index, (segments, boxes, directions) in enumerate(
         boundary_geometry.boundary_records
     ):
         probes += cell_footprint
-        for index in _indexed_segments(
-            boundary_geometry,
-            boundary_index,
-            cell_ranges,
-        ):
+        for index in candidates[boundary_index]:
             examined += 1
             lower_x, upper_x, lower_y, upper_y, lower_z, upper_z = boxes[index]
             # _boxes_overlap's own rejection, run first so a distant segment costs
