@@ -387,9 +387,9 @@ def _face_area_and_normal(coordinates):
         area += 0.5 * second_cross.length
         normal_vector += second_cross
     else:
-        # A triangle re-enters here with an empty range.  A face spanning two columns of
-        # one rail needs the whole fan: reading only the first triangle would call a
-        # wide face a third of its area and score it as a cramped face.
+        # A triangle re-enters here with an empty range.  A face with more than four
+        # corners needs the whole fan: reading only the first triangle would call it a
+        # third of its area and score it as a cramped face.
         for index in range(2, len(coordinates) - 1):
             fan_cross = (coordinates[index] - coordinates[0]).cross(
                 coordinates[index + 1] - coordinates[0]

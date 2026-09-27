@@ -32,26 +32,6 @@ from .utils import _point, _point_view
 RUNG_CONTINUITY_VECTOR_WEIGHT = 0.75
 TRIANGLE_DISTRIBUTION_WEIGHT = 0.9
 RUNG_LENGTH_WEIGHT = 1.2
-# Whether a band may be offered a two-column step at all.  The budget is the only door
-# the wide kind comes through, so with this off it retires together with the prefix cap
-# and the soft face-count bid below: each of those reads the budget or a kind the budget
-# buys.  What is left is a QUAD plus the one surplus kind the
-# dense rail's length asks for -- the vocabulary the rails were solved with before the
-# two-column step landed, which is the state the dense bands were last reported to spread
-# evenly in.  Off is no verdict on the step: a band whose source tally is stacked moves that
-# way with this off too, so the step never moved the surplus, it only paid for its own kites.
-# The anchor is the reason to be careful with it, though: the budget reads the *target* rail's
-# column count, so it keeps growing -- one wide face per sparse column at worst -- the higher
-# the count is scrolled.
-WIDE_FACES_ENABLED = False
-# What one face over the source band's count costs.  The count used to be a hard
-# pin: the sweep was forced to buy every wide face the budget named, however ugly
-# the kite -- so a 9-on-19 band pinned at 15 faces grew four long diagonal kites
-# where its geometry wanted clean short spokes.  Now the count is a bid: a final
-# short of the budget pays this per missing wide face, and the geometry decides
-# whether the wide is worth its kite.  Raise it if rebuilt bands drift off the
-# source's count too easily; lower it if kites still win where they should not.
-FACE_COUNT_SOFT_WEIGHT = 2.0
 
 
 def _rail_shift(kind):
@@ -584,20 +564,6 @@ def _transition_face(inner, outer, inner_index, outer_index, kind):
             inner[(inner_index + 1) % inner_count],
             current_outer,
         )
-    if kind == "OUTER_WIDE":
-        return (
-            current_inner,
-            outer[(outer_index + 2) % outer_count],
-            outer[(outer_index + 1) % outer_count],
-            current_outer,
-        )
-    if kind == "INNER_WIDE":
-        return (
-            current_inner,
-            inner[(inner_index + 1) % inner_count],
-            inner[(inner_index + 2) % inner_count],
-            current_outer,
-        )
     return (
         current_inner,
         outer[(outer_index + 1) % outer_count],
@@ -610,104 +576,17 @@ def _advance(kind, inner_index, outer_index):
     return inner_index + inner_step, outer_index + outer_step
 
 
-def _wide_face_budget(region, inner_steps, outer_steps):
-    """How many faces in this band may cover two columns of its denser rail.
-
-    A source band holding fewer faces than the denser of its two rails has columns that
-    were never joined to the far side -- the model's own faces stand two columns wide
-    there.  Until the search had a kind for that it had to spend a spoke on every column
-    to reach the rail's end, and the surplus landed wherever the cost happened to leave
-    it, which on a band whose far rail is an untouched part of the model is most of them.
-    The budget says how many such faces the band itself reported, and nothing here reads
-    coordinates, so a band that never needed one keeps exactly the two kinds it had.
-
-    The count is anchored to the face records -- the row the ladder actually rebuilds --
-    not to the region's whole face set: a region deeper than one row holds faces with no
-    inner-rail corner that no ladder will ever draw, and counting them shrinks the budget
-    by exactly their number, so the rebuilt band comes out that many faces heavier than
-    the row it replaces.
-
-    Rails of equal length are left alone however the source reads: a surplus on one rail
-    has to be paid back on the other then, which is a different question than the one a
-    wide face answers.
-    """
-    if not WIDE_FACES_ENABLED or inner_steps == outer_steps:
-        return 0
-    dense_steps = max(inner_steps, outer_steps)
-    records = ((region or {}).get("source_faces") or {}).get("records") or ()
-    faces = len(records) if records else len((region or {}).get("faces") or ())
-    if not faces or faces >= dense_steps:
-        return 0
-    return min(
-        dense_steps - faces,
-        dense_steps // 2,
-        min(inner_steps, outer_steps),
-    )
-
-
-def _allowed_transitions(
-    inner_steps,
-    outer_steps,
-    wide_budget=0,
-):
+def _allowed_transitions(inner_steps, outer_steps):
     """The kinds one band's ladder may spend, in the order the search tries them.
 
     The dense rail's surplus is what decides the ordinary kinds, so a band whose inner rail
     is the short loop is never offered a face that spends the outer rail's column.
-
-    The wide kind goes last, so a band that was never granted one answers with the kinds it
-    has always had at an equal cost.
     """
     if inner_steps == outer_steps:
         return ("QUAD",)
     if inner_steps < outer_steps:
-        surplus, wide = "OUTER_TRI", "OUTER_WIDE"
-    else:
-        surplus, wide = "INNER_TRI", "INNER_WIDE"
-    allowed = ["QUAD", surplus]
-    if wide_budget > 0:
-        allowed.append(wide)
-    return tuple(allowed)
-
-
-def _band_vocabulary(region, inner_steps, outer_steps):
-    """What this band's rails permit, as ``(allowed, wide_budget)``.
-
-    Both call sites -- the solve and the seam's waypoint pruning -- have to agree, because a
-    waypoint reachable under one reading of the vocabulary and unreachable under the other
-    would drop a crossing the strip can actually route through.
-    """
-    budget = _wide_face_budget(region, inner_steps, outer_steps)
-    return _allowed_transitions(inner_steps, outer_steps, budget), budget
-
-
-def _face_count_credit(kind, inner_steps, outer_steps):
-    """What one step of this kind does to how many faces the band needs.
-
-    A strip's face count is its denser rail's columns minus its wide faces plus its
-    pinches: a face spanning two of the dense rail's columns saves one, and a spoke that
-    spends the sparse rail's column costs one, because the length gap it should have closed
-    now needs a wide face of its own.  Counting the two against each other, rather than
-    counting wide faces alone, is what lets a band keep the source's face count while
-    standing on the rungs the source drew.
-
-    A band whose pairing asks for nothing has no kind here with a negative credit, so the
-    count it spends is the wide count it always spent.
-    """
-    inner_step, outer_step = TRANSITION_ADVANCE[kind]
-    shift = outer_step - inner_step
-    if not shift:
-        return 0
-    if outer_steps > inner_steps:
-        dense_step, sparse_step = outer_step, inner_step
-    else:
-        dense_step, sparse_step = inner_step, outer_step
-    toward_dense = (shift > 0) == (outer_steps > inner_steps)
-    if toward_dense:
-        # A one-column surplus triangle keeps the count; every further dense column the
-        # same face covers saves one.
-        return dense_step - 1
-    return -1 if dense_step == 0 and sparse_step else 0
+        return ("QUAD", "OUTER_TRI")
+    return ("QUAD", "INNER_TRI")
 
 
 def _seam_waypoint_nodes(waypoints, allowed, inner_steps, outer_steps):
@@ -776,11 +655,7 @@ def _seam_waypoint_nodes(waypoints, allowed, inner_steps, outer_steps):
 
 
 def _surplus_names(allowed):
-    """Which kinds this strip may spend a rail column with, for the seam-skip line.
-
-    A band that was allowed a wide face has two surplus kinds to spend, so the single name
-    this used to print is now a list.
-    """
+    """Which kinds this strip may spend a rail column with, for the seam-skip line."""
     return "+".join(kind for kind in allowed if kind != "QUAD") or "none"
 
 
@@ -1524,24 +1399,15 @@ def _sweep_ladder(
     boundary_geometry,
     waypoints,
     allowed,
-    budget,
     inner_steps,
     outer_steps,
-    wide_pruning,
 ):
     """One full sweep of the ladder's dynamic program: the states at the far corner.
 
     A quad moves inner+outer by two and a triangle by one, so diagonal d is fed by
-    round d-2 (quads and wide faces, which both spend two columns) then round d-1
-    (triangles) and a round must read every part in that order.  One flat dict plus a
-    diagonal filter made every round re-scan all history -- ~800k dead iterations to
-    reach ~24k live ones.  The fourth part of a state key counts the wide faces spent,
-    less any pinch that has to be paid back with one, because a wide face is cheaper
-    than the two it replaces and a search left to price its own face count would take
-    every chance it was given.  The budget is what the source band reported, so the
-    count is what pins the rebuilt band to the same number of faces.  Where there is no
-    pinch to fund the count never leaves the wide count it has always been, which
-    leaves the states -- and the answer -- exactly as they were.
+    round d-2 (quads) then round d-1 (triangles) and a round must read every part in
+    that order.  One flat dict plus a diagonal filter made every round re-scan all
+    history -- ~800k dead iterations to reach ~24k live ones.
 
     Returns ``(states, parents, expanded)``: the far corner's states as
     ``key -> cost``, one ``key -> (parent key, kind)`` link per state ever written,
@@ -1551,14 +1417,6 @@ def _sweep_ladder(
     Every step advances at least one column, so a layer is final by the time it is
     expanded and a link can never be rewritten from under a child that already read
     it.
-
-    ``wide_pruning`` drops every state whose remaining dense-rail columns can no longer
-    fund the wide faces the budget still asks for -- two columns apiece -- because such
-    a state is dead however cheap it was to reach.  The planner no longer enables it:
-    the soft face-count bid (:data:`FACE_COUNT_SOFT_WEIGHT`) prices finals short of the
-    budget instead of discarding them, which is exactly the set pruning would have
-    thrown away.  The parameter stays for the out-of-Blender sweep tests, which assert
-    a pruned and an unpruned run still land on the same state.
     """
     triangle_count = abs(inner_steps - outer_steps)
     # What is left of the rectangle once the round structure is fixed.  Only the steps
@@ -1575,12 +1433,12 @@ def _sweep_ladder(
     band_limited = (
         len({_rail_shift(kind) > 0 for kind in allowed if _rail_shift(kind)}) <= 1
     )
-    layers = {0: {(0, 0, None, 0): 0.0}}
+    layers = {0: {(0, 0, None): 0.0}}
     parents = {}
     # One geometric price per (column pair, kind): the boundary checks, the face's own
     # quality and the column bookkeeping below read nothing about how the path arrived
-    # here, so every predecessor and wide-count variant of the same step reuses them.
-    # Only the rung continuity stays priced per variant, because it reads the path.
+    # here, so every predecessor of the same step reuses them.  Only the rung continuity
+    # stays priced per variant, because it reads the path.
     # False marks a step no path may take at all.
     step_cache = {}
     # One rung vector per node, shared by the three reads one continuity price makes.
@@ -1596,17 +1454,9 @@ def _sweep_ladder(
     for total in range(inner_steps + outer_steps):
         tri_layer = {}
         quad_layer = {}
-        wide_layer = {}
-        for (inner_index, outer_index, previous_kind, wide_used), state in layers.pop(
+        for (inner_index, outer_index, previous_kind), state in layers.pop(
             total
         ).items():
-            if wide_pruning:
-                if outer_steps >= inner_steps:
-                    remaining_dense = outer_steps - outer_index
-                else:
-                    remaining_dense = inner_steps - inner_index
-                if wide_used + remaining_dense // 2 < budget:
-                    continue
             expanded += 1
             prior_cost = state
             for kind in allowed:
@@ -1616,13 +1466,6 @@ def _sweep_ladder(
                 if next_inner > inner_steps or next_outer > outer_steps:
                     continue
                 width = advance[0] + advance[1]
-                next_wide = wide_used + _face_count_credit(
-                    kind,
-                    inner_steps,
-                    outer_steps,
-                )
-                if next_wide > budget:
-                    continue
                 if band_limited and not (
                     low_offset <= next_outer - next_inner <= high_offset
                 ):
@@ -1710,26 +1553,16 @@ def _sweep_ladder(
                     vector_cache,
                 )
                 candidate_cost = prior_cost + cached + continuity_cost
-                key = (next_inner, next_outer, kind, next_wide)
-                if width == 2:
-                    layer = quad_layer
-                elif width == 1:
-                    layer = tri_layer
-                else:
-                    layer = wide_layer
+                key = (next_inner, next_outer, kind)
+                layer = quad_layer if width == 2 else tri_layer
                 previous = layer.get(key)
                 if previous is None or candidate_cost < previous:
                     layer[key] = candidate_cost
-                    parents[key] = (
-                        (inner_index, outer_index, previous_kind, wide_used),
-                        kind,
-                    )
-        # Each step lands in the round its own width reaches.  None of the three may
-        # assign: round total-1's wide face has already arrived in total+2, and the
-        # quad that lands there one round later has to join it rather than replace it.
-        # A key names its kind, so two rounds can never offer the same state and an
-        # update has nothing to overwrite.
-        for offset, layer in ((1, tri_layer), (2, quad_layer), (3, wide_layer)):
+                    parents[key] = ((inner_index, outer_index, previous_kind), kind)
+        # Each step lands in the round its own width reaches.  A key names its kind, so
+        # the two rounds can never offer the same state and an update has nothing to
+        # overwrite.
+        for offset, layer in ((1, tri_layer), (2, quad_layer)):
             ahead = layers.get(total + offset)
             if ahead is None:
                 layers[total + offset] = layer
@@ -1762,22 +1595,17 @@ def _build_transitions(
 ):
     """Solve the whole ladder: cheapest monotone path between two ordered rails.
 
-    Every rail column is attained by any monotone path that spends no wide step, so on a
-    band that needs none whichever vertex a crossing punctured is already guaranteed to
-    carry a rung once this returns -- see :func:`.seams.region_seam_rungs`.  That
-    guarantee is not enough either way: the rung it finds can sit a column off the vertex
-    the sampler pinned, and the face in between then straddles two UV islands.
-    ``waypoints`` are the nodes :func:`.seams` says a seam crossing needs, and the search
-    may not route around them -- which is also what stops a wide face from ever hiding
-    the one column a crossing landed on.
+    No step jumps a column -- a quad takes one of each rail and the surplus triangle one
+    of its own -- so on any band whichever vertex a crossing punctured is already
+    guaranteed to carry a rung once this returns -- see
+    :func:`.seams.region_seam_rungs`.  That guarantee is not enough either way: the rung
+    it finds can sit a column off the vertex the sampler pinned, and the face in between
+    then straddles two UV islands.  ``waypoints`` are the nodes :func:`.seams` says a seam
+    crossing needs, and the search may not route around them.
     """
     inner_steps = len(inner) if is_closed else len(inner) - 1
     outer_steps = len(outer) if is_closed else len(outer) - 1
-    allowed, budget = _band_vocabulary(
-        region,
-        inner_steps,
-        outer_steps,
-    )
+    allowed = _allowed_transitions(inner_steps, outer_steps)
     states, parents, expanded = _sweep_ladder(
         inner,
         outer,
@@ -1787,36 +1615,16 @@ def _build_transitions(
         boundary_geometry,
         waypoints,
         allowed,
-        budget,
         inner_steps,
         outer_steps,
-        False,
     )
     accumulate_scan("plan-expand", 0.0, expanded)
     if not states:
         raise ValueError(pgettext("No valid ordered strip path was found."))
-    # The band's face count is a bid, not a decree: the source reported how many of
-    # its dense rail's columns go unjoined, and a ladder honouring exactly that count
-    # buys a wide face for each -- but a wide face is only worth buying where it sits
-    # clean.  Every final, whatever wide count it reached, is therefore priced with
-    # FACE_COUNT_SOFT_WEIGHT per face it would add over the source band's count, so a
-    # band whose budget only buys ugly kites drifts up to the face count its geometry
-    # actually wants (the ladder line then prints wide=got/budget short), while a band
-    # whose wides sit clean keeps the source's count for free.  The prefix cap above
-    # still forbids *exceeding* the budget -- fewer faces than the source drew is the
-    # direction kites come from, and that trade is never for sale.
     candidates = [
-        (
-            states[key] + FACE_COUNT_SOFT_WEIGHT * max(0, budget - key[3]),
-            _replay_transitions(key, parents),
-        )
-        for key in states
+        (states[key], _replay_transitions(key, parents)) for key in states
     ]
     best = min(candidates, key=lambda state: state[0])
-    wide_final = sum(
-        _face_count_credit(kind, inner_steps, outer_steps)
-        for kind in best[1]
-    )
     if DIAGNOSE_LADDER and region is not None:
         print_ladder_dp(
             region,
@@ -1825,7 +1633,6 @@ def _build_transitions(
             allowed,
             sorted(candidates, key=lambda state: state[0])[:2],
             waypoints,
-            wide=(wide_final, budget) if budget else (),
         )
     return best
 
@@ -2093,11 +1900,7 @@ def build_ordered_strip_plan(
             0.0,
             len(boundary_geometry.rung_cross_cache),
         )
-        allowed, _budget = _band_vocabulary(
-            region,
-            inner_steps,
-            outer_steps,
-        )
+        allowed = _allowed_transitions(inner_steps, outer_steps)
         seam_nodes, dropped_nodes = _seam_waypoint_nodes(
             tuple(waypoints),
             allowed,
