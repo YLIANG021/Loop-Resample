@@ -98,8 +98,9 @@ _FAILURE_LIMIT = 96
 # so it is allowed the whole sentence and a smaller font instead of a cut ending.
 _NOTICE_LIMIT = 220
 # The chip row is yl_bevelflow's, measure for measure: his buttons are laid out at a
-# fixed 1.3 * 0.96 spacing scale, the text is lifted off its padding by hand, and the
-# outline is one pixel wide whatever the interface scale says.
+# fixed 1.3 * 0.96 spacing scale, the text is lifted off its padding by hand.  The one place
+# this row parts from his is the outline, which he draws one pixel wide and this draws two --
+# see _CHIP_BORDER.
 _CHIP_BUTTON_SCALE = 0.96
 _CHIP_UI_SCALE = 1.3 * _CHIP_BUTTON_SCALE
 _CHIP_PADDING_X = 9.0
@@ -107,27 +108,32 @@ _CHIP_PADDING_Y = 5.0
 # Written as the pixel measure it has to produce, because that is what the armed chip is
 # measured against: a plate has to stay clear of its neighbour's first glyph, which is one
 # gap plus one of the neighbour's own paddings away, and the 1.248 scale on top of a raw 4.0
-# did not leave room for a chip grown to 115%.
-_CHIP_GAP = 12.0 / _CHIP_UI_SCALE
+# did not leave room for a chip grown to 115%.  Twelve bought that clearance and fifteen is
+# the same row with room to breathe; ten is tighter than either of those, since the armed
+# plate of the longest counts reading grows 19 pixels past its own edge and ten of gap plus a
+# neighbour's own 11 of padding is only 21.2 -- two pixels to spare, which a longer reading
+# than four paths would spend over.
+_CHIP_GAP = 10.0 / _CHIP_UI_SCALE
 _CHIP_TEXT_LIFT = 3.0
 _CHIP_RADIUS = 8.0
+# The ring every plate is drawn with.  One pixel read as no ring at all: the outline is a grey
+# two steps above the fill it surrounds, and a one pixel band of that is thinner than the seam
+# between the plate and whatever it is laid over, so the row looked like borderless boxes
+# rather than as boxes with a quiet edge.
+_CHIP_BORDER = 2.0
 # The armed chip is also the bigger one.  Size says the thing the lit colour already said --
 # which axis the wheel is pointed at -- and says it at the instant the key goes down rather
 # than as a shade the eye has to compare against a neighbour.  Plate and glyphs grow together
 # about the chip's own centre, so the padding keeps its proportion whatever the multiplier;
 # what a multiplier buys is overlap: it spends pixels in proportion to the chip's own width,
-# so 15% on a wide chip reaches a good deal further than 15% on a narrow one.  The clearance
-# to a neighbour's glyphs is one gap plus that neighbour's own padding, 23 pixels.  The
-# 115% below costs the two shape chips 12 and 14 of those pixels, which is why they keep it.
-_CHIP_ARM_SCALE = 1.15
-# The counts chip is the one that can be long: several paths at several counts is one string
-# of a dozen characters, and it is the reading that grows as the wheel is turned.  At 115% it
-# spent 18 pixels of that clearance with a single count and 28 with four paths listed, so it
-# takes a smaller multiplier and still reads as the picked-up chip.  Note that the multiplier
-# only reaches the glyphs in whole points: 1.028 to 1.083 draws at 19 pixels, 1.084 to 1.138
-# at 20, 1.139 to 1.194 at 21, so between those numbers it is the plate being sized, and
-# crossing one of them moves the text a whole pixel either way.
-_CHIP_ARM_SCALE_COUNTS = 1.075
+# so 7.5% on a long reading reaches a good deal further than 7.5% on a short label.  That is
+# the one reason the number is this modest -- it has to suit the widest thing the row can be
+# asked to show, several paths at several counts being a string of a dozen characters that
+# spends 19 of the 21.2 pixels the row's gap leaves before a neighbour's first glyph.  Note
+# that the multiplier only reaches the glyphs in whole points: 1.028 to 1.083 draws at 19
+# pixels, 1.084 to 1.138 at 20, 1.139 to 1.194 at 21, so between those numbers it is the plate
+# being sized, and crossing one of them moves the text a whole pixel either way.
+_CHIP_ARM_SCALE = 1.075
 _CHIP_STYLES = {
     "warning": (
         (0.40, 0.12, 0.12, 0.88),
@@ -448,7 +454,6 @@ def _chips(operator):
                 current=_counts_text(operator.label_values, closed),
             ),
             "type": "hotkey_active" if mode == MODE_COUNT else "hotkey",
-            "arm_scale": _CHIP_ARM_SCALE_COUNTS,
         },
         {
             "text": pgettext("[Shift] Smooth")
@@ -493,7 +498,7 @@ def _draw_chip(
     text_size,
     scale=1.0,
 ):
-    """One chip: yl_bevelflow's rounded box, his outline width, his text placement.
+    """One chip: yl_bevelflow's rounded box, his text placement, our outline width.
 
     ``width``/``box_height``/the two offsets are the chip's *resting* measures, the ones the
     row was laid out with, and ``scale`` grows the drawing about the chip's own centre from
@@ -515,7 +520,7 @@ def _draw_chip(
         background,
         outline,
         _CHIP_RADIUS * scale,
-        1.0,
+        _CHIP_BORDER,
     )
     blf.size(_FONT_ID, max(1, int(round(text_size * scale))))
     blf.color(_FONT_ID, *text_color)
@@ -657,7 +662,7 @@ def _draw_chip_row(operator, region):
                 metrics["padding_y"],
                 metrics["text_lift"],
                 text_size,
-                (chip.get("arm_scale", _CHIP_ARM_SCALE) if armed else 1.0),
+                (_CHIP_ARM_SCALE if armed else 1.0),
             )
     return bottom + metrics["height"]
 
