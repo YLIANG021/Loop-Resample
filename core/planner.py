@@ -17,8 +17,6 @@ from .diagnostics import (
     print_outer_replay,
     print_outer_align,
     print_outer_rungs,
-    print_pairing_profile,
-    print_reflex_fallback,
     print_seam_crossing_skipped,
 )
 from .geometry import (
@@ -27,7 +25,6 @@ from .geometry import (
     diagnose_ordered_strip_geometry,
     face_quality_cost,
     validate_ordered_strip_plan,
-    wide_face_reflex_metrics,
 )
 from .types import TRANSITION_ADVANCE, StripPlan
 from .utils import _point, _point_view
@@ -35,43 +32,10 @@ from .utils import _point, _point_view
 RUNG_CONTINUITY_VECTOR_WEIGHT = 0.75
 TRIANGLE_DISTRIBUTION_WEIGHT = 0.9
 RUNG_LENGTH_WEIGHT = 1.2
-# A two-column face whose corner turns against its own winding re-enters -- an
-# interior angle past 180 degrees, the kite a dense rail grows when it bends toward
-# the sparse rail across the span.  The sine noise floor sits near 1e-8 on a
-# straight rail, so anything past 1e-6 is a real re-entrant corner, and the search
-# refuses the step outright (a degraded sweep, see _search_ladder, prices it with
-# REFLEX_PENALTY_WEIGHT instead when refusing leaves no path at all).
-REFLEX_SIN_EPSILON = 1e-6
-# What one point of re-entrance costs in the degraded sweep.  A refused reflex has
-# no price at all; this one has to tower over every legitimate term -- the whole
-# truncated shape budget is 0.75 * 50 -- so a reflex face is bought only when the
-# sweep literally finds nothing else.
-REFLEX_PENALTY_WEIGHT = 40.0
-# What a two-column face pays for its worst corner, squared: the largest |cosine| of
-# an interior angle, zero for a rectangle and toward one as a corner spikes or runs
-# straight -- the two corners every long diagonal kite shows.  Edge ratios cannot
-# tell that kite from the plain elongated quads a 9-on-19 band is full of (the
-# measured saving for removing one was 0.75, nowhere near the soft face-count bid),
-# but its angles give it away: ~30 degrees at the sparse vertex, ~165 at the
-# skipped column.  Squared, so a slightly off-square wide on otherwise clean rails
-# -- the kind a pinned count is worth keeping for -- pays almost nothing while the
-# kite pays in full.  Raise it if kites still outbid the face they save; lower it
-# if honest wide faces start losing to the triangles they replace.
-WIDE_ANGLE_WEIGHT = 8.0
-# The largest |cosine| of an interior angle a two-column face may show in the strict
-# sweep: this one cuts at 150 degrees flat and 30 degrees sharp, the same reading the
-# cost above prices on.  A spike is not a cheaper flat -- it is the same skipped column
-# seen from the far corner -- so the gate takes the worst corner whichever way it runs.
-# The priced term alone cannot be the gate: replacing the wide costs two triangles, and
-# a triangle's shape term is read at 1.35 against the wide's 0.75, which on a tight band
-# outbids the 2.0 face-count bid no matter how flat the corner goes.  Past this angle the
-# step is refused outright and the band drifts up to the spokes, which is what the
-# degraded sweep below exists for when even that leaves no path.
-WIDE_ANGLE_VETO_COS = 0.866
-# Whether a band may be offered a two-column step at all.  The budget is the only door the
-# wide kind and the pinching kind come through, so with this off they retire together with
-# the prefix cap, the soft face-count bid and the reflex gates above: each of those reads the
-# budget or a kind the budget buys.  What is left is a QUAD plus the one surplus kind the
+# Whether a band may be offered a two-column step at all.  The budget is the only door
+# the wide kind comes through, so with this off it retires together with the prefix cap
+# and the soft face-count bid below: each of those reads the budget or a kind the budget
+# buys.  What is left is a QUAD plus the one surplus kind the
 # dense rail's length asks for -- the vocabulary the rails were solved with before the
 # two-column step landed, which is the state the dense bands were last reported to spread
 # evenly in.  Off is no verdict on the step: a band whose source tally is stacked moves that
@@ -88,35 +52,6 @@ WIDE_FACES_ENABLED = False
 # whether the wide is worth its kite.  Raise it if rebuilt bands drift off the
 # source's count too easily; lower it if kites still win where they should not.
 FACE_COUNT_SOFT_WEIGHT = 2.0
-# What burning one surplus step more (or fewer) than the band's own pattern had burned by
-# this column costs, squared -- so a strip that dumped eight spokes on its first column when
-# the source stacked four on its fourth pays at every column after it: 0.15 a step, a run of
-# seven columns wrong by three pays 1.35 each.  That is the intended order: the band says how
-# many spokes leave each of its columns, the rails settle where the pattern's slack lands.
-# Raise it if a fan still refuses to move; lower it if rungs start stretching to pay for a
-# pattern the geometry does not want.
-PAIRING_TARGET_WEIGHT = 0.15
-# What it costs to double a spoke on a column the source band did not double.  The
-# cumulative profile prices how many surplus steps stand where; this prices which
-# column each doubled spoke sits on, and it only exists when the source doubled at
-# least one column -- otherwise every path doubles the same fixed number of columns
-# and the charge would be a constant that settles nothing.
-PINCH_PLACE_WEIGHT = 0.5
-# Whether the source band's spoke tally prices the ladder at all.  Off, the record is still
-# read for everything it was ever read for at the rail end -- which way to walk the outer
-# rail and where to cut it -- but it never reaches the per-step price, so the search
-# optimizes geometry alone: shape, rung length, progress, and how the surplus spreads over
-# the strip.  That is the reading the ladder was solved with before the tally landed, and the
-# tally is what moved a dense band's surplus: handed a source that stacked its spokes on one
-# column, a 40x80 band put thirteen of its forty triangles there and left the next eight
-# columns empty, and the same band with this off answers as it did before the tally existed.
-# Turn it back on only in a form that cannot order a pile the source's own geometry drew
-# somewhere else.
-LADDER_PAIRING_ENABLED = False
-# Where a region keeps the ladder nodes its own source band named, recorded once per step
-# beside the outer order they were counted in.  The solve reads them, and only to price a
-# step -- see :func:`_pairing_profile`.  Nothing else writes.
-_PAIRING_NODES = "pairing_nodes"
 
 
 def _rail_shift(kind):
@@ -153,9 +88,9 @@ def _triangle_distribution_cost(
     Counting over the whole strip rather than over a piece of it is what lets a triangle
     sit on either side of the column a seam happened to take.
 
-    Only steps that close the length gap are in that count, so a step which opens one --
-    the pinch a band's own pairing bought it (:func:`_pairing_pinches`) -- is not spread
-    against it.  No strip has ever had one of those, which is why the test is free.
+    Only steps that close the length gap are in that count, so a step which opens one is
+    not spread against it.  No strip has ever had one of those, which is why the test is
+    free.
     """
     shift = _rail_shift(kind)
     if not shift or triangle_count <= 0:
@@ -411,66 +346,6 @@ def _rungs_on_inner_rail(region, inner_vertices, rungs, is_closed):
     if not columns:
         return rungs
     return tuple((columns[inner], outer) for inner, outer in rungs)
-
-
-def _source_pairing_nodes(region, inner_vertices, outer_vertices, decision, is_closed):
-    """The source band's own rungs, as ladder nodes.
-
-    :func:`align_outer_boundary` already reads these pairs, and all it asks them is which
-    way to walk the outer rail and where to cut it.  What it never asks is where the
-    rebuilt band's rungs should sit, so a strip whose rails differ by twelve columns spends
-    those twelve one-column steps wherever the local costs happen to leave them -- on the
-    band this was written for, nine spokes off a single inner vertex, twice a healthy rung's
-    length, where the source drew one rung and three faces two columns wide.
-
-    The nodes are what :func:`_pairing_profile` counts into that per-column tally, which is
-    to say they price a step rather than forbid one: a band rebuilt onto fewer inner columns
-    than the source drew can never stand on the recorded nodes at the face count the source
-    drew, but it can still be told how many of its own spokes were meant to leave each
-    column, and that tally it can hit exactly.
-
-    Each rail's numbers are carried across by arc length, because a rung names a *place* on
-    a rail and both rails here have been resampled since the record was read.  The inner
-    carry registers the two rails' starts first (:func:`_paired_columns` with
-    ``align_start``): a closed inner rail begins at the seam's anchor, not at the source
-    rail's first vertex, and without the registration every column named here sits the
-    anchor's shift away from the point it means.  The outer side needs no such help --
-    the walk order is the one ``decision`` chose, applied the way
-    :func:`apply_outer_decision` applies it: a node named in a numbering the rail is not
-    walked in blames the wrong vertex by exactly the rotation that hid it.
-    """
-    if not LADDER_PAIRING_ENABLED:
-        return ()
-    rungs = (region or {}).get("source_rungs") or ()
-    frames = (region or {}).get("frames") or {}
-    if not rungs or decision is None:
-        return ()
-    inner_columns = _paired_columns(
-        (frames.get("inner") or {}).get("points") or (),
-        inner_vertices,
-        is_closed,
-        align_start=True,
-    )
-    outer_columns = _paired_columns(
-        (frames.get("outer") or {}).get("points") or (), outer_vertices, is_closed
-    )
-    if not inner_columns or not outer_columns:
-        return ()
-    orientation, rotate = decision
-    outer_count = len(outer_vertices)
-    nodes = set()
-    for inner_index, outer_index in rungs:
-        if not 0 <= inner_index < len(inner_columns):
-            continue
-        if not 0 <= outer_index < len(outer_columns):
-            continue
-        place = outer_columns[outer_index]
-        if orientation:
-            place = outer_count - 1 - place
-        if is_closed and rotate:
-            place = (place - rotate) % outer_count
-        nodes.add((inner_columns[inner_index], place))
-    return tuple(sorted(nodes))
 
 
 def _continued(place, anchor, span):
@@ -735,39 +610,6 @@ def _advance(kind, inner_index, outer_index):
     return inner_index + inner_step, outer_index + outer_step
 
 
-def _pairing_pinches(nodes, inner_steps, outer_steps):
-    """How many of this band's own spokes sit on a column its rail has already left.
-
-    A rung is one pair of columns, so walking the band's recorded rungs in the order the
-    outer rail meets them gives a sequence of ``d = outer - inner`` offsets.  Every step the
-    ladder takes moves ``d`` by at most one column, and only the kinds that spend the
-    *sparser* rail's column move it backwards, so a place where the recorded offset drops
-    is a spoke no path built from the denser rail's vocabulary can stand on.  The total
-    drop is therefore the number of those steps this band's own connectivity asks for --
-    two on the band this was written for, where the source runs one spoke from each of two
-    adjacent inner columns into the same outer one.
-
-    Read this as a demand, not an order: :func:`_band_vocabulary` hands it to
-    :func:`_allowed_transitions` as a budget, and a band whose pattern never leans back
-    keeps exactly the kinds it has always had.
-    """
-    if not nodes or inner_steps <= 0 or outer_steps <= 0:
-        return 0
-    offset = 0
-    pinches = 0
-    for inner_index, outer_index in sorted(nodes, key=lambda node: (node[1], node[0])):
-        if not 0 <= inner_index <= inner_steps or not 0 <= outer_index <= outer_steps:
-            continue
-        place = outer_index - inner_index
-        if place < offset:
-            pinches += offset - place
-        offset = place
-    final_offset = outer_steps - inner_steps
-    if final_offset < offset:
-        pinches += offset - final_offset
-    return min(pinches, inner_steps, outer_steps)
-
-
 def _wide_face_budget(region, inner_steps, outer_steps):
     """How many faces in this band may cover two columns of its denser rail.
 
@@ -807,56 +649,36 @@ def _allowed_transitions(
     inner_steps,
     outer_steps,
     wide_budget=0,
-    pinch_budget=0,
 ):
     """The kinds one band's ladder may spend, in the order the search tries them.
 
     The dense rail's surplus is what decides the ordinary kinds, so a band whose inner rail
-    is the short loop is never offered a face that spends the outer rail's column -- except
-    when its own source band drew one, which is what ``pinch_budget`` says
-    (:func:`_pairing_pinches`).  Without that exception the connectivity a fan and a pinch
-    describe is simply not a path in the graph being searched, and no price can reach it.
+    is the short loop is never offered a face that spends the outer rail's column.
 
-    Both extra kinds go last, the wide one before the pinching one, so a band that does not
-    need them answers with the kinds it has always had at an equal cost.
+    The wide kind goes last, so a band that was never granted one answers with the kinds it
+    has always had at an equal cost.
     """
     if inner_steps == outer_steps:
         return ("QUAD",)
     if inner_steps < outer_steps:
-        surplus, wide, pinch = "OUTER_TRI", "OUTER_WIDE", "INNER_TRI"
+        surplus, wide = "OUTER_TRI", "OUTER_WIDE"
     else:
-        surplus, wide, pinch = "INNER_TRI", "INNER_WIDE", "OUTER_TRI"
+        surplus, wide = "INNER_TRI", "INNER_WIDE"
     allowed = ["QUAD", surplus]
     if wide_budget > 0:
         allowed.append(wide)
-    if pinch_budget > 0:
-        allowed.append(pinch)
     return tuple(allowed)
 
 
 def _band_vocabulary(region, inner_steps, outer_steps):
-    """What this band's rails and its own source pairing permit, as one unit.
+    """What this band's rails permit, as ``(allowed, wide_budget)``.
 
-    Returns ``(allowed, wide_budget, pinch_budget)``.  Both call sites -- the solve and
-    the seam's waypoint pruning -- have to agree, because a waypoint reachable under one
-    reading of the vocabulary and unreachable under the other would drop a crossing the
-    strip can actually route through.
+    Both call sites -- the solve and the seam's waypoint pruning -- have to agree, because a
+    waypoint reachable under one reading of the vocabulary and unreachable under the other
+    would drop a crossing the strip can actually route through.
     """
     budget = _wide_face_budget(region, inner_steps, outer_steps)
-    pinches = _pairing_pinches(
-        tuple((region or {}).get(_PAIRING_NODES) or ()),
-        inner_steps,
-        outer_steps,
-    ) if budget else 0
-    # A step that spends the sparser rail's column widens the strip by one face, and only a
-    # wide face pays it back, so the band is never granted a pinch it has no wide face to
-    # trade for.  That keeps the ceiling on the face count exactly where the source band put
-    # it however many spokes the pairing stacks on one column.
-    return (
-        _allowed_transitions(inner_steps, outer_steps, budget, min(pinches, budget)),
-        budget,
-        min(pinches, budget),
-    )
+    return _allowed_transitions(inner_steps, outer_steps, budget), budget
 
 
 def _face_count_credit(kind, inner_steps, outer_steps):
@@ -908,7 +730,7 @@ def _seam_waypoint_nodes(waypoints, allowed, inner_steps, outer_steps):
     high = max(0, final_offset)
     # An inner step is the only move that shrinks d, whether it spends one column of the
     # inner rail or two.  A QUAD-only strip is pinned to d == 0 by the band above, so
-    # either direction reads the same there.  Where the pairing bought the strip a kind in
+    # either direction reads the same there.  Where the vocabulary grants the strip a kind in
     # each direction, d can be walked back and forth at will, so no crossing is refused on
     # the order of the ones before it and the whole in-band set is kept.
     shifts = {_rail_shift(kind) for kind in allowed if _rail_shift(kind)}
@@ -951,131 +773,6 @@ def _seam_waypoint_nodes(waypoints, allowed, inner_steps, outer_steps):
         if index not in longest
     )
     return nodes, tuple(sorted(dropped))
-
-
-def _pairing_profile(nodes, inner_steps, outer_steps, is_closed):
-    """How many of this band's own spokes were meant to leave each of its columns.
-
-    A rebuilt rail answers its source with a *count*, not a position.  The source stacked
-    four rungs on one inner column; a strip with fewer columns than the source drew can
-    still spend four of its one-column steps there.  What it cannot do is stand on the outer
-    columns the record names -- those belong to a rail with a different number of them, and
-    the faces that would carry it from one to the next are the faces this band was never
-    given: the count is fixed by the source, so a pattern that asks for nineteen faces at
-    fifteen is not a price away from working, it is a different band.  A target only an
-    untouched rail can hit prices nothing, so this counts spokes instead.
-
-    The count is a thing the search *can* hit: once both rails and the face count are fixed,
-    which steps are one-column steps is already settled arithmetic, and which column spends
-    them is entirely the ladder's choice.
-
-    It is returned cumulative rather than per column, because that is the form a step can be
-    charged in -- "how many surplus steps should be burned before entering this column" --
-    and it is the same information: a tally that matches at every entry matches column by
-    column.  Where the source's columns survive the resample the two readings agree exactly,
-    positions included; where they do not, this one still can.  The per column counts come
-    back alongside because they are the reading of this record a person can check.
-
-    The tally is stepped by ``count - 1`` and *not* by how many spokes sit above one, because
-    the ladder's own arithmetic is signed: the number of surplus steps it has burned at any
-    point is ``dense - sparse - wide``, which counts a column it jumps over as a step it
-    *gained back*.  Clamping at zero would therefore hand a band with one empty column a
-    total one bigger than any ladder at this face count can spend, and the shortfall would
-    then be charged at every column after it -- the same uncatchable cliff that made the
-    position target useless.  Signed, the tally sums to exactly what the pinned face count
-    must spend, so a strip that stands all of these spokes where the source stood them scores
-    zero and an empty column is a single column's miss rather than a debt to the end.
-    """
-    sparse_is_inner = inner_steps <= outer_steps
-    sparse_steps = inner_steps if sparse_is_inner else outer_steps
-    if not nodes or sparse_steps <= 0:
-        return (), ()
-    # A closed band's last column is its first, and the record names it either way.  An
-    # open band's last column is a column of its own: folding it into the first would
-    # charge a pinch that sits at the strip's end as surplus spent at its start.
-    counts = [0] * (sparse_steps if is_closed else sparse_steps + 1)
-    for inner_index, outer_index in nodes:
-        place = inner_index if sparse_is_inner else outer_index
-        if not 0 <= place <= sparse_steps:
-            continue
-        counts[place % sparse_steps if is_closed else place] += 1
-    spent = 0
-    profile = [0]
-    for count in counts:
-        spent += count - 1
-        profile.append(spent)
-    return tuple(profile), tuple(counts)
-
-
-def _pairing_offset(
-    boundary_geometry,
-    kind,
-    next_inner,
-    next_outer,
-    net_wide,
-    inner_steps,
-    outer_steps,
-):
-    """How many surplus steps this column burns over what the band's own pattern spent there.
-
-    Read as the ladder walks off the column, because that is the last moment at which what
-    stood on it can still be counted -- a step that stays on the rail's column has left the
-    tally open.  And read off arithmetic the state already carries rather than off a counter
-    of its own: a node on the dense rail's side of a ladder that has spent ``net_wide`` wide
-    faces has burned ``dense - sparse - net_wide`` of its one-column steps, in whatever order
-    it burned them, which is why pricing the profile costs one subtraction.
-    """
-    profile = boundary_geometry.pairing_profile
-    if not profile:
-        return 0.0
-    inner_step, outer_step = TRANSITION_ADVANCE[kind]
-    if outer_steps >= inner_steps:
-        if inner_step != 1:
-            return 0.0
-        return float(next_outer - next_inner - net_wide - profile[next_inner])
-    if outer_step != 1:
-        return 0.0
-    return float(next_inner - next_outer - net_wide - profile[next_outer])
-
-
-def _doubled_place_cost(
-    boundary_geometry,
-    kind,
-    next_inner,
-    next_outer,
-    inner_steps,
-    outer_steps,
-):
-    """What it costs to land this step's doubled spoke on a column the source did not double.
-
-    A step that stays on the sparser rail's column -- a surplus triangle or a wide face
-    -- leaves two spokes on the column it arrived from, which is the pinch a fan pays
-    for.  The cumulative profile can say how many of those a path should have spent by
-    each column but never which column carries one, so a band whose source stacked its
-    second spokes at its end could watch the search buy them all at its start for free.
-    This charges the column itself against the source's own set.  The pinch kind that
-    spends the *denser* rail's column is not here: it doubles a dense column, which the
-    counts never tracked.
-    """
-    doubles = boundary_geometry.pairing_doubles
-    if not doubles:
-        return 0.0
-    inner_step, outer_step = TRANSITION_ADVANCE[kind]
-    if outer_steps > inner_steps:
-        if inner_step:
-            return 0.0
-        column = next_inner
-    else:
-        if outer_step:
-            return 0.0
-        column = next_outer
-    if column == len(doubles):
-        # A closed band's last column is its first; an open band's last has a slot of
-        # its own, and this index then simply names it.
-        column = 0
-    if doubles[column]:
-        return 0.0
-    return PINCH_PLACE_WEIGHT
 
 
 def _surplus_names(allowed):
@@ -1183,8 +880,6 @@ class _BoundaryGeometry:
         "cell_candidate_cache",
         "rung_cross_cache",
         "boundary_records",
-        "pairing_profile",
-        "pairing_doubles",
     )
 
     def __init__(
@@ -1212,16 +907,6 @@ class _BoundaryGeometry:
         self.cell_candidate_cache = {}
         self.rung_cross_cache = {}
         self.boundary_records = boundary_records
-        # The one thing here that is not measured from the rails: how many spokes this band's
-        # own source rungs spent on each of its columns, filled in by the plan that owns the
-        # search.  It rides along because the search and the local swap both price a step, and
-        # the swap has to see the same money the search did.
-        self.pairing_profile = ()
-        # Which of the sparser rail's columns the source stacked a second spoke on, as one
-        # boolean per column.  The cumulative profile above cannot say *where* a doubled
-        # spoke belongs -- two paths with the same tally read identically through it --
-        # so a step that doubles a column is also charged against this set directly.
-        self.pairing_doubles = ()
 
 
 def _boundary_bounds_from_points(points):
@@ -1504,29 +1189,6 @@ def _consecutive_rungs_cross(
     )
 
 
-def _skipped_column_cost(boundary_geometry, kind, next_inner, next_outer):
-    """What the rung inside a two-column face would have cost had it been drawn.
-
-    Such a face leaves one column of the denser rail without a spoke, which is what the
-    source band did with it.  Charging nothing there would let the search buy the skip
-    wherever the missing rung is worst, so the rung is still measured -- it is simply
-    never written into the mesh.
-    """
-    inner_step, outer_step = TRANSITION_ADVANCE[kind]
-    skipped_inner = next_inner - max(0, inner_step - 1)
-    skipped_outer = next_outer - max(0, outer_step - 1)
-    if skipped_inner == next_inner and skipped_outer == next_outer:
-        return 0.0
-    inner_points = boundary_geometry.inner_points
-    outer_points = boundary_geometry.outer_points
-    rung = (
-        inner_points[skipped_inner % len(inner_points)]
-        - outer_points[skipped_outer % len(outer_points)]
-    ).length
-    normalized_rung = rung / boundary_geometry.boundary_scale
-    return RUNG_LENGTH_WEIGHT * normalized_rung * normalized_rung
-
-
 def _step_base_cost(
     face,
     kind,
@@ -1539,36 +1201,15 @@ def _step_base_cost(
     inner_steps,
     outer_steps,
     boundary_geometry,
-    reflex_reject=True,
 ):
-    """What one step costs before the pairing pattern is consulted.
+    """What one step costs, read off its own geometry alone.
 
-    Everything in here reads only the step's own geometry, so the search caches it per
-    ``(inner, outer, kind)`` and adds the pairing term -- the one part that depends on
-    how many wide faces the path has already spent -- on top of the cached value.
-
-    A step spanning two columns of one rail is read once more before it is priced:
-    :func:`wide_face_reflex_metrics` says whether the span re-enters -- an interior
-    angle past 180 degrees -- and how extreme its worst corner runs.  The strict sweep
-    refuses the re-entry and any corner past :data:`WIDE_ANGLE_VETO_COS` outright; every
-    sweep charges the extremity, because the edge-ratio shape terms cannot tell a long
-    diagonal kite from the band's plain elongated quads and the kite is the face nobody
-    wants to look at.
+    Nothing here asks how the path arrived, so both the search and the local swap memoize
+    it per ``(inner, outer, kind)``.
     """
     quality = face_quality_cost(face, None)
     if quality is None:
         return None
-    advance = TRANSITION_ADVANCE[kind]
-    reflex_cost = 0.0
-    if advance[0] > 1 or advance[1] > 1:
-        reflex, extremity = wide_face_reflex_metrics(face)
-        if reflex > REFLEX_SIN_EPSILON:
-            if reflex_reject:
-                return None
-            reflex_cost = REFLEX_PENALTY_WEIGHT
-        elif extremity > WIDE_ANGLE_VETO_COS and reflex_reject:
-            return None
-        reflex_cost += WIDE_ANGLE_WEIGHT * extremity * extremity
     rung = (
         boundary_geometry.inner_points[next_inner % len(inner)]
         - boundary_geometry.outer_points[next_outer % len(outer)]
@@ -1587,18 +1228,6 @@ def _step_base_cost(
         + RUNG_LENGTH_WEIGHT * normalized_rung * normalized_rung
         + 0.08 * progress_error
         + 0.8 * normalized_error
-        + reflex_cost
-        + _doubled_place_cost(
-            boundary_geometry,
-            kind,
-            next_inner,
-            next_outer,
-            inner_steps,
-            outer_steps,
-        )
-        + _skipped_column_cost(
-            boundary_geometry, kind, next_inner, next_outer
-        )
     )
 
 
@@ -1614,22 +1243,37 @@ def _step_cost(
     outer,
     next_inner,
     next_outer,
-    net_wide,
     inner_boundary,
     outer_boundary,
     inner_steps,
     outer_steps,
     boundary_geometry,
-    reflex_reject=True,
     step_cache=None,
 ):
-    """One step's price: its own geometry plus what it does to the band's spoke tally.
+    """One step's price, memoized per ``(column pair, kind)``.
 
-    ``step_cache`` memoizes the geometric half per ``(column pair, kind)``.  The local swap
-    asks for the same step from both sides of the pair it is comparing, and the face it
-    would rebuild to price it is the same face either way.
+    The local swap asks for the same step from both sides of the pair it is comparing, and
+    the face it would rebuild to price it is the same face either way, so the second visit
+    reads the first one's number off ``step_cache``.
     """
     if step_cache is None:
+        return _step_base_cost(
+            face,
+            kind,
+            inner,
+            outer,
+            next_inner,
+            next_outer,
+            inner_boundary,
+            outer_boundary,
+            inner_steps,
+            outer_steps,
+            boundary_geometry,
+        )
+    origin = _previous_node(kind, next_inner, next_outer)
+    key = (origin[0], origin[1], kind)
+    base_cost = step_cache.get(key, _NOT_CACHED)
+    if base_cost is _NOT_CACHED:
         base_cost = _step_base_cost(
             face,
             kind,
@@ -1642,40 +1286,9 @@ def _step_cost(
             inner_steps,
             outer_steps,
             boundary_geometry,
-            reflex_reject,
         )
-    else:
-        origin = _previous_node(kind, next_inner, next_outer)
-        key = (origin[0], origin[1], kind)
-        base_cost = step_cache.get(key, _NOT_CACHED)
-        if base_cost is _NOT_CACHED:
-            base_cost = _step_base_cost(
-                face,
-                kind,
-                inner,
-                outer,
-                next_inner,
-                next_outer,
-                inner_boundary,
-                outer_boundary,
-                inner_steps,
-                outer_steps,
-                boundary_geometry,
-                reflex_reject,
-            )
-            step_cache[key] = base_cost
-    if base_cost is None:
-        return None
-    pairing_offset = _pairing_offset(
-        boundary_geometry,
-        kind,
-        next_inner,
-        next_outer,
-        net_wide,
-        inner_steps,
-        outer_steps,
-    )
-    return base_cost + PAIRING_TARGET_WEIGHT * pairing_offset * pairing_offset
+        step_cache[key] = base_cost
+    return base_cost
 
 
 def _transition_pair_balance_penalty(transitions, start, end):
@@ -1704,7 +1317,6 @@ def _local_transition_pair_score(
     boundary_geometry,
     triangle_count=0,
     vector_cache=None,
-    reflex_reject=True,
     step_cache=None,
 ):
     """Score two adjacent transitions without rebuilding the whole strip.
@@ -1715,13 +1327,6 @@ def _local_transition_pair_score(
     """
     inner_index = start_inner
     outer_index = start_outer
-    # The wide tally the search would have been carrying at this point, recovered by adding
-    # up what the steps before it each cost.  A swap only ever trades two steps at
-    # ``start_index``, so the run in front of it is the same run in either order.
-    net_wide = sum(
-        _face_count_credit(kind, inner_steps, outer_steps)
-        for kind in transitions[:start_index]
-    )
     score = 0.0
     previous_kind = transitions[start_index - 1] if start_index else None
     for kind in transitions[start_index : start_index + 2]:
@@ -1743,7 +1348,6 @@ def _local_transition_pair_score(
         ):
             return None
         face = _transition_face(inner, outer, inner_index, outer_index, kind)
-        net_wide += _face_count_credit(kind, inner_steps, outer_steps)
         step_cost = _step_cost(
             face,
             kind,
@@ -1751,13 +1355,11 @@ def _local_transition_pair_score(
             outer,
             next_inner,
             next_outer,
-            net_wide,
             inner_boundary,
             outer_boundary,
             inner_steps,
             outer_steps,
             boundary_geometry,
-            reflex_reject,
             step_cache,
         )
         if step_cost is None:
@@ -1796,7 +1398,6 @@ def _beautify_transitions(
     is_closed,
     boundary_geometry,
     waypoints=(),
-    reflex_reject=True,
 ):
     """Make a few safe local swaps after the strip's path is selected.
 
@@ -1857,7 +1458,6 @@ def _beautify_transitions(
                 boundary_geometry,
                 triangle_count,
                 vector_cache,
-                reflex_reject,
                 step_cache,
             )
             if current_score is None:
@@ -1889,7 +1489,6 @@ def _beautify_transitions(
                 boundary_geometry,
                 triangle_count,
                 vector_cache,
-                reflex_reject,
                 step_cache,
             )
             alternate_balance = _transition_pair_balance_penalty(
@@ -1929,7 +1528,6 @@ def _sweep_ladder(
     inner_steps,
     outer_steps,
     wide_pruning,
-    reflex_reject=True,
 ):
     """One full sweep of the ladder's dynamic program: the states at the far corner.
 
@@ -1982,8 +1580,8 @@ def _sweep_ladder(
     # One geometric price per (column pair, kind): the boundary checks, the face's own
     # quality and the column bookkeeping below read nothing about how the path arrived
     # here, so every predecessor and wide-count variant of the same step reuses them.
-    # Only the pairing pattern and the rung continuity stay priced per variant, because
-    # those two do read the path.  False marks a step no path may take at all.
+    # Only the rung continuity stays priced per variant, because it reads the path.
+    # False marks a step no path may take at all.
     step_cache = {}
     # One rung vector per node, shared by the three reads one continuity price makes.
     vector_cache = {}
@@ -2085,7 +1683,6 @@ def _sweep_ladder(
                             inner_steps,
                             outer_steps,
                             boundary_geometry,
-                            reflex_reject,
                         )
                         if base_cost is None:
                             cached = False
@@ -2103,15 +1700,6 @@ def _sweep_ladder(
                     step_cache[cache_key] = cached
                 if cached is False:
                     continue
-                pairing_offset = _pairing_offset(
-                    boundary_geometry,
-                    kind,
-                    next_inner,
-                    next_outer,
-                    next_wide,
-                    inner_steps,
-                    outer_steps,
-                )
                 continuity_cost = _rung_continuity_cost(
                     boundary_geometry,
                     previous_kind,
@@ -2121,12 +1709,7 @@ def _sweep_ladder(
                     next_outer,
                     vector_cache,
                 )
-                candidate_cost = (
-                    prior_cost
-                    + cached
-                    + PAIRING_TARGET_WEIGHT * pairing_offset * pairing_offset
-                    + continuity_cost
-                )
+                candidate_cost = prior_cost + cached + continuity_cost
                 key = (next_inner, next_outer, kind, next_wide)
                 if width == 2:
                     layer = quad_layer
@@ -2176,7 +1759,6 @@ def _build_transitions(
     boundary_geometry,
     waypoints=(),
     region=None,
-    reflex_reject=True,
 ):
     """Solve the whole ladder: cheapest monotone path between two ordered rails.
 
@@ -2188,42 +1770,30 @@ def _build_transitions(
     ``waypoints`` are the nodes :func:`.seams` says a seam crossing needs, and the search
     may not route around them -- which is also what stops a wide face from ever hiding
     the one column a crossing landed on.
-
-    ``reflex_reject`` refuses every two-column face that re-enters -- an interior angle
-    past 180 degrees -- and every one whose worst corner runs past
-    :data:`WIDE_ANGLE_VETO_COS`.  A band whose budget pins wide faces onto a rail that bends
-    toward the sparse rail everywhere it can span them then has no path at all, so the
-    caller (:func:`_search_ladder`) repeats this once with the refusal dropped: the
-    re-entrant face is priced at :data:`REFLEX_PENALTY_WEIGHT` instead, bought only
-    when every clean placement is gone.
     """
     inner_steps = len(inner) if is_closed else len(inner) - 1
     outer_steps = len(outer) if is_closed else len(outer) - 1
-    allowed, budget, _pinch_budget = _band_vocabulary(
+    allowed, budget = _band_vocabulary(
         region,
         inner_steps,
         outer_steps,
     )
-    for level_reject in ((reflex_reject, False) if reflex_reject else (False,)):
-        states, parents, expanded = _sweep_ladder(
-            inner,
-            outer,
-            inner_boundary,
-            outer_boundary,
-            is_closed,
-            boundary_geometry,
-            waypoints,
-            allowed,
-            budget,
-            inner_steps,
-            outer_steps,
-            False,
-            level_reject,
-        )
-        accumulate_scan("plan-expand", 0.0, expanded)
-        if states:
-            break
-    else:
+    states, parents, expanded = _sweep_ladder(
+        inner,
+        outer,
+        inner_boundary,
+        outer_boundary,
+        is_closed,
+        boundary_geometry,
+        waypoints,
+        allowed,
+        budget,
+        inner_steps,
+        outer_steps,
+        False,
+    )
+    accumulate_scan("plan-expand", 0.0, expanded)
+    if not states:
         raise ValueError(pgettext("No valid ordered strip path was found."))
     # The band's face count is a bid, not a decree: the source reported how many of
     # its dense rail's columns go unjoined, and a ladder honouring exactly that count
@@ -2255,8 +1825,7 @@ def _build_transitions(
             allowed,
             sorted(candidates, key=lambda state: state[0])[:2],
             waypoints,
-            boundary_geometry.pairing_profile,
-            (wide_final, budget) if budget else (),
+            wide=(wide_final, budget) if budget else (),
         )
     return best
 
@@ -2305,14 +1874,8 @@ def outer_boundary_order(inner_vertices, outer_vertices, region, decision=None):
     A ``decision`` from :func:`align_outer_boundary` is replayed instead of a new one
     being made, and comes back out again so the caller can freeze the two rails'
     pairing as one unit with the ladder solved on it.
-
-    The replayed order is also what the source band's own rungs are counted in, so both
-    branches record that reading for :func:`build_ordered_strip_plan` to solve against:
-    a frozen ladder never saw the nodes, and the one solved on the next tick has to be
-    pinned by the same numbering the rail is actually walked in.
     """
     if region.get("phase_locked"):
-        region[_PAIRING_NODES] = ()
         return list(outer_vertices), None
     if decision is None:
         started = time.perf_counter()
@@ -2328,9 +1891,6 @@ def outer_boundary_order(inner_vertices, outer_vertices, region, decision=None):
             print_outer_replay(region, decision)
         aligned = apply_outer_decision(outer_vertices, decision, region["closed"])
         chosen = decision
-    region[_PAIRING_NODES] = _source_pairing_nodes(
-        region, inner_vertices, outer_vertices, chosen, region["closed"]
-    )
     return aligned, chosen
 
 
@@ -2398,18 +1958,16 @@ def _search_ladder(
     """Solve the ladder: the search, then the local swap over what it chose.
 
     Returns ``(transitions, score, complete, swapped)``.  ``complete`` is False for the
-    answers the strip is allowed to give in a degraded form: routing around every seam
-    waypoint refused, so the crossings fall back to positional matching -- or every
-    clean placement of the band's wide faces refused, so one re-entrant face was priced
-    in instead of losing the step.  A degraded ladder is never frozen, because the seam's
-    rung would then stay off the vertex the sampler pinned for as long as the shape axes
-    were scrolled.  ``swapped`` only says whether the local swap rewrote what the search
-    chose, which is a diagnostic question, not one the rebuild asks itself.
+    answer the strip is allowed to give in a degraded form: routing through every seam
+    waypoint refused, so the crossings fall back to positional matching.  A degraded
+    ladder is never frozen, because the seam's rung would then stay off the vertex the
+    sampler pinned for as long as the shape axes were scrolled.  ``swapped`` only says
+    whether the local swap rewrote what the search chose, which is a diagnostic question,
+    not one the rebuild asks itself.
     """
     started = time.perf_counter()
     attempts = 1
     complete = True
-    reflex_reject = True
     try:
         score, transitions = _build_transitions(
             inner,
@@ -2449,34 +2007,7 @@ def _search_ladder(
             except ValueError:
                 score = transitions = None
         if transitions is None:
-            # The strict sweep found no path at all: the band's wide-face budget has to
-            # land somewhere and every placement re-entered.  A re-entrant corner is
-            # still the lesser loss against losing the whole step, so the last sweep
-            # prices one at REFLEX_PENALTY_WEIGHT instead of refusing it -- bought only
-            # when nothing clean survives -- and the answer is marked degraded so it is
-            # never frozen.
-            attempts += 1
-            reflex_reject = False
-            complete = False
-            try:
-                score, transitions = _build_transitions(
-                    inner,
-                    outer,
-                    inner_boundary,
-                    outer_boundary,
-                    closed,
-                    boundary_geometry,
-                    seam_nodes,
-                    region=region,
-                    reflex_reject=False,
-                )
-            except ValueError:
-                raise strict_error from None
-            print_reflex_fallback(
-                region,
-                "degraded: every wide face the band's budget asks for either re-enters "
-                "past 180 degrees or turns worse than the strict sweep permits",
-            )
+            raise strict_error from None
     accumulate_scan("plan-build", time.perf_counter() - started, attempts)
     started = time.perf_counter()
     dp_transitions = transitions
@@ -2489,7 +2020,6 @@ def _search_ladder(
         closed,
         boundary_geometry,
         seam_nodes,
-        reflex_reject,
     )
     accumulate_scan("plan-beautify", time.perf_counter() - started, 1)
     return transitions, score, complete, transitions != dp_transitions
@@ -2506,19 +2036,11 @@ def build_ordered_strip_plan(
 ):
     """Resample two ordered curves into one direct, monotone strip.
 
-    The solve sees geometry, with two authorized exceptions.  ``waypoints`` are the ladder
-    nodes :func:`.seams.region_seam_waypoints` says a seam crossing needs, and the search may
-    not route around them.  The region's :data:`_PAIRING_NODES` are the rungs its own source
-    band drew; those refuse no step either -- they price one, and where the pattern they
-    describe needs a face the dense rail's kinds do not supply they buy the strip that kind
-    (:func:`_pairing_pinches`).  What they never do is name a node the search has to stand on,
-    because a band rebuilt onto fewer inner columns than the source has cannot stand on the
-    recorded nodes at the face count the source drew -- what it can match is how many of them
-    leave each of its columns, which is the tally :func:`_pairing_profile` counts out and
-    :func:`_pairing_offset` prices.
+    The solve sees geometry, with one authorized exception: ``waypoints`` are the ladder
+    nodes :func:`.seams.region_seam_waypoints` says a seam crossing needs, and the search
+    may not route around them.
     ``outer_vertices`` arrives in the direction :func:`outer_boundary_order` chose, because
-    that is the order the seam looks its rung up in and the order the pairing nodes were
-    counted in.
+    that is the order the seam looks its rung up in.
 
     ``frozen`` is the entry :func:`frozen_ladder` says this step may replay: the search
     and the local swap are skipped outright and only the two rails' coordinates move,
@@ -2571,35 +2093,11 @@ def build_ordered_strip_plan(
             0.0,
             len(boundary_geometry.rung_cross_cache),
         )
-        pairing_nodes = tuple((region or {}).get(_PAIRING_NODES) or ())
-        allowed, _budget, pinch_budget = _band_vocabulary(
+        allowed, _budget = _band_vocabulary(
             region,
             inner_steps,
             outer_steps,
         )
-        (
-            boundary_geometry.pairing_profile,
-            pairing_counts,
-        ) = _pairing_profile(
-            pairing_nodes,
-            inner_steps,
-            outer_steps,
-            closed,
-        )
-        boundary_geometry.pairing_doubles = (
-            tuple(count >= 2 for count in pairing_counts)
-            if any(count >= 2 for count in pairing_counts)
-            else ()
-        )
-        if DIAGNOSE_LADDER and region is not None and pairing_nodes:
-            print_pairing_profile(
-                region,
-                inner_steps,
-                outer_steps,
-                pairing_nodes,
-                pairing_counts,
-                pinch_budget,
-            )
         seam_nodes, dropped_nodes = _seam_waypoint_nodes(
             tuple(waypoints),
             allowed,
