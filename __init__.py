@@ -50,12 +50,6 @@ def register():
     # translated; it is what lets Blender hand the tables to other add-ons and drop them
     # again on disable.  First, so anything registered below finds it already in.
     i18n.register()
-    from .core import planner
-
-    print(
-        "[Loop Resample][diagnostic] register "
-        f"package={__name__} planner={planner.__file__}"
-    )
     for cls in _CLASSES:
         bpy.utils.register_class(cls)
     # Before the menu is hung up, so the first draw of the entry either has its picture or
@@ -65,10 +59,6 @@ def register():
     # at the bottom of it has to be looked for.  This also puts us above or below whatever
     # else prepended here, which depends on add-on load order rather than on anything here.
     bpy.types.VIEW3D_MT_edit_mesh_context_menu.prepend(draw_edit_mesh_context_menu)
-    print(
-        "[Loop Resample][diagnostic] registered context menu entry "
-        "VIEW3D_MT_edit_mesh_context_menu.prepend(draw_edit_mesh_context_menu)"
-    )
 
 
 def unregister():

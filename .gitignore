@@ -17,6 +17,3 @@ Addon_pack.vbs
 .DS_Store
 .commandcode/
 .workbuddy/test_sweep.py
-.workbuddy/test_tri2quad.py
-.workbuddy/visualize_tri2quad.py
-core/tri2quad.py
