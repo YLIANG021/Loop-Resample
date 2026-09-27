@@ -1,0 +1,220 @@
+"""Portuguese strings, keyed by the English sentence they replace.
+
+One table answers both pt-PT and pt-BR, spelled to the 1990 Orthographic Agreement
+(``seleção``, ``selecionar``) so it reads the same in Lisbon and in São Paulo.
+Placeholders travel with the sentence, so ``{counts}`` and friends stay exactly as they
+are and only the words around them move.
+"""
+
+TRANSLATIONS = {
+    # Operator tooltips.  The two operator names are not here on purpose: they stay English
+    # in every locale.
+    (
+        "*",
+        "Lock the selection, then scroll to set its segment count.  Shift scrolls smooth "
+        "the curve, Ctrl scrolls spread its points, and each tick strengthens that effect.  "
+        "Left-click keeps it, right-click reverts.",
+    ): (
+        "Bloqueie a seleção e role a roda para definir o número de segmentos. Role com "
+        "Shift para suavizar a curva, com Ctrl para distribuir os pontos, e cada passo da "
+        "roda reforça esse efeito. O botão esquerdo mantém o resultado; o botão direito "
+        "reverte."
+    ),
+    ("*", "Enter Loop Resample"): "Iniciar Reamostragem em Laço",
+    (
+        "*",
+        "Lock the current mesh and selection as the resample source",
+    ): "Bloqueie a malha e a seleção atuais como fonte de reamostragem",
+    ("*", "Loop Resample"): "Reamostragem em Laço",
+    (
+        "*",
+        "Resample the locked paths from the session source",
+    ): "Reamostre os caminhos bloqueados a partir da fonte da sessão",
+    ("*", "Confirm Resample"): "Confirmar Reamostragem",
+    (
+        "*",
+        "Keep the current result and end the session",
+    ): "Mantenha o resultado atual e encerre a sessão",
+    ("*", "Cancel Resample"): "Cancelar Reamostragem",
+    (
+        "*",
+        "Restore the mesh to its state when the session started",
+    ): "Restaure a malha ao estado em que estava quando a sessão começou",
+    # The overlay's chip row.
+    ("*", "[Wheel] Segments {entry} → {current}"): (
+        "[Roda] Segmentos {entry} → {current}"
+    ),
+    ("*", "[Shift] Smooth"): "[Shift] Suavizar",
+    ("*", "[Ctrl] Even"): "[Ctrl] Uniformizar",
+    ("*", "[LMB] Keep   [RMB] Revert"): "[Bot. E] Manter   [Bot. D] Reverter",
+    ("*", "Loop Resample failed safely: "): (
+        "Reamostragem em Laço falhou de forma segura: "
+    ),
+    # Reports.
+    ("*", "Locked {count} path(s): {counts}"): (
+        "Bloqueados {count} caminho(s): {counts}"
+    ),
+    ("*", "Mesh update is already running; wait a moment."): (
+        "A atualização da malha já está em execução; aguarde um momento."
+    ),
+    ("*", "Enter adjust mode first."): "Entre primeiro no modo de ajuste.",
+    ("*", "Restored the mesh from before the session."): (
+        "Malha restaurada ao estado anterior à sessão."
+    ),
+    ("*", "Reverted to {counts} segment(s)."): "Revertido para {counts} segmento(s).",
+    ("*", "Reverted to {counts} segment(s) and the original curve."): (
+        "Revertido para {counts} segmento(s) e para a curva original."
+    ),
+    ("*", "Kept {counts} segment(s) on the locked path(s)."): (
+        "Mantidos {counts} segmento(s) nos caminhos bloqueados."
+    ),
+    (
+        "*",
+        "Kept {counts} segment(s) and the adjusted curve on the locked path(s).",
+    ): "Mantidos {counts} segmento(s) e a curva ajustada nos caminhos bloqueados.",
+    (
+        "*",
+        "Resampled {paths} path(s): {changes}; rebuilt {strips} strip(s) with "
+        "{faces} face(s)",
+    ): (
+        "Reamostrados {paths} caminho(s): {changes}; reconstruídas {strips} faixa(s) "
+        "com {faces} face(s)"
+    ),
+    (
+        "*",
+        "No seam mark on {count} UV island boundary position(s), so one face there "
+        "stretches across the UV map.  Mark Seam on those cuts to line them up.",
+    ): (
+        "Não há marca de costura em {count} posição(ões) do limite de uma ilha UV; por "
+        "isso, nesse local uma face estende-se por todo o mapa UV. Use Mark Seam "
+        "nesses cortes para alinhá-los."
+    ),
+    # Refusals and failures, which reach the user as the warning chip.
+    ("*", "closed"): "fechado",
+    ("*", "open"): "aberto",
+    ("*", "A {kind} curve needs at least {minimum} points."): (
+        "Uma curva (tipo {kind}) precisa de pelo menos {minimum} pontos."
+    ),
+    ("*", "A {kind} path needs at least {minimum} points."): (
+        "Um caminho (tipo {kind}) precisa de pelo menos {minimum} pontos."
+    ),
+    ("*", "A {kind} boundary needs at least {minimum} points."): (
+        "Um limite (tipo {kind}) precisa de pelo menos {minimum} pontos."
+    ),
+    ("*", "A curve source contains a zero-length segment."): (
+        "Uma fonte de curva contém um segmento de comprimento zero."
+    ),
+    ("*", "A fitted curve segment has no measurable length."): (
+        "Um segmento da curva ajustada não tem comprimento mensurável."
+    ),
+    ("*", "The fitted curve has no measurable length."): (
+        "A curva ajustada não tem comprimento mensurável."
+    ),
+    ("*", "A boundary contains a zero-length segment."): (
+        "Um limite contém um segmento de comprimento zero."
+    ),
+    ("*", "The target count cannot preserve every feature anchor."): (
+        "O número-alvo não preserva todas as âncoras de característica."
+    ),
+    ("*", "Feature anchors do not span a valid boundary."): (
+        "As âncoras de característica não definem um limite válido."
+    ),
+    (
+        "*",
+        "Feature-aware sampling returned the wrong point count.",
+    ): "A amostragem orientada por características retornou um número de pontos errado.",
+    ("*", "The strip plan contains no complete face sequence."): (
+        "O plano de faixa não contém nenhuma sequência completa de faces."
+    ),
+    ("*", "The strip plan did not consume the full inner boundary."): (
+        "O plano de faixa não consumiu todo o limite interno."
+    ),
+    ("*", "The strip plan did not consume the full outer boundary."): (
+        "O plano de faixa não consumiu todo o limite externo."
+    ),
+    ("*", "The strip plan contains a degenerate face."): (
+        "O plano de faixa contém uma face degenerada."
+    ),
+    ("*", "Select a continuous chain of edges or points."): (
+        "Selecione uma cadeia contínua de arestas ou pontos."
+    ),
+    (
+        "*",
+        "The selected edges cross each other.  Keep only one direction of them.",
+    ): "As arestas selecionadas cruzam-se. Mantenha apenas uma das direções.",
+    (
+        "*",
+        "The selected edges are not joined, so they cannot form one continuous chain.",
+    ): (
+        "As arestas selecionadas não estão ligadas, portanto não podem formar uma "
+        "única cadeia contínua."
+    ),
+    (
+        "*",
+        "The selected edges are not continuous; there is a gap in between.",
+    ): "As arestas selecionadas não são contínuas; há um vão entre elas.",
+    (
+        "*",
+        "The selected edges close back into a ring.  Break the loop and try again.",
+    ): "As arestas selecionadas fecham-se num anel. Quebre o laço e tente novamente.",
+    ("*", "No valid ordered strip path was found."): (
+        "Não foi encontrado nenhum caminho válido de faixa ordenada."
+    ),
+    ("*", "The ordered strip contains intersecting edges."): (
+        "A faixa ordenada contém arestas que se intersectam."
+    ),
+    ("*", "The inner curve has too few points."): "A curva interna tem poucos pontos.",
+    ("*", "The outer curve has too few points."): "A curva externa tem poucos pontos.",
+    (
+        "*",
+        "The faces beside this chain all close in on one point, so it has to be "
+        "resampled as a whole ring.",
+    ): (
+        "Todas as faces ao lado desta cadeia convergem para um único ponto, por isso "
+        "é preciso reamostrá-la como um anel completo."
+    ),
+    (
+        "*",
+        "This chain of edges does not run between two matching strips of faces, so "
+        "there is nothing here to resample.",
+    ): (
+        "Esta cadeia de arestas não passa entre duas faixas de faces compatíveis, por "
+        "isso não há nada aqui para reamostrar."
+    ),
+    (
+        "*",
+        "The selected path contains a branch that cannot be resampled safely.",
+    ): (
+        "O caminho selecionado contém uma ramificação que não pode ser reamostrada "
+        "com segurança."
+    ),
+    ("*", "The target path would duplicate an existing edge."): (
+        "O caminho-alvo duplicaria uma aresta existente."
+    ),
+    ("*", "The triangle-fan cap is no longer valid."): (
+        "A tampa em leque de triângulos já não é válida."
+    ),
+    ("*", "An n-gon cap needs at least three boundary vertices."): (
+        "Uma tampa n-gon precisa de pelo menos três vértices do limite."
+    ),
+    ("*", "The n-gon cap boundary contains duplicate points."): (
+        "O limite da tampa n-gon contém pontos duplicados."
+    ),
+    ("*", "The n-gon cap boundary is degenerate or self-intersecting."): (
+        "O limite da tampa n-gon é degenerado ou auto-intersectante."
+    ),
+    ("*", "The n-gon cap would contain a degenerate triangle."): (
+        "A tampa n-gon conteria um triângulo degenerado."
+    ),
+    ("*", "The source no longer matches the locked selection."): (
+        "A fonte já não corresponde à seleção bloqueada."
+    ),
+    (
+        "*",
+        "Select one path or multiple quad-connected parallel paths.",
+    ): "Selecione um caminho ou vários caminhos paralelos ligados por quadriláteros.",
+    (
+        "*",
+        "Nothing here can be resampled.  Select a continuous chain of edges or points.",
+    ): "Nada aqui pode ser reamostrado. Selecione uma cadeia contínua de arestas ou pontos.",
+}
