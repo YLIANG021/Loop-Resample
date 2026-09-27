@@ -15,6 +15,7 @@ Addon_pack.vbs
 *.tmp
 *.log
 .DS_Store
+.commandcode/
 .workbuddy/test_sweep.py
 .workbuddy/test_tri2quad.py
 .workbuddy/visualize_tri2quad.py
