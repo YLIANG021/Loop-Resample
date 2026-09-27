@@ -140,10 +140,12 @@ _CHIP_STYLES = {
         (0.68, 0.22, 0.22, 0.95),
         (1.0, 0.82, 0.82, 1.0),
     ),
+    # The armed chip wears the entry mark's own yellow (#FFE400, icons/loop_resample.png),
+    # so the fill and ring are hue-shifted along with the glyphs rather than left on blue.
     "hotkey_active": (
-        (0.15, 0.32, 0.42, 0.88),
-        (0.24, 0.52, 0.68, 0.95),
-        (0.2, 0.9, 1.0, 1.0),
+        (0.42, 0.37, 0.08, 0.50),
+        (0.68, 0.60, 0.12, 0.95),
+        (1.0, 0.894, 0.0, 1.0),
     ),
     "hotkey": (
         (0.20, 0.20, 0.20, 0.75),
