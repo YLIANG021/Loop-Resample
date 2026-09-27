@@ -1,5 +1,6 @@
 """Viewport UI for Loop Resample: the wheel modal, the right-click entry, the overlays."""
 
+from . import entry_icon
 from .hud import hide_notice
 from .interactive import (
     MESH_OT_loop_resample_interactive,
@@ -12,5 +13,6 @@ __all__ = (
     "MESH_OT_loop_resample_interactive",
     "MESH_OT_loop_resample_interactive_entry",
     "draw_edit_mesh_context_menu",
+    "entry_icon",
     "hide_notice",
 )

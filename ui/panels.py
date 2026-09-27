@@ -10,11 +10,17 @@ under the cursor when the right-click happens, so a second entry point across th
 bought nothing except two contexts to keep in sync.
 """
 
+from . import entry_icon
 from .interactive import MESH_OT_loop_resample_interactive_entry
 
 # The item is named after the operator it forwards to, and both names stay English in every
 # locale: the tool's own name is not something a translation should rename under the cursor.
-_ENTRY_ICON = "MOUSE_MMB_SCROLL"
+#
+# The fallback when this Blender will not build our own mark.  ``MOUSE_MMB`` and not the
+# nicer ``MOUSE_MMB_SCROLL``: 4.2 has no scroll glyph in its icon enum at all, and asking for
+# it there does not lose the icon, it throws on every draw of the menu the item lives in.
+# Verified against the installed 4.2 and 5.2 enums.
+_ENTRY_ICON = "MOUSE_MMB"
 
 
 def draw_edit_mesh_context_menu(self, context):
@@ -27,12 +33,17 @@ def draw_edit_mesh_context_menu(self, context):
 
     The item names the forwarder rather than the modal itself, because a menu cannot start
     a modal operator -- see :class:`MESH_OT_loop_resample_interactive_entry`.
+
+    A custom mark goes through ``icon_value`` (an int) rather than ``icon`` (an enum of
+    names Blender owns), so the two cannot be passed together.
     """
     if not MESH_OT_loop_resample_interactive_entry.poll(context):
         return
+    value = entry_icon.icon_value()
+    icon = {"icon_value": value} if value else {"icon": _ENTRY_ICON}
     self.layout.operator(
         MESH_OT_loop_resample_interactive_entry.bl_idname,
         text=MESH_OT_loop_resample_interactive_entry.bl_label,
-        icon=_ENTRY_ICON,
+        **icon,
     )
     self.layout.separator()

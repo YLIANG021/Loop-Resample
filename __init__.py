@@ -28,6 +28,7 @@ from .ui import (
     MESH_OT_loop_resample_interactive,
     MESH_OT_loop_resample_interactive_entry,
     draw_edit_mesh_context_menu,
+    entry_icon,
     hide_notice,
 )
 
@@ -57,6 +58,9 @@ def register():
     )
     for cls in _CLASSES:
         bpy.utils.register_class(cls)
+    # Before the menu is hung up, so the first draw of the entry either has its picture or
+    # has already decided it has not.
+    entry_icon.register()
     # Prepended, not appended: the native edit-mesh menu is long, and an entry that lands
     # at the bottom of it has to be looked for.  This also puts us above or below whatever
     # else prepended here, which depends on add-on load order rather than on anything here.
@@ -81,6 +85,7 @@ def unregister():
     # A refusal notice outlives nothing: its handlers belong to this module instance, and a
     # viewport that keeps drawing them after disable draws a function whose module is gone.
     hide_notice()
+    entry_icon.unregister()
     session.clear()
     for cls in reversed(_CLASSES):
         try:
