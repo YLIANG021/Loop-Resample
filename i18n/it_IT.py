@@ -121,21 +121,6 @@ TRANSLATIONS = {
     ): "Un confine contiene un segmento di lunghezza zero.",
     (
         "*",
-        "The target count cannot preserve every feature anchor.",
-    ): "Il numero obiettivo non può conservare tutti gli ancoraggi di caratteristica.",
-    (
-        "*",
-        "Feature anchors do not span a valid boundary.",
-    ): "Gli ancoraggi di caratteristica non delimitano un confine valido.",
-    (
-        "*",
-        "Feature-aware sampling returned the wrong point count.",
-    ): (
-        "Il campionamento sensibile alle caratteristiche ha restituito il numero "
-        "sbagliato di punti."
-    ),
-    (
-        "*",
         "The strip plan contains no complete face sequence.",
     ): (
         "Il piano delle strisce non contiene alcuna sequenza completa di facce."

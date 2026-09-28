@@ -7,8 +7,10 @@ the same u start a new chain.  A chain is therefore one island's continuous
 polyline along the rail, and sampling the chain of the matched source face keeps
 neighbouring rebuilt faces in agreement at every shared vertex while an island
 boundary still cuts them apart.  Note this splits on the *stored values*, which is
-not the same set of edges as the marked seam -- the seam drives where new vertices
-land (see :mod:`.seams`), while this only decides which island a corner reads
+not the same set of edges as the marked seam -- the red line only says where the user
+thinks the islands part, and :mod:`.seams` now reads the same disagreement to decide
+where new vertices land (see :func:`island_boundary_edges`), while this decides which
+island a corner reads
 from.  Corner vertex colors -- both the byte and the float layer Blender
 exposes -- travel the same chains and share the split-when-corners-disagree rule,
 so a color change is preserved even where it coincides with a UV seam; only UV
@@ -25,9 +27,12 @@ face starting there -- that face reads a chord across the map.  So a corner stan
 such a vertex takes the value the matched source face stores there, which is the copy
 its own island has; see :func:`_tied_corner`.
 
-A boundary with no seam mark on it cannot be answered this way, because no rebuilt
-vertex stands there at all.  Those are reported to the user and nothing else: reading
-a UV may change what the add-on says, never how the band is wired.
+A boundary with no seam mark on it used to be unanswerable, because no rebuilt vertex
+stood there at all.  :func:`island_boundary_edges` now hands those to :mod:`.seams`,
+which puts a vertex on one just as it does on a marked one, and :func:`_tied_corner`
+then reads the copy the pinned vertex's own island stores.  What is left unsaid is a
+boundary no crossing reaches -- reported to the user, because the transfer can move a
+vertex onto a cut but only a cut that crosses the band tells it where to put one.
 """
 
 import time
@@ -92,6 +97,76 @@ def _corner_layers(bm):
         for layer in collection:
             layers[(kind, layer.name)] = (kind, layer)
     return layers
+
+
+def corner_signature(values):
+    """The per-corner values of one loop, cut to the step every comparison rounds to.
+
+    Both halves of the island test read this: :class:`._RailBuilder` keys a rail corner
+    by it, and :func:`island_boundary_edges` compares the two faces of an edge with it.
+    One definition is what makes "this corner disagrees" mean the same thing in each.
+    """
+    return tuple(
+        (
+            key,
+            tuple(round(component, _UV_MERGE_DECIMALS) for component in value),
+        )
+        for key, value in sorted(values.items())
+    )
+
+
+def _loop_values(loop, layers):
+    """Every corner value one loop stores, in the shape :func:`corner_signature` wants.
+
+    A corner color is a Vector BMesh hands back directly; a UV is a struct with a
+    ``.uv`` field.
+    """
+    values = {}
+    for key, (kind, layer) in layers.items():
+        values[key] = loop[layer].uv if kind == "uv" else loop[layer]
+    return values
+
+
+def island_boundary_edges(edges, bm):
+    """Edges whose two faces store different corner values for the same vertex.
+
+    The red line is what a user thinks of as a seam, but what the transfer reads is the
+    stored corners, and the two disagree on any mesh whose seams were never marked --
+    or were marked somewhere else.  A rebuilt face is handed one source face's corner
+    values, so wherever the two faces over one edge disagree, a face that covers both
+    sides reads a chord across the map.  :mod:`.seams` therefore asks for these next to
+    the marked ones: same test, same rounding, so a boundary this cannot see is one the
+    chain splitting cannot see either.
+
+    An edge with a face on only one side, or on more than two, has no pair to compare
+    and is not a boundary.  With no corner layers at all nothing disagrees, which is the
+    common case: a mesh without a UV map gains no boundary here and no pinning.
+    """
+    layers = _corner_layers(bm)
+    if not layers:
+        return ()
+    corners = {}
+    boundaries = []
+    for edge in edges:
+        faces = edge.link_faces
+        if len(faces) != 2:
+            continue
+        stored = []
+        for face in faces:
+            map_for_face = corners.get(face)
+            if map_for_face is None:
+                map_for_face = {
+                    loop.vert: corner_signature(_loop_values(loop, layers))
+                    for loop in face.loops
+                }
+                corners[face] = map_for_face
+            stored.append(map_for_face)
+        first, second = stored
+        if any(
+            first[vertex] != second[vertex] for vertex in edge.verts
+        ):
+            boundaries.append(edge)
+    return tuple(boundaries)
 
 
 def capture_region_faces(bm, region, paths):
@@ -261,7 +336,7 @@ def capture_region_faces(bm, region, paths):
         "records": records,
         "rails": rails,
         "periodic": _periodic_layers(bounds, closed),
-        # Where an island boundary leaves the band with no seam mark on it, which the
+        # Where an island boundary leaves the band on no rebuilt vertex, which the
         # transfer cannot repair and the user can; see :func:`_unmarked_boundaries`.
         "unmarked_cuts": unmarked_cuts,
     }
@@ -270,15 +345,15 @@ def capture_region_faces(bm, region, paths):
 def _unmarked_boundaries(
     region, doubled, inner_vertices, outer_vertices, inner_segments, outer_segments
 ):
-    """Rail vertices an island boundary splits, on which no seam mark stands.
+    """Rail vertices an island boundary splits that no crossing was built on.
 
-    A seam mark is what puts a rebuilt vertex on the cut, and without one a face has
-    to cover both islands at once -- no choice of corner values makes that face small,
-    so it is drawn as a chord across the map.  :func:`_tied_corner` fixes the copy a
-    pinned vertex reads; nothing here can.  Which boundaries are split comes from the
-    stored corner values, but only to decide *what to say*: this reaches no waypoint,
-    no anchor and no vertex position, exactly so that editing a UV map cannot move the
-    mesh.
+    A rebuilt vertex on the cut is what makes the corner answerable, and only a crossing
+    puts one there -- :mod:`.seams` now reads one off a mark or off the stored corners,
+    so a cut neither reaches is the one a face still has to cover both islands at once.
+    No choice of corner values makes that face small, so it is drawn as a chord across
+    the map, and this is what the closing note counts.  Which boundaries are split comes
+    from the stored corner values, and only to decide *what to say*: this reaches no
+    waypoint, no anchor and no vertex position.
     """
     marked = {
         vertex
@@ -288,6 +363,15 @@ def _unmarked_boundaries(
         if getattr(edge, "seam", False)
         for vertex in edge.verts
     }
+    for crossing in region.get("seam_crossings") or ():
+        for vertices, index in (
+            (inner_vertices, crossing["inner_index"]),
+            (outer_vertices, crossing["outer_index"]),
+        ):
+            # A fan's pole is a rail to :mod:`.seams` and not to this capture, which
+            # reads its corners off the two vertex rails only.
+            if index < len(vertices):
+                marked.add(vertices[index])
     cuts = []
     for rail, (values, vertices, segments) in enumerate(
         (
@@ -380,16 +464,7 @@ class _RailBuilder:
         return frozenset(doubled)
 
     def _key(self, corner):
-        return (
-            corner["u"],
-            tuple(
-                (
-                    key,
-                    tuple(round(component, _UV_MERGE_DECIMALS) for component in value),
-                )
-                for key, value in sorted(corner["values"].items())
-            ),
-        )
+        return (corner["u"], corner_signature(corner["values"]))
 
     def _node(self, key, uv):
         if key not in self._parent:

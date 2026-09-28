@@ -175,6 +175,21 @@ def print_seam_crossing_skipped(region, reason, detail):
     )
 
 
+def print_seam_excursion(region, detail):
+    """Report a strip whose ladder was widened a column to reach a seam crossing.
+
+    Standing outside the band the rail lengths give a strip costs a borrowed pair -- one
+    quad turns into a triangle each way -- so this line is the tally of the faces the
+    geometry did not ask for, and it names the crossings the loan bought and the ones it
+    still could not reach.  Silent for every strip that borrowed nothing, which is every
+    strip that lost no crossing.
+    """
+    print(
+        "[Loop Resample][diagnostic] seam-excursion "
+        f"region={region.get('region_index')} path={region.get('path_index')} {detail}"
+    )
+
+
 def print_reflex_fallback(region, detail):
     """Report a strip that shipped a re-entrant wide face because nothing else fit."""
     print(

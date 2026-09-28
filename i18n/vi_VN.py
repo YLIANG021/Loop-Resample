@@ -111,18 +111,6 @@ TRANSLATIONS = {
     ): "Ranh giới có một đoạn dài bằng không.",
     (
         "*",
-        "The target count cannot preserve every feature anchor.",
-    ): "Số mục tiêu không giữ được mọi điểm neo đặc trưng.",
-    (
-        "*",
-        "Feature anchors do not span a valid boundary.",
-    ): "Các điểm neo đặc trưng không tạo thành ranh giới hợp lệ.",
-    (
-        "*",
-        "Feature-aware sampling returned the wrong point count.",
-    ): "Lấy mẫu có nhận diện đặc trưng trả về số điểm không đúng.",
-    (
-        "*",
         "The strip plan contains no complete face sequence.",
     ): "Kế hoạch dải không có trình tự mặt nào hoàn chỉnh.",
     (

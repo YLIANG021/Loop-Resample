@@ -105,17 +105,6 @@ TRANSLATIONS = {
     ("*", "A boundary contains a zero-length segment."): (
         "Die Begrenzung enthält ein Segment der Länge null."
     ),
-    (
-        "*",
-        "The target count cannot preserve every feature anchor.",
-    ): "Die Zielanzahl kann nicht alle Merkmalsanker erhalten.",
-    ("*", "Feature anchors do not span a valid boundary."): (
-        "Die Merkmalsanker bilden keine gültige Begrenzung."
-    ),
-    (
-        "*",
-        "Feature-aware sampling returned the wrong point count.",
-    ): "Die merkmalsorientierte Abtastung lieferte die falsche Punktzahl.",
     ("*", "The strip plan contains no complete face sequence."): (
         "Der Streifenplan enthält keine vollständige Flächensequenz."
     ),

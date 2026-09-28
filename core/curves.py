@@ -1,6 +1,6 @@
 """Curve fitting, parameterization, and source-spacing sampling."""
 
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from math import acos
 
 from ..i18n import pgettext
@@ -146,59 +146,6 @@ def _sample_at_distance(curve, distance):
     )
 
 
-def _interval_samples(
-    anchors,
-    positions,
-    is_closed,
-    total_length,
-    target_count,
-    at_anchor,
-    between,
-):
-    """Spread ``target_count`` samples over the anchor-to-anchor intervals.
-
-    ``positions`` is any monotone measure along the path -- arc length on a fitted
-    curve, normalized parameter on a polyline -- and ``at_anchor`` / ``between`` read
-    a point from the caller's own path model, so both sources share the allocation.
-    """
-    if is_closed:
-        pairs = [
-            (anchors[index], anchors[(index + 1) % len(anchors)])
-            for index in range(len(anchors))
-        ]
-        interval_lengths = [
-            (positions[end] - positions[start]) % total_length or total_length
-            for start, end in pairs
-        ]
-        total_segments = target_count
-    else:
-        pairs = list(zip(anchors, anchors[1:]))
-        interval_lengths = [
-            positions[end] - positions[start] for start, end in pairs
-        ]
-        total_segments = target_count - 1
-
-    segments = _allocate_interval_segments(interval_lengths, total_segments)
-    samples = [at_anchor(anchors[0])]
-    for interval_index, ((start, end), segment_count) in enumerate(
-        zip(pairs, segments)
-    ):
-        interval_length = interval_lengths[interval_index]
-        for step in range(1, segment_count + 1):
-            if (
-                is_closed
-                and interval_index == len(pairs) - 1
-                and step == segment_count
-            ):
-                continue
-            samples.append(
-                at_anchor(end)
-                if step == segment_count
-                else between(start, interval_length * step / segment_count)
-            )
-    return samples
-
-
 def _segment_lengths(distances):
     """The span of each source segment out of a cumulative table of control distances."""
     return tuple(
@@ -207,71 +154,66 @@ def _segment_lengths(distances):
     )
 
 
-def _distance_at(curve, table, positions, measure):
-    """The arc-length distance one measure falls at, re-weighted or plain.
+def _occupy_anchor_slots(slot_measures, anchor_measures, total, is_closed):
+    """Hand every anchor one of the slots the global distribution already produced.
 
-    ``positions`` is either the curve's own control distances or a monotone
-    re-weighting of them, and the two readings only agree once the measure has been
-    put back where its source segment's real length says it belongs.
+    ``slot_measures`` is the increasing measure the caller spaced its samples by, in
+    whatever unit that caller works in, and ``anchor_measures`` is where each source
+    point to pin sits in the same unit.  Each anchor takes the nearest still-free slot
+    and both orders stay monotone, which is what keeps the pin from crossing over
+    itself; every other slot keeps the coordinate the plain distribution gave it, so
+    the whole difference a pin makes is the one point it stands on.  That is also why
+    the spacing and smoothing axes still move the rest of the path: an anchor is a name
+    for a vertex, not a wall the distribution has to restart against.
+
+    A closed path is read from its first anchor around the loop, so a seam sitting just
+    *before* the start of the index frame takes the slot beside it instead of the one
+    all the way across.  An open path's two ends are not for rent: they hold the path's
+    own vertices whatever the anchors ask for, which is the guarantee the allocator
+    this replaced got by adding the ends to the anchor list itself.
+
+    Returns None when there are fewer slots than anchors, leaving the caller on its
+    plain distribution rather than pinning a subset of the promises.
     """
-    if positions is not table:
-        measure = measure_to_distance(table, positions, measure)
-    return _sample_at_distance(curve, measure)
-
-
-def _pinned_samples(curve, target_count, anchors, even=0.0):
-    """Sample evenly inside each anchor-to-anchor interval, pinning the anchors.
-
-    Returns None when the target cannot hold every anchor, so the caller keeps the
-    plain distribution instead of failing the step.
-
-    ``even`` re-weights the interval allocation, and pinning is exactly where that
-    is safe: a warped measure moves the divisions between anchors, never the anchors
-    themselves, so a seam's rail vertex keeps the sample it was promised.
-    """
-    points = curve.control_points
-    table = curve.control_distances
-    positions = measure_positions(
-        _segment_lengths(table), even, False
-    ) or table
-    last = len(points) - 1
-    ordered = sorted(
-        {index for index in anchors if 0 <= index <= last},
-        key=lambda index: positions[index],
-    )
-    if not curve.is_closed:
-        ordered = sorted(
-            {0, last, *ordered}, key=lambda index: positions[index]
+    needed = len(anchor_measures)
+    if not needed:
+        return None
+    if is_closed:
+        origin = anchor_measures[0]
+        order = sorted(
+            range(len(slot_measures)),
+            key=lambda index: (slot_measures[index] - origin) % total,
         )
-    if not ordered:
+        positions = [(slot_measures[index] - origin) % total for index in order]
+        wanted = [(measure - origin) % total for measure in anchor_measures]
+    else:
+        order = list(range(len(slot_measures)))
+        if anchor_measures[0] > 0.0:
+            order.pop(0)
+        if anchor_measures[-1] < total:
+            order.pop()
+        positions = [slot_measures[index] for index in order]
+        wanted = list(anchor_measures)
+
+    count = len(positions)
+    if needed > count:
         return None
 
-    try:
-        total = positions[-1]
-        samples = _interval_samples(
-            ordered,
-            positions,
-            curve.is_closed,
-            total,
-            target_count,
-            at_anchor=lambda index: points[index].copy(),
-            # A closed path's anchor-to-itself interval runs off the end of the
-            # measure table, and reading past that end clamps onto the closing
-            # point rather than coming back around, so it wraps here instead.
-            between=lambda start, offset: _distance_at(
-                curve,
-                table,
-                positions,
-                (positions[start] + offset) % total
-                if curve.is_closed
-                else positions[start] + offset,
-            ),
-        )
-    except ValueError:
-        return None
-    if len(samples) != target_count:
-        return None
-    return samples
+    slots = []
+    cursor = 0
+    for index, target in enumerate(wanted):
+        # Slots still unclaimed at either end set the window this one may reach.
+        high = count - needed + index
+        near = bisect_left(positions, target)
+        choice = None
+        for candidate in (near - 1, near):
+            slot = min(max(candidate, cursor), high)
+            distance = abs(positions[slot] - target)
+            if choice is None or distance < choice[0]:
+                choice = (distance, slot)
+        slots.append(order[choice[1]])
+        cursor = choice[1] + 1
+    return tuple(slots)
 
 
 def sample_catmull_rom_curve(
@@ -282,10 +224,12 @@ def sample_catmull_rom_curve(
 ):
     """Sample a smooth source while preserving its original segment-density profile.
 
-    ``anchors`` are control-point indices that must keep a sample exactly on them:
-    a UV seam crossing the strip is pinned this way so no rebuilt face ever
-    straddles it.  A step back to the source count is left unpinned because that
-    step already lands on every source vertex.
+    ``anchors`` are control-point indices that must keep a sample exactly on them: a UV
+    seam crossing the strip is pinned this way so no rebuilt face ever straddles it.
+    Each one takes the nearest slot out of the distribution below and displaces it, so
+    the rest of the path stays wherever the axes put it and only the pinned point is
+    held back.  A step back to the source count is left unpinned because that step
+    already lands on every source vertex.
 
     ``even`` is one strength of the distribution axis, from equal index steps toward
     equal arc length.  Zero hands back the arithmetic below untouched, which is the
@@ -319,24 +263,20 @@ def sample_catmull_rom_curve(
             "mode=uniform reason=invalid-source-profile"
         )
 
-    if anchors and (
+    pin = bool(anchors) and (
         even != 0.0
         or target_count != len(curve.control_points)
         or not valid_profile
-    ):
-        pinned = _pinned_samples(
-            curve, target_count, anchors, even=even
-        )
-        if pinned is not None:
-            return pinned
+    )
 
     table = curve.control_distances
     positions = (
-        measure_positions(_segment_lengths(table), even, True)
+        measure_positions(_segment_lengths(table), even)
         if valid_profile
         else None
     ) or table
     samples = []
+    slot_distances = []
     for index in range(target_count):
         if valid_profile:
             if positions is table:
@@ -351,19 +291,35 @@ def sample_catmull_rom_curve(
             else:
                 # The measure is a re-scaling of the source's own index frame, so the
                 # sample position is found in the measure and read back as a fraction
-                # of whichever segment it landed in.  Dividing that by the segment's
-                # length instead of allocating by it is the whole difference between
-                # spacing that follows the source vertices and spacing that does not.
+                # of whichever segment it landed in.  Weighting a segment by its length
+                # instead of by one is the whole difference between spacing that
+                # follows the arc and spacing that follows the source vertices.
                 distance = measure_to_distance(
                     table, positions, index * positions[-1] / divisor
                 )
         else:
             distance = curve.total_length * index / divisor
 
+        slot_distances.append(distance)
         samples.append(_sample_at_distance(curve, distance))
     if not curve.is_closed:
         samples[0] = curve.control_points[0].copy()
         samples[-1] = curve.control_points[-1].copy()
+    if pin:
+        points = curve.control_points
+        ordered = sorted(
+            {index for index in anchors if 0 <= index <= len(points) - 1},
+            key=lambda index: table[index],
+        )
+        slots = _occupy_anchor_slots(
+            slot_distances,
+            [table[index] for index in ordered],
+            curve.total_length,
+            curve.is_closed,
+        )
+        if slots is not None:
+            for slot, index in zip(slots, ordered):
+                samples[slot] = points[index].copy()
     return samples
 
 
@@ -474,47 +430,19 @@ def _limit_feature_anchors(boundary, anchors, target_count):
     return tuple(sorted(selected, key=lambda index: boundary.parameters[index]))
 
 
-def _allocate_interval_segments(interval_lengths, total_segments):
-    """Allocate at least one segment to each feature-to-feature interval."""
-    if total_segments < len(interval_lengths):
-        raise ValueError(pgettext("The target count cannot preserve every feature anchor."))
-
-    segments = [1] * len(interval_lengths)
-    remaining = total_segments - len(interval_lengths)
-    if remaining == 0:
-        return segments
-
-    total_length = sum(interval_lengths)
-    if total_length <= 1e-12:
-        raise ValueError(pgettext("Feature anchors do not span a valid boundary."))
-
-    exact_additions = [remaining * length / total_length for length in interval_lengths]
-    whole_additions = [int(value) for value in exact_additions]
-    for index, amount in enumerate(whole_additions):
-        segments[index] += amount
-
-    unallocated = remaining - sum(whole_additions)
-    ranked = sorted(
-        range(len(interval_lengths)),
-        key=lambda index: (
-            exact_additions[index] - whole_additions[index],
-            interval_lengths[index],
-            -index,
-        ),
-        reverse=True,
-    )
-    for index in ranked[:unallocated]:
-        segments[index] += 1
-    return segments
-
-
 def sample_by_arclength(
     vertices,
     target_count,
     is_closed,
     forced_anchors=(),
 ):
-    """Sample a polyline without moving detected corners off the source path."""
+    """Sample a polyline without moving detected corners off the source path.
+
+    Detected turns and the seam crossings of ``forced_anchors`` each take the nearest
+    slot of the even distribution below, so a corner keeps its own vertex while the
+    points between corners keep the spacing this step asked for rather than an
+    interval of their own.
+    """
     minimum = 3 if is_closed else 2
     if target_count < minimum:
         raise ValueError(
@@ -534,26 +462,18 @@ def sample_by_arclength(
         )
     anchors = _limit_feature_anchors(boundary, anchors, target_count)
 
-    if not anchors:
-        divisor = target_count if is_closed else target_count - 1
-        parameters = [index / divisor for index in range(target_count)]
-        samples = [_sample_parameterized(boundary, parameter) for parameter in parameters]
-        return samples
-
-    samples = _interval_samples(
-        anchors,
-        boundary.parameters,
-        is_closed,
+    divisor = target_count if is_closed else target_count - 1
+    slot_parameters = [index / divisor for index in range(target_count)]
+    samples = [
+        _sample_parameterized(boundary, parameter) for parameter in slot_parameters
+    ]
+    slots = _occupy_anchor_slots(
+        slot_parameters,
+        [boundary.parameters[index] for index in anchors],
         1.0,
-        target_count,
-        at_anchor=lambda index: _point(boundary.vertices[index]),
-        between=lambda start, offset: _sample_parameterized(
-            boundary,
-            boundary.parameters[start] + offset,
-        ),
+        is_closed,
     )
-    if len(samples) != target_count:
-        raise RuntimeError(
-            pgettext("Feature-aware sampling returned the wrong point count.")
-        )
+    if slots is not None:
+        for slot, index in zip(slots, anchors):
+            samples[slot] = _point(boundary.vertices[index])
     return samples

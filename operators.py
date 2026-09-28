@@ -266,11 +266,12 @@ def _resample(session, bm, counts, shape=None):
     paths = capture["paths"]
     synchronized_paths = capture["synchronized"]
     regions = capture["regions"]
-    # Where a UV island boundary leaves a band that no seam mark runs through.  The
-    # transfer can hand a pinned vertex either copy of a split corner, but it cannot
-    # invent the vertex: only a seam mark puts one on the cut.  So this comes back as a
-    # sentence at the end of the gesture, and it decides nothing about the mesh -- UVs
-    # stay out of the wiring, which is the whole reason the boundary is not read as one.
+    # Where a UV island boundary leaves the band on no rebuilt vertex.  The transfer can
+    # hand a pinned vertex either copy of a split corner, but it cannot invent the vertex,
+    # and only a crossing puts one on the cut -- which a cut that never reaches the far
+    # rail does not get, marked or not.  So this comes back as a sentence at the end of the
+    # gesture, and it decides nothing about the mesh: the reading that does decide lives in
+    # :mod:`.seams`, and this counts what it was left out of.
     session.unmarked_cuts = tuple(
         sorted(
             {

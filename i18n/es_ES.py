@@ -125,21 +125,6 @@ TRANSLATIONS = {
     ): "El límite contiene un segmento de longitud cero.",
     (
         "*",
-        "The target count cannot preserve every feature anchor.",
-    ): "El número objetivo no puede conservar todos los anclajes de características.",
-    (
-        "*",
-        "Feature anchors do not span a valid boundary.",
-    ): "Los anclajes de características no forman un límite válido.",
-    (
-        "*",
-        "Feature-aware sampling returned the wrong point count.",
-    ): (
-        "El muestreo adaptado a las características devolvió un número de puntos "
-        "incorrecto."
-    ),
-    (
-        "*",
         "The strip plan contains no complete face sequence.",
     ): "El plan de bandas no contiene ninguna secuencia completa de caras.",
     (

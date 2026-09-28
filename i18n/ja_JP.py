@@ -108,18 +108,6 @@ TRANSLATIONS = {
     ): "境界に長さがゼロのセグメントが含まれています。",
     (
         "*",
-        "The target count cannot preserve every feature anchor.",
-    ): "ターゲット数ではすべての特徴アンカーを維持できません。",
-    (
-        "*",
-        "Feature anchors do not span a valid boundary.",
-    ): "特徴アンカーが有効な境界を形成していません。",
-    (
-        "*",
-        "Feature-aware sampling returned the wrong point count.",
-    ): "特徴認識サンプリングが誤ったポイント数を返しました。",
-    (
-        "*",
         "The strip plan contains no complete face sequence.",
     ): "ストリップの計画に完全な面シーケンスがありません。",
     (

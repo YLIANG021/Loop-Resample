@@ -212,7 +212,7 @@ class ResampleSession:
                 self.curves.append(None)
         self.counts = list(self.source_counts)
         self.capture_cache = None
-        # Vertices where a UV island boundary leaves a band that carries no seam mark.
+        # Vertices where a UV island boundary leaves the band on no rebuilt vertex at all.
         # Written by the capture, read only to word the closing report; it steers no
         # geometry, which is the point of keeping it here rather than in the sampler.
         self.unmarked_cuts = ()

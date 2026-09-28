@@ -104,16 +104,6 @@ TRANSLATIONS = {
     ("*", "A boundary contains a zero-length segment."): (
         "Granica zawiera segment o zerowej długości."
     ),
-    ("*", "The target count cannot preserve every feature anchor."): (
-        "Docelowa liczba segmentów nie pozwala zachować każdej kotwicy cech."
-    ),
-    ("*", "Feature anchors do not span a valid boundary."): (
-        "Kotwice cech nie wyznaczają prawidłowej granicy."
-    ),
-    (
-        "*",
-        "Feature-aware sampling returned the wrong point count.",
-    ): "Próbkowanie uwzględniające cechy zwróciło nieprawidłową liczbę punktów.",
     ("*", "The strip plan contains no complete face sequence."): (
         "Plan pasków nie zawiera żadnej pełnej sekwencji lic."
     ),

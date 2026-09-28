@@ -1,17 +1,13 @@
 """The measure a step splits its source segments with.
 
 The distribution axis has one direction left: evening the samples out.  It is the trick
-the axis started with -- the sampler already allocates against a monotone measure along
-the path, so a knob changes the measure rather than the allocator.  ``_interval_samples``
-says as much in its own docstring -- ``positions`` is "any monotone measure along the
-path".
+the axis started with -- the sampler already splits against a monotone measure along the
+path, so a knob changes the measure rather than the allocator.
 
-What the knob may not do is move a step that lands back on zero.  The two sampler
-branches do not start from the same measure today: an index-profile split weights every
-source segment equally, and an anchored split already weights them by arc length.  Each
-therefore gets its own baseline here, so ``even = 0`` means "the table this branch
-already uses" for both of them and an untouched step stays bit-for-bit the arithmetic
-that runs now.
+What the knob may not do is move a step that lands back on zero: ``even = 0`` hands back
+None and the sampler keeps its own index arithmetic, so an untouched step stays
+bit-for-bit the arithmetic it ran before this module existed.  A pinned vertex gets no
+measure of its own either -- it takes a slot out of whatever this produced.
 """
 
 from bisect import bisect_right
@@ -20,15 +16,13 @@ from bisect import bisect_right
 _EPSILON = 1e-12
 
 
-def measure_positions(lengths, even, split_by_index):
-    """A cumulative measure table, or None to leave the branch's own arithmetic alone.
+def measure_positions(lengths, even):
+    """A cumulative measure table, or None to leave the sampler's arithmetic alone.
 
-    ``split_by_index`` names which branch is asking: ``True`` for the index-profile
-    split, whose baseline weights every source segment equally, ``False`` for the
-    anchored split, which already spaces itself by arc length and so has nothing left
-    to even out toward it.
+    One branch asks now: the index-profile split, whose baseline weights every source
+    segment equally and so has an arc length left to even out toward.
     """
-    if even <= 0.0 or not split_by_index or not lengths:
+    if even <= 0.0 or not lengths:
         return None
     # ``l ** e`` runs from every segment worth one, to every segment worth its own
     # length -- which is what makes the samples come out equally far apart.

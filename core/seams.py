@@ -1,9 +1,14 @@
 """Seam crossings, pinned to the ladder column they arrived on.
 
-A seam here is ``edge.seam`` -- the red line the user actually sees.  Real UV values
-are deliberately not read: in Blender the two are not always in sync, and
-:mod:`.surface` already keeps a rebuilt face inside one island by splitting its rail
-chains where the stored corners disagree.
+A crossing is a chain that cuts a band from one rail to the other.  Half of what makes one
+is ``edge.seam`` -- the red line the user actually sees -- and the other half is every edge
+whose two faces store different corner values, because that is where a UV island parts
+whether or not anyone marked it.  Both go into one pool: a cut nobody marked has to be
+stepped over exactly like a marked one, and :mod:`.surface` splits its island chains on the
+very same comparison, down to the rounding (see :func:`.surface.island_boundary_edges`).
+Reading the values instead of trusting the marks is what keeps a rebuilt face inside one
+island on a mesh whose seams were left unmarked -- or marked somewhere other than where the
+values change.
 
 The band one resampled path owns is the path plus the strips on both sides of it, so a
 seam crossing that band leaves it through a rail vertex the source already has.  That
@@ -18,6 +23,11 @@ The two strips either side of a path can still take different columns when one c
 reaches the shared path at two vertices, and the red line finishes its crossing by
 running along the path -- whose edges are rebuilt anyway.  Both sides aim for the vertex
 the sampler pinned, so normally there is nothing to join.
+
+What that joining does is stretch a mark the user already drew, so it stays that way: a
+crossing made of unmarked edges carries no seam flag, and :func:`region_seam_rungs` offers
+:func:`paint_path_seam_jogs` only the crossings that began as marks.  The corner values
+travel; the red lines stay exactly where the user put them.
 """
 
 from .attributes import (
@@ -34,6 +44,7 @@ from .diagnostics import (
     print_seam_rungs,
 )
 from .regions import _listed, region_rails
+from .surface import island_boundary_edges
 
 
 def _seam_chains(edges):
@@ -59,16 +70,23 @@ def _seam_chains(edges):
 
 
 def region_seam_crossings(region, paths, bm):
-    """Every seam chain that enters one rail of a region and leaves the other.
+    """Every boundary chain that enters one rail of a region and leaves the other.
+
+    The chains are drawn from two sources at once: the seam marks the rebuild destroys,
+    and the edges whose two faces store different corner values.  Whichever way a cut was
+    found, one that crosses the band pins the same two rail vertices.
 
     A chain whose two rail ends are not exactly one inner and one outer vertex
-    cannot become a single rung, so it is reported and left to positional matching
-    rather than bending the ladder for.  The edges a crossing is made of stay in the
-    region's ordinary attribute records: only a crossing that actually gets a rung is
-    taken out of them, which :func:`region_seam_rungs` is what decides.  Each
-    crossing names itself and the source edge indices it consumed, so
-    :func:`.attributes.capture_region_edge_attributes` -- which runs after this one,
-    against the same BMesh -- can mark the records those edges made.
+    cannot become a single rung, so it is left to positional matching rather than
+    bending the ladder for.  Only a marked one says so out loud: an island boundary that
+    runs along the band instead of across it is the ordinary shape of an unwrapped mesh,
+    and a line each would bury the ones that mean something.
+
+    The edges a crossing is made of stay in the region's ordinary attribute records: only a
+    crossing that actually gets a rung is taken out of them, which :func:`region_seam_rungs`
+    is what decides.  Each crossing names itself and the source edge indices it consumed, so
+    :func:`.attributes.capture_region_edge_attributes` -- which runs after this one, against
+    the same BMesh -- can mark the records those edges made.
 
     A fan has no outer path to read a rail from, but it does name its pole, and a
     cut that runs up a spoke leaves the band through exactly that vertex.  Read as a
@@ -92,13 +110,15 @@ def region_seam_crossings(region, paths, bm):
         )
         return []
     deleted = _destroyed_region_edges(region)
-    pool = [edge for edge in deleted if getattr(edge, "seam", False)]
+    marked = {edge for edge in deleted if getattr(edge, "seam", False)}
+    derived = set(island_boundary_edges(deleted, bm)) - marked
+    pool = [edge for edge in deleted if edge in marked or edge in derived]
     if not pool:
-        # A cut nobody marked is invisible to this whole channel, and that is not
-        # something anyone can read out of a log that stays quiet.  The second number
-        # names the difference: seam edges this band owns but the rebuild keeps (its
-        # path edges, and any edge shared with a face outside the band) cross no band
-        # at all, so there is nothing here for a rung to stand on.
+        # A cut that is neither marked nor disagrees across this band is invisible to the
+        # whole channel, and that is not something anyone can read out of a log that stays
+        # quiet.  The second number names the difference: seam edges this band owns but the
+        # rebuild keeps (its path edges, and any edge shared with a face outside the band)
+        # cross no band at all, so there is nothing here for a rung to stand on.
         kept = sorted(
             {
                 edge.index
@@ -111,7 +131,7 @@ def region_seam_crossings(region, paths, bm):
         )
         print_seam_crossing_skipped(
             region,
-            "no-seam-edge",
+            "no-boundary",
             f"kind={region.get('kind')} deleted={len(deleted)} "
             f"seam-kept={_listed(kept)}",
         )
@@ -127,6 +147,9 @@ def region_seam_crossings(region, paths, bm):
     crossings = []
     for crossing_id, chain in enumerate(_seam_chains(pool)):
         chain_vertices = {vertex for edge in chain for vertex in edge.verts}
+        # Whether this chain is part of a line the user drew, which is what decides both
+        # how loudly a failure speaks and whether a jog along the path gets marked.
+        is_marked = any(getattr(edge, "seam", False) for edge in chain)
         inner_hits = sorted(
             index for vertex, index in inner_index.items() if vertex in chain_vertices
         )
@@ -134,11 +157,15 @@ def region_seam_crossings(region, paths, bm):
             index for vertex, index in outer_index.items() if vertex in chain_vertices
         )
         if len(inner_hits) != 1 or len(outer_hits) != 1:
-            print_seam_crossing_skipped(
-                region,
-                "rail-ends",
-                f"inner={len(inner_hits)} outer={len(outer_hits)}",
-            )
+            # An island boundary that runs along the band rather than across it reaches no
+            # rung, and on a mesh whose seams were never marked that is the ordinary shape
+            # of the pool -- so only a line someone drew is worth a line of output.
+            if is_marked:
+                print_seam_crossing_skipped(
+                    region,
+                    "rail-ends",
+                    f"inner={len(inner_hits)} outer={len(outer_hits)}",
+                )
             continue
         crossings.append(
             {
@@ -146,6 +173,7 @@ def region_seam_crossings(region, paths, bm):
                 # Valid only inside the capture that made it, where both sides of the
                 # lookup read the same BMesh; never resolved against a later step.
                 "source_edges": tuple(edge.index for edge in chain),
+                "marked": is_marked,
                 "inner_index": inner_hits[0],
                 "inner_u": inner_hits[0] / inner_segments,
                 "outer_index": outer_hits[0],
@@ -206,7 +234,7 @@ def region_seam_rungs(region, plan, inner_parameters, outer_parameters):
     Returns ``(rungs, carried, ends)``: the nodes to paint with the flags of the chain
     they replaced, the ids of the crossings that became a rung -- whose own source
     edges positional matching must no longer place, since the rung already carries
-    them -- and the path vertices the red line reached:
+    them -- and the path vertices a *marked* crossing reached:
     :func:`paint_path_seam_jogs` joins those when the strip on the far side of a path
     chose a different one.
     """
@@ -252,21 +280,25 @@ def region_seam_rungs(region, plan, inner_parameters, outer_parameters):
             rungs.append(rung)
         rung["weighted"].append((1.0, crossing["state"]))
         carried.append(crossing["id"])
-        ends.append(
-            (
-                region["path_index"],
-                crossing["inner_index"],
-                plan.inner_vertices[inner_index],
-            )
-        )
-        if outer_path_index is not None:
+        # A crossing the corner values revealed rather than a mark carries no flag of its
+        # own to join up with, and finishing it by painting the path edges between the two
+        # ends would draw a red line the source never had.  Its rung still paints below.
+        if crossing["marked"]:
             ends.append(
                 (
-                    outer_path_index,
-                    crossing["outer_index"],
-                    plan.outer_vertices[outer_index],
+                    region["path_index"],
+                    crossing["inner_index"],
+                    plan.inner_vertices[inner_index],
                 )
             )
+            if outer_path_index is not None:
+                ends.append(
+                    (
+                        outer_path_index,
+                        crossing["outer_index"],
+                        plan.outer_vertices[outer_index],
+                    )
+                )
     for rung in rungs:
         rung["state"] = merge_edge_states(rung.pop("weighted"))
     return tuple(rungs), tuple(carried), ends
@@ -302,10 +334,10 @@ def apply_region_seams(bm, plan, region, rungs):
 def paint_path_seam_jogs(bm, updated_paths, ends):
     """Join the two halves of a red line that reached one path at two vertices.
 
-    ``ends`` holds ``(path index, source vertex index, rebuilt vertex)`` for every rung
-    end that sits on a resampled path.  The strips either side of that path report the
-    same source vertex, so a pair of different rebuilt vertices is one line with a gap
-    in it, and the gap runs along the path's own edges.  Only the seam flag travels --
+    ``ends`` holds ``(path index, source vertex index, rebuilt vertex)`` for every rung end
+    of a marked crossing that sits on a resampled path.  The strips either side of that path
+    report the same source vertex, so a pair of different rebuilt vertices is one line with
+    a gap in it, and the gap runs along the path's own edges.  Only the seam flag travels --
     crease and bevel values on those edges belong to the path, not to the crossing.
     """
     grouped = {}

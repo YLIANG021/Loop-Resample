@@ -18,6 +18,7 @@ from .diagnostics import (
     print_outer_align,
     print_outer_rungs,
     print_seam_crossing_skipped,
+    print_seam_excursion,
 )
 from .geometry import (
     _crossing_after_box_overlap,
@@ -32,6 +33,16 @@ from .utils import _point, _point_view
 RUNG_CONTINUITY_VECTOR_WEIGHT = 0.75
 TRIANGLE_DISTRIBUTION_WEIGHT = 0.9
 RUNG_LENGTH_WEIGHT = 1.2
+
+# How far outside the band its own rail lengths give it a strip may stand in order to reach
+# a seam crossing, in columns, and what one step standing there costs.  A crossing the band
+# cannot land on is only reachable by lending a column to one rail and handing one back to
+# the other later, which is a borrowed pair of faces -- so the search is widened by this
+# much, and only for a strip that lost a crossing to the band.  The crossing itself is a
+# hard filter rather than a price, so this fee buys nothing the seam asked for: it is what
+# stops a pair from riding along on a local quality gain.
+SEAM_EXCURSION_DEPTH = 1
+SEAM_EXCURSION_STEP_COST = 0.6
 
 
 def _rail_shift(kind):
@@ -69,8 +80,10 @@ def _triangle_distribution_cost(
     sit on either side of the column a seam happened to take.
 
     Only steps that close the length gap are in that count, so a step which opens one is
-    not spread against it.  No strip has ever had one of those, which is why the test is
-    free.
+    not spread against it.  That test is what keeps a pair borrowed for a seam crossing
+    from being flattened out along the strip as though the rail lengths had asked for it:
+    the borrowed steps stand outside the count, and :func:`._seam_excursion_cost` is what
+    charges them instead.
     """
     shift = _rail_shift(kind)
     if not shift or triangle_count <= 0:
@@ -94,6 +107,32 @@ def _triangle_distribution_cost(
 
 
 RUNG_CONTINUITY_LENGTH_WEIGHT = 0.25
+
+
+def _seam_excursion_cost(
+    next_inner,
+    next_outer,
+    inner_steps,
+    outer_steps,
+    depth,
+):
+    """What one step standing outside the strip's own band costs.
+
+    The band is the run of ``d = outer - inner`` the rail lengths walk through on the way
+    from nothing borrowed to everything spent, so a step outside it has lent a column to one
+    rail and not yet handed one back -- it is in borrowed territory for as long as it stands
+    there, and every step counted here is one the strip would never have taken on its own.
+
+    ``depth`` is what a seam crossing may borrow, and a search with nothing to reach never
+    leaves the band, so this returns ``0.0`` for every strip that asks for no loan.
+    """
+    if depth <= 0:
+        return 0.0
+    final_offset = outer_steps - inner_steps
+    offset = next_outer - next_inner
+    if min(0, final_offset) <= offset <= max(0, final_offset):
+        return 0.0
+    return SEAM_EXCURSION_STEP_COST
 
 
 def _previous_node(kind, inner_index, outer_index):
@@ -576,20 +615,36 @@ def _advance(kind, inner_index, outer_index):
     return inner_index + inner_step, outer_index + outer_step
 
 
-def _allowed_transitions(inner_steps, outer_steps):
+def _allowed_transitions(inner_steps, outer_steps, depth=0):
     """The kinds one band's ladder may spend, in the order the search tries them.
 
     The dense rail's surplus is what decides the ordinary kinds, so a band whose inner rail
     is the short loop is never offered a face that spends the outer rail's column.
+
+    ``depth`` is what a seam crossing may borrow, in columns.  Standing outside the band the
+    rail lengths need takes ``d`` in a direction the strip's own surplus never moves it, so
+    the loan is only affordable with a kind in each direction -- and where the lengths do
+    have a say, the kind they asked for is still offered first, which leaves a strip that
+    borrows nothing on the tie-breaks it had.
     """
     if inner_steps == outer_steps:
-        return ("QUAD",)
-    if inner_steps < outer_steps:
-        return ("QUAD", "OUTER_TRI")
-    return ("QUAD", "INNER_TRI")
+        own = ("QUAD",)
+    elif inner_steps < outer_steps:
+        own = ("QUAD", "OUTER_TRI")
+    else:
+        own = ("QUAD", "INNER_TRI")
+    if depth <= 0:
+        return own
+    if inner_steps == outer_steps:
+        # A loan has to be repaid, so a strip with no length gap borrows in both directions
+        # at once: one quad becomes a triangle each way, and the two together spend what the
+        # quad spent.
+        return ("QUAD", "OUTER_TRI", "INNER_TRI")
+    borrowed = "INNER_TRI" if "OUTER_TRI" in own else "OUTER_TRI"
+    return own + (borrowed,)
 
 
-def _seam_waypoint_nodes(waypoints, allowed, inner_steps, outer_steps):
+def _seam_waypoint_nodes(waypoints, allowed, inner_steps, outer_steps, depth=0):
     """The crossings' rung positions the search has to route through, in ladder order.
 
     A ladder starts at ``d = outer - inner == 0`` and ends at the difference between the
@@ -601,12 +656,19 @@ def _seam_waypoint_nodes(waypoints, allowed, inner_steps, outer_steps):
     longest runnable run wins, earliest first, which leaves an already-reachable set
     untouched: only a step the search was going to lose can come back different.
 
+    ``depth`` widens the band by that many columns on each side, which is the same loan
+    :func:`._allowed_transitions` grants the search: a crossing one column outside the band
+    is reachable once the strip may stand there, and the ``chain`` rule stops applying as
+    soon as the vocabulary has a kind in each direction -- both of those read the band off
+    the numbers rather than the order, so a set the one-direction ladder had to split is
+    kept whole.
+
     Returns ``(nodes, dropped)``, ``dropped`` carrying the rule that cut each position
     off so a slid rung stays traceable.
     """
     final_offset = outer_steps - inner_steps
-    low = min(0, final_offset)
-    high = max(0, final_offset)
+    low = min(0, final_offset) - depth
+    high = max(0, final_offset) + depth
     # An inner step is the only move that shrinks d, whether it spends one column of the
     # inner rail or two.  A QUAD-only strip is pinned to d == 0 by the band above, so
     # either direction reads the same there.  Where the vocabulary grants the strip a kind in
@@ -1193,6 +1255,7 @@ def _local_transition_pair_score(
     triangle_count=0,
     vector_cache=None,
     step_cache=None,
+    depth=0,
 ):
     """Score two adjacent transitions without rebuilding the whole strip.
 
@@ -1250,6 +1313,13 @@ def _local_transition_pair_score(
             outer_steps,
             triangle_count,
         )
+        score += _seam_excursion_cost(
+            next_inner,
+            next_outer,
+            inner_steps,
+            outer_steps,
+            depth,
+        )
         score += _rung_continuity_cost(
             boundary_geometry,
             previous_kind,
@@ -1273,6 +1343,7 @@ def _beautify_transitions(
     is_closed,
     boundary_geometry,
     waypoints=(),
+    depth=0,
 ):
     """Make a few safe local swaps after the strip's path is selected.
 
@@ -1334,6 +1405,7 @@ def _beautify_transitions(
                 triangle_count,
                 vector_cache,
                 step_cache,
+                depth=depth,
             )
             if current_score is None:
                 inner_index, outer_index = _advance(
@@ -1365,6 +1437,7 @@ def _beautify_transitions(
                 triangle_count,
                 vector_cache,
                 step_cache,
+                depth=depth,
             )
             alternate_balance = _transition_pair_balance_penalty(
                 transitions,
@@ -1401,6 +1474,7 @@ def _sweep_ladder(
     allowed,
     inner_steps,
     outer_steps,
+    depth=0,
 ):
     """One full sweep of the ladder's dynamic program: the states at the far corner.
 
@@ -1424,13 +1498,18 @@ def _sweep_ladder(
     # every prefix of a completable path has to stay between the start and the goal
     # offsets.  A state outside that band is not merely lost on its own account: its
     # parents are outside too, so no surviving state is reached through it and dropping
-    # it cannot reorder, reprice or retie anything.  The band is therefore tied to the
-    # one-direction rule rather than assumed, and gives up by itself if a kind ever
-    # shifts d the other way -- a wider search, not a wrong one.
+    # it cannot reorder, reprice or retie anything.
+    #
+    # A seam crossing may now borrow a column, which is a step that moves d the other way,
+    # so the band is what decides the pruning and not the vocabulary: the natural band plus
+    # the borrowed margin on either side.  Tying this to the vocabulary instead would have
+    # the widened strip search the whole rectangle -- the band is what keeps the search a
+    # band -- and `depth` is 0 for every strip that lost no crossing, which is every strip
+    # that ever solved without a seam pinning it.
     final_offset = outer_steps - inner_steps
-    low_offset = min(0, final_offset)
-    high_offset = max(0, final_offset)
-    band_limited = (
+    low_offset = min(0, final_offset) - depth
+    high_offset = max(0, final_offset) + depth
+    band_limited = depth > 0 or (
         len({_rail_shift(kind) > 0 for kind in allowed if _rail_shift(kind)}) <= 1
     )
     layers = {0: {(0, 0, None): 0.0}}
@@ -1539,6 +1618,12 @@ def _sweep_ladder(
                                 inner_steps,
                                 outer_steps,
                                 triangle_count,
+                            ) + _seam_excursion_cost(
+                                next_inner,
+                                next_outer,
+                                inner_steps,
+                                outer_steps,
+                                depth,
                             )
                     step_cache[cache_key] = cached
                 if cached is False:
@@ -1592,6 +1677,7 @@ def _build_transitions(
     boundary_geometry,
     waypoints=(),
     region=None,
+    depth=0,
 ):
     """Solve the whole ladder: cheapest monotone path between two ordered rails.
 
@@ -1602,10 +1688,14 @@ def _build_transitions(
     it finds can sit a column off the vertex the sampler pinned, and the face in between
     then straddles two UV islands.  ``waypoints`` are the nodes :func:`.seams` says a seam
     crossing needs, and the search may not route around them.
+
+    ``depth`` is how far outside the band the strip's own rail lengths give it may stand to
+    reach one of those nodes, and it reaches both the vocabulary and the local swap, which
+    has to price the borrowed stretch the same way the search did.
     """
     inner_steps = len(inner) if is_closed else len(inner) - 1
     outer_steps = len(outer) if is_closed else len(outer) - 1
-    allowed = _allowed_transitions(inner_steps, outer_steps)
+    allowed = _allowed_transitions(inner_steps, outer_steps, depth)
     states, parents, expanded = _sweep_ladder(
         inner,
         outer,
@@ -1617,6 +1707,7 @@ def _build_transitions(
         allowed,
         inner_steps,
         outer_steps,
+        depth,
     )
     accumulate_scan("plan-expand", 0.0, expanded)
     if not states:
@@ -1761,6 +1852,7 @@ def _search_ladder(
     allowed,
     seam_nodes,
     region,
+    depth=0,
 ):
     """Solve the ladder: the search, then the local swap over what it chose.
 
@@ -1771,6 +1863,12 @@ def _search_ladder(
     sampler pinned for as long as the shape axes were scrolled.  ``swapped`` only says
     whether the local swap rewrote what the search chose, which is a diagnostic question,
     not one the rebuild asks itself.
+
+    ``depth`` is the loan the crossings were granted, and it goes to the local swap along
+    with the search -- the swap has to price a borrowed stretch the way the sweep did or it
+    would move one for free.  The degraded answer gives the loan back: with no crossing left
+    to reach there is nothing a borrowed pair can be for, and that strip is solved exactly
+    the way a strip without any seam ever was.
     """
     started = time.perf_counter()
     attempts = 1
@@ -1785,6 +1883,7 @@ def _search_ladder(
             boundary_geometry,
             seam_nodes,
             region=region,
+            depth=depth,
         )
     except ValueError as strict_error:
         score = transitions = None
@@ -1810,6 +1909,7 @@ def _search_ladder(
                     region=region,
                 )
                 seam_nodes = ()
+                depth = 0
                 complete = False
             except ValueError:
                 score = transitions = None
@@ -1827,6 +1927,7 @@ def _search_ladder(
         closed,
         boundary_geometry,
         seam_nodes,
+        depth,
     )
     accumulate_scan("plan-beautify", time.perf_counter() - started, 1)
     return transitions, score, complete, transitions != dp_transitions
@@ -1907,25 +2008,83 @@ def build_ordered_strip_plan(
             inner_steps,
             outer_steps,
         )
+        # A crossing the band refuses becomes a rung the painter slides, and a slid rung on
+        # one side of a path beside a pinned one on the other is one red line joining two of
+        # that path's own vertices -- which is the jog.  So the strip is offered the loan
+        # before the search spends a sweep proving the narrow band cannot reach, and only
+        # when the wider band actually keeps a crossing the narrow one gave up: a loan that
+        # buys no node would cost this strip faces for nothing, and a strip with nothing
+        # dropped is never offered one at all.
+        attempts = [(0, allowed, seam_nodes, dropped_nodes)]
         if dropped_nodes:
-            print_seam_crossing_skipped(
-                region,
-                "unreachable",
-                _waypoint_reach_diagnostic(seam_nodes, dropped_nodes, allowed),
+            borrowed_allowed = _allowed_transitions(
+                inner_steps, outer_steps, SEAM_EXCURSION_DEPTH
             )
-        transitions, score, complete, swapped = _search_ladder(
-            inner,
-            outer,
-            inner_boundary,
-            outer_boundary,
-            closed,
-            boundary_geometry,
-            allowed,
-            seam_nodes,
-            region,
-        )
-        plan = _ladder_plan(inner_boundary, outer_boundary, transitions, score, closed)
-        _finish_ladder_plan(plan, inner, outer, region)
+            borrowed_nodes, borrowed_dropped = _seam_waypoint_nodes(
+                tuple(waypoints),
+                borrowed_allowed,
+                inner_steps,
+                outer_steps,
+                SEAM_EXCURSION_DEPTH,
+            )
+            if len(borrowed_nodes) > len(seam_nodes):
+                attempts.insert(
+                    0,
+                    (
+                        SEAM_EXCURSION_DEPTH,
+                        borrowed_allowed,
+                        borrowed_nodes,
+                        borrowed_dropped,
+                    ),
+                )
+        for loan, loan_allowed, loan_nodes, loan_dropped in attempts:
+            if loan:
+                print_seam_excursion(
+                    region,
+                    f"depth={loan} "
+                    + _waypoint_reach_diagnostic(
+                        loan_nodes, loan_dropped, loan_allowed
+                    ),
+                )
+            elif loan_dropped:
+                print_seam_crossing_skipped(
+                    region,
+                    "unreachable",
+                    _waypoint_reach_diagnostic(
+                        loan_nodes, loan_dropped, loan_allowed
+                    ),
+                )
+            try:
+                transitions, score, complete, swapped = _search_ladder(
+                    inner,
+                    outer,
+                    inner_boundary,
+                    outer_boundary,
+                    closed,
+                    boundary_geometry,
+                    loan_allowed,
+                    loan_nodes,
+                    region,
+                    loan,
+                )
+                plan = _ladder_plan(
+                    inner_boundary, outer_boundary, transitions, score, closed
+                )
+                _finish_ladder_plan(plan, inner, outer, region)
+            except ValueError:
+                # The band was wide enough for the crossing but the geometry was not, so the
+                # loan is handed back and the strip is solved the way it was before the seam
+                # asked for anything.  Only a borrowed ladder can fail this way; the narrow
+                # answer keeps its own exception, which is what the failure report reads.
+                if not loan:
+                    raise
+                print_seam_crossing_skipped(
+                    region,
+                    "excursion",
+                    f"depth={loan} nodes={len(loan_nodes)}",
+                )
+                continue
+            break
         if ladders is not None and decision is not None:
             if complete:
                 ladders[region["region_index"]] = {

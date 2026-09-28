@@ -86,16 +86,6 @@ TRANSLATIONS = {
     ),
     ("*", "The fitted curve has no measurable length."): "피팅된 커브의 길이를 측정할 수 없습니다.",
     ("*", "A boundary contains a zero-length segment."): "경계에 길이가 0인 세그먼트가 있습니다.",
-    ("*", "The target count cannot preserve every feature anchor."): (
-        "대상 수로 모든 특성 앵커를 유지할 수 없습니다."
-    ),
-    ("*", "Feature anchors do not span a valid boundary."): (
-        "특성 앵커가 유효한 경계를 만들지 않습니다."
-    ),
-    (
-        "*",
-        "Feature-aware sampling returned the wrong point count.",
-    ): "특성 인지 샘플링이 잘못된 포인트 수를 반환했습니다.",
     ("*", "The strip plan contains no complete face sequence."): (
         "스트립 계획에 완전한 페이스 시퀀스가 없습니다."
     ),

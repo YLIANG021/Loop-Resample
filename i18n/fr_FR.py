@@ -112,19 +112,6 @@ TRANSLATIONS = {
     ("*", "A boundary contains a zero-length segment."): (
         "Une bordure contient un segment de longueur nulle."
     ),
-    ("*", "The target count cannot preserve every feature anchor."): (
-        "Le nombre cible ne permet pas de conserver toutes les ancres de fonctionnalité."
-    ),
-    ("*", "Feature anchors do not span a valid boundary."): (
-        "Les ancres de fonctionnalité ne forment pas une bordure valide."
-    ),
-    (
-        "*",
-        "Feature-aware sampling returned the wrong point count.",
-    ): (
-        "L'échantillonnage tenant compte des fonctionnalités a renvoyé un nombre de "
-        "points erroné."
-    ),
     ("*", "The strip plan contains no complete face sequence."): (
         "Le plan de bandes ne contient aucune séquence complète de faces."
     ),

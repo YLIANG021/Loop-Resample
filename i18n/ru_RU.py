@@ -105,15 +105,6 @@ TRANSLATIONS = {
     ("*", "A boundary contains a zero-length segment."): (
         "Граница содержит сегмент нулевой длины."
     ),
-    ("*", "The target count cannot preserve every feature anchor."): (
-        "Целевое число сегментов не позволяет сохранить все якоря особенностей."
-    ),
-    ("*", "Feature anchors do not span a valid boundary."): (
-        "Якоря особенностей не образуют допустимой границы."
-    ),
-    ("*", "Feature-aware sampling returned the wrong point count."): (
-        "Сэмплирование с учётом особенностей вернуло неверное число точек."
-    ),
     ("*", "The strip plan contains no complete face sequence."): (
         "План полос не содержит полной последовательности граней."
     ),

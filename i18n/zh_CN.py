@@ -65,12 +65,6 @@ TRANSLATIONS = {
     ("*", "A fitted curve segment has no measurable length."): "拟合曲线中有一段长度无法测量。",
     ("*", "The fitted curve has no measurable length."): "拟合曲线整体长度无法测量。",
     ("*", "A boundary contains a zero-length segment."): "边界中包含零长度的段。",
-    ("*", "The target count cannot preserve every feature anchor."): "目标段数无法保留所有特征锚点。",
-    ("*", "Feature anchors do not span a valid boundary."): "特征锚点未能构成有效边界。",
-    (
-        "*",
-        "Feature-aware sampling returned the wrong point count.",
-    ): "特征感知采样返回了错误的点数。",
     ("*", "The strip plan contains no complete face sequence."): "条带方案中没有任何完整的面序列。",
     ("*", "The strip plan did not consume the full inner boundary."): "条带方案没有用尽整条内边界。",
     ("*", "The strip plan did not consume the full outer boundary."): "条带方案没有用尽整条外边界。",

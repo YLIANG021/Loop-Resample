@@ -113,16 +113,6 @@ TRANSLATIONS = {
     ("*", "A boundary contains a zero-length segment."): (
         "Um limite contém um segmento de comprimento zero."
     ),
-    ("*", "The target count cannot preserve every feature anchor."): (
-        "O número-alvo não preserva todas as âncoras de característica."
-    ),
-    ("*", "Feature anchors do not span a valid boundary."): (
-        "As âncoras de característica não definem um limite válido."
-    ),
-    (
-        "*",
-        "Feature-aware sampling returned the wrong point count.",
-    ): "A amostragem orientada por características retornou um número de pontos errado.",
     ("*", "The strip plan contains no complete face sequence."): (
         "O plano de faixa não contém nenhuma sequência completa de faces."
     ),
