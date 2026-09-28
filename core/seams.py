@@ -408,9 +408,9 @@ def paint_path_seam_jogs(bm, updated_paths, ends):
     travels -- crease and bevel values on those edges belong to the path, not to the
     crossing.
 
-    Returns one record per line it joined, ``{path_index, source_index, landed_vertices,
-    steps, reason}`` -- ``landed_vertices`` numbers the path's own slots the join ran
-    between -- and prints the same.  The reason is the point: a gap between two ends
+    One line per joined record, ``{path_index, source_index, landed_vertices, steps,
+    reason}`` -- ``landed_vertices`` numbers the path's own slots the join ran between.
+    The reason is the point: a gap between two ends
     of one crossing is a defect the user can only be told about if the log says which of
     its three causes it is.  ``no-slot`` means the sampler refused to hold that source
     vertex on either rail, so the two strips aimed at whatever vertex was nearest;
@@ -464,7 +464,6 @@ def paint_path_seam_jogs(bm, updated_paths, ends):
                 }
             )
     print_seam_jogs(joins)
-    return tuple(joins)
 
 
 def _paint_arc(bm, vertices, first, last, closed):

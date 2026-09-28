@@ -13,14 +13,11 @@ MESSAGES = [
         "the curve, Ctrl scrolls spread its points, and each tick strengthens that effect.  "
         "Left-click keeps it, right-click reverts."
     ),
-    "Enter Loop Resample",
-    "Lock the current mesh and selection as the resample source",
-    "Loop Resample",
-    "Resample the locked paths from the session source",
-    "Confirm Resample",
-    "Keep the current result and end the session",
-    "Cancel Resample",
-    "Restore the mesh to its state when the session started",
+    (
+        "Quickly adjust the segment count of any edge:  scroll sets the count, Shift "
+        "smooths the edge, Ctrl spreads the points evenly, and attributes such as "
+        "UVs, seams and vertex colors survive the change intact."
+    ),
     # The overlay's chip row.
     "[Wheel] Segments {entry} → {current}",
     "[Shift] Smooth",
@@ -28,10 +25,6 @@ MESSAGES = [
     "[LMB] Keep   [RMB] Revert",
     "Loop Resample failed safely: ",
     # Reports.
-    "Locked {count} path(s): {counts}",
-    "Mesh update is already running; wait a moment.",
-    "Enter adjust mode first.",
-    "Restored the mesh from before the session.",
     "Reverted to {counts} segment(s).",
     "Reverted to {counts} segment(s) and the original curve.",
     "Kept {counts} segment(s) on the locked path(s).",

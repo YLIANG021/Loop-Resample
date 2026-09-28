@@ -530,7 +530,16 @@ class MESH_OT_loop_resample_interactive_entry(bpy.types.Operator):
     """
 
     bl_idname = "mesh.loop_resample_interactive_entry"
-    bl_label = "Adjust Loops by Wheel"
+    # The product name, untranslated on purpose: it has no i18n entry, so every locale
+    # answers with the English.  The tooltip below is the one that gets localized.
+    bl_label = "Loop Resample"
+    # Without this the class docstring would surface as the menu's hover text, and that
+    # text is about the deferred invoke rather than about what the tool does.
+    bl_description = pgettext(
+        "Quickly adjust the segment count of any edge:  scroll sets the count, Shift "
+        "smooths the edge, Ctrl spreads the points evenly, and attributes such as "
+        "UVs, seams and vertex colors survive the change intact."
+    )
     # Not a thing to search for: the operator it forwards to is the one that belongs in the
     # list, and two entries worded identically would read as one of them being broken.
     bl_options = {"INTERNAL"}

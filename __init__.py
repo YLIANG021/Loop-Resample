@@ -18,12 +18,6 @@ _reload_submodules()
 
 from .core import session
 from . import i18n
-from .operators import (
-    MESH_OT_loop_resample_begin,
-    MESH_OT_loop_resample_cancel,
-    MESH_OT_loop_resample_confirm,
-    MESH_OT_loop_resample_step,
-)
 from .ui import (
     MESH_OT_loop_resample_interactive,
     MESH_OT_loop_resample_interactive_entry,
@@ -34,12 +28,8 @@ from .ui import (
 
 
 _CLASSES = (
-    MESH_OT_loop_resample_begin,
-    MESH_OT_loop_resample_step,
     MESH_OT_loop_resample_interactive,
     MESH_OT_loop_resample_interactive_entry,
-    MESH_OT_loop_resample_confirm,
-    MESH_OT_loop_resample_cancel,
 )
 
 

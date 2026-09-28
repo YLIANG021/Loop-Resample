@@ -19,45 +19,24 @@ TRANSLATIONS = {
         "points, et chaque cran renforce cet effet. Clic gauche pour garder, clic droit "
         "pour revenir."
     ),
-    ("*", "Enter Loop Resample"): "Activer le rééchantillonnage de boucle",
     (
         "*",
-        "Lock the current mesh and selection as the resample source",
+        "Quickly adjust the segment count of any edge:  scroll sets the count, Shift "
+        "smooths the edge, Ctrl spreads the points evenly, and attributes such as "
+        "UVs, seams and vertex colors survive the change intact.",
     ): (
-        "Verrouiller le maillage et la sélection actuels comme source de rééchantillonnage"
+        "Régler rapidement le nombre de segments de n'importe quelle arête : la "
+        "molette fixe le nombre, Shift lisse l'arête, Ctrl répartit ses points, et "
+        "après réglage les attributs tels que les UV, les coutures et les couleurs de "
+        "sommet sont intégralement conservés."
     ),
-    ("*", "Loop Resample"): "Rééchantillonnage de boucle",
-    (
-        "*",
-        "Resample the locked paths from the session source",
-    ): "Rééchantillonner les chemins verrouillés à partir de la source de la session",
-    ("*", "Confirm Resample"): "Confirmer le rééchantillonnage",
-    (
-        "*",
-        "Keep the current result and end the session",
-    ): "Garder le résultat actuel et terminer la session",
-    ("*", "Cancel Resample"): "Annuler le rééchantillonnage",
-    (
-        "*",
-        "Restore the mesh to its state when the session started",
-    ): "Restaurer le maillage dans son état du début de la session",
     # The overlay's chip row.
     ("*", "[Wheel] Segments {entry} → {current}"): "[Molette] Segments {entry} → {current}",
     ("*", "[Shift] Smooth"): "[Shift] Lisser",
     ("*", "[Ctrl] Even"): "[Ctrl] Égal",
     ("*", "[LMB] Keep   [RMB] Revert"): "[Clic G] Garder   [Clic D] Retour",
-    ("*", "Loop Resample failed safely: "): (
-        "Échec sans risque du rééchantillonnage de boucle : "
-    ),
+    ("*", "Loop Resample failed safely: "): "Loop Resample a échoué sans risque : ",
     # Reports.
-    ("*", "Locked {count} path(s): {counts}"): "{count} chemin(s) verrouillé(s) : {counts}",
-    ("*", "Mesh update is already running; wait a moment."): (
-        "Une mise à jour du maillage est déjà en cours ; patientez un instant."
-    ),
-    ("*", "Enter adjust mode first."): "Activez d'abord le mode d'ajustement.",
-    ("*", "Restored the mesh from before the session."): (
-        "Maillage restauré dans son état d'avant la session."
-    ),
     ("*", "Reverted to {counts} segment(s)."): "Retour à {counts} segment(s).",
     ("*", "Reverted to {counts} segment(s) and the original curve."): (
         "Retour à {counts} segment(s) et à la courbe d'origine."

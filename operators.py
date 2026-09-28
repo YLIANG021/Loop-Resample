@@ -1,4 +1,8 @@
-"""Edit-mode operators for the Loop Resample adjust session."""
+"""The edit-mode step engine of the Loop Resample adjust session.
+
+``ui/interactive.py``'s wheel operator is the only caller of every public name here; there is
+no operator class in this file any more.
+"""
 
 import time
 
@@ -26,7 +30,6 @@ from .core import (
     region_seam_rungs,
     region_seam_waypoints,
 )
-from .core import session as sessions
 from .core.diagnostics import (
     accumulate_scan,
     mark,
@@ -94,88 +97,6 @@ def _redraw(context):
         context.area.tag_redraw()
 
 
-class MESH_OT_loop_resample_begin(bpy.types.Operator):
-    bl_idname = "mesh.loop_resample_begin"
-    bl_label = pgettext("Enter Loop Resample")
-    bl_description = pgettext("Lock the current mesh and selection as the resample source")
-
-    @classmethod
-    def poll(cls, context):
-        return (
-            context.mode == "EDIT_MESH"
-            and context.active_object is not None
-            and context.active_object.type == "MESH"
-            and not sessions.is_active(context)
-        )
-
-    def execute(self, context):
-        try:
-            session = sessions.begin(context)
-        except ValueError as error:
-            self.report({"ERROR"}, str(error))
-            return {"CANCELLED"}
-        _redraw(context)
-        self.report(
-            {"INFO"},
-            pgettext("Locked {count} path(s): {counts}").format(
-                count=len(session.counts),
-                counts=", ".join(str(count) for count in session.counts),
-            ),
-        )
-        return {"FINISHED"}
-
-
-class MESH_OT_loop_resample_step(bpy.types.Operator):
-    bl_idname = "mesh.loop_resample_step"
-    bl_label = pgettext("Loop Resample")
-    bl_description = pgettext("Resample the locked paths from the session source")
-    bl_options = {"UNDO"}
-
-    delta: bpy.props.IntProperty(default=0, min=-1, max=1, options={"HIDDEN"})
-    target_count: bpy.props.IntProperty(name="Target Count", default=0, min=0)
-    _running = False
-
-    @classmethod
-    def poll(cls, context):
-        return sessions.is_active(context) and context.mode == "EDIT_MESH"
-
-    def invoke(self, context, event):
-        if self.delta in {-1, 1} or self.target_count > 0:
-            return self.execute(context)
-        session = sessions.active(context)
-        counts = session.counts
-        self.target_count = max(counts)
-        return context.window_manager.invoke_props_dialog(self)
-
-    def draw(self, context):
-        self.layout.prop(self, "target_count")
-
-    def execute(self, context):
-        operator_type = type(self)
-        if operator_type._running:
-            self.report({"WARNING"}, pgettext("Mesh update is already running; wait a moment."))
-            return {"CANCELLED"}
-        operator_type._running = True
-        try:
-            session = sessions.active(context)
-            if session is None:
-                self.report({"ERROR"}, pgettext("Enter adjust mode first."))
-                return {"CANCELLED"}
-            try:
-                counts = session.next_counts(self.delta, self.target_count)
-            except ValueError as error:
-                self.report({"ERROR"}, str(error))
-                return {"CANCELLED"}
-            succeeded, message = apply_counts(context, session, counts)
-        finally:
-            operator_type._running = False
-        self.report(
-            {"INFO" if succeeded else "ERROR"},
-            message + (cut_notice(session) if succeeded else ""),
-        )
-        return {"FINISHED"} if succeeded else {"CANCELLED"}
-
-
 def _step_request(session, counts, shape):
     """What one step was asked for, as fields for the failure line.
 
@@ -225,10 +146,9 @@ def _region_scope(region, kind, inner_vertices, outer_vertices):
 def apply_counts(context, session, counts, shape=None):
     """Resample every locked path to ``counts`` and write the result into the edit mesh.
 
-    The stepper operator and the interactive modal both come through here, so a scroll and a
-    click cannot drift apart.  ``(succeeded, message)`` comes back instead of a report
-    because the caller owns what the user hears: a scroll that fails at a count the planner
-    cannot solve must stay silent and leave the previous mesh standing.
+    Every step of a gesture comes through here.  ``(succeeded, message)`` comes back instead of
+    a report because the caller owns what the user hears: a scroll that fails at a count the
+    planner cannot solve must stay silent and leave the previous mesh standing.
 
     ``shape`` is one step's moved control points and re-weighted measure, or None for a
     step that only changed counts.
@@ -609,43 +529,3 @@ def _resample(session, bm, counts, shape=None):
         faces=rebuilt_face_count,
     )
 
-
-class MESH_OT_loop_resample_confirm(bpy.types.Operator):
-    bl_idname = "mesh.loop_resample_confirm"
-    bl_label = pgettext("Confirm Resample")
-    bl_description = pgettext("Keep the current result and end the session")
-
-    @classmethod
-    def poll(cls, context):
-        return sessions.is_active(context)
-
-    def execute(self, context):
-        sessions.end(context)
-        _redraw(context)
-        return {"FINISHED"}
-
-
-class MESH_OT_loop_resample_cancel(bpy.types.Operator):
-    bl_idname = "mesh.loop_resample_cancel"
-    bl_label = pgettext("Cancel Resample")
-    bl_description = pgettext("Restore the mesh to its state when the session started")
-    bl_options = {"UNDO"}
-
-    @classmethod
-    def poll(cls, context):
-        return sessions.is_active(context) and context.mode == "EDIT_MESH"
-
-    def execute(self, context):
-        session = sessions.active(context)
-        mesh = context.active_object.data
-        restored_bm = session.open_bmesh()
-        try:
-            _replace_edit_bmesh(mesh, bmesh.from_edit_mesh(mesh), restored_bm)
-        finally:
-            restored_bm.free()
-        if hasattr(mesh, "update_gpu_tag"):
-            mesh.update_gpu_tag()
-        sessions.end(context)
-        _redraw(context)
-        self.report({"INFO"}, pgettext("Restored the mesh from before the session."))
-        return {"FINISHED"}

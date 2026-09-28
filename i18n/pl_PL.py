@@ -19,37 +19,24 @@ TRANSLATIONS = {
         "Kręcenie z Shift wygładza krzywą, z Ctrl rozkłada jej punkty równomiernie, "
         "a każda działka wzmacnia ten efekt. Kliknięcie LPM zachowuje, PPM przywraca."
     ),
-    ("*", "Enter Loop Resample"): "Rozpocznij resampling pętli",
-    ("*", "Lock the current mesh and selection as the resample source"): (
-        "Zablokuj bieżącą siatkę i zaznaczenie jako źródło resamplingu"
-    ),
-    ("*", "Loop Resample"): "Resampling pętli",
-    ("*", "Resample the locked paths from the session source"): (
-        "Resampluj zablokowane ścieżki ze źródła sesji"
-    ),
-    ("*", "Confirm Resample"): "Potwierdź resampling",
-    ("*", "Keep the current result and end the session"): (
-        "Zachowaj bieżący wynik i zakończ sesję"
-    ),
-    ("*", "Cancel Resample"): "Anuluj resampling",
-    ("*", "Restore the mesh to its state when the session started"): (
-        "Przywróć siatkę do stanu z początku sesji"
+    (
+        "*",
+        "Quickly adjust the segment count of any edge:  scroll sets the count, Shift "
+        "smooths the edge, Ctrl spreads the points evenly, and attributes such as "
+        "UVs, seams and vertex colors survive the change intact.",
+    ): (
+        "Szybko ustaw liczbę segmentów dowolnej krawędzi: kręcenie rolką określa "
+        "liczbę, Shift wygładza krawędź, Ctrl rozkłada jej punkty równomiernie, a po "
+        "regulacji atrybuty, takie jak UV, szwy i kolory wierzchołków, pozostają "
+        "zachowane."
     ),
     # The overlay's chip row.
     ("*", "[Wheel] Segments {entry} → {current}"): "[Rolka] Segmenty {entry} → {current}",
     ("*", "[Shift] Smooth"): "[Shift] Gładko",
     ("*", "[Ctrl] Even"): "[Ctrl] Równo",
     ("*", "[LMB] Keep   [RMB] Revert"): "[LPM] Zachowaj   [PPM] Przywróć",
-    ("*", "Loop Resample failed safely: "): (
-        "Bezpiecznie przerwano resampling pętli: "
-    ),
+    ("*", "Loop Resample failed safely: "): "Loop Resample bezpiecznie przerwano: ",
     # Reports.
-    ("*", "Locked {count} path(s): {counts}"): "Zablokowano ścieżki ({count}): {counts}",
-    ("*", "Mesh update is already running; wait a moment."): (
-        "Aktualizacja siatki już trwa; odczekaj chwilę."
-    ),
-    ("*", "Enter adjust mode first."): "Najpierw przejdź do trybu dostosowywania.",
-    ("*", "Restored the mesh from before the session."): "Przywrócono siatkę sprzed sesji.",
     ("*", "Reverted to {counts} segment(s)."): "Przywrócono segmenty: {counts}.",
     ("*", "Reverted to {counts} segment(s) and the original curve."): (
         "Przywrócono segmenty: {counts} oraz oryginalną krzywą."

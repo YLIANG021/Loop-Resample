@@ -16,25 +16,22 @@ TRANSLATIONS = {
         "锁定当前选择，滚轮设置段数。按住 Shift 滚动可平滑曲线，"
         "按住 Ctrl 滚动可让点分布更均匀，每滚一格加强一档。左键保留，右键还原之前的状态"
     ),
-    ("*", "Enter Loop Resample"): "进入环带重采样",
-    ("*", "Lock the current mesh and selection as the resample source"): "把当前网格与选择锁定为重采样源",
-    ("*", "Loop Resample"): "环带重采样",
-    ("*", "Resample the locked paths from the session source"): "从会话源重采样已锁定的路径",
-    ("*", "Confirm Resample"): "确认重采样",
-    ("*", "Keep the current result and end the session"): "保留当前结果并结束会话",
-    ("*", "Cancel Resample"): "取消重采样",
-    ("*", "Restore the mesh to its state when the session started"): "把网格恢复到会话开始时的状态",
+    (
+        "*",
+        "Quickly adjust the segment count of any edge:  scroll sets the count, Shift "
+        "smooths the edge, Ctrl spreads the points evenly, and attributes such as "
+        "UVs, seams and vertex colors survive the change intact.",
+    ): (
+        "快速调节任意边的段数，滚轮设定段数，Shift 平滑边线，Ctrl 均匀分布，调节后 "
+        "UV、接缝、顶点色等属性完整保留。"
+    ),
     # The overlay's chip row.
     ("*", "[Wheel] Segments {entry} → {current}"): "[滚轮] 段数 {entry} → {current}",
     ("*", "[Shift] Smooth"): "[Shift] 平滑",
     ("*", "[Ctrl] Even"): "[Ctrl] 均分",
     ("*", "[LMB] Keep   [RMB] Revert"): "[左键] 保留   [右键] 还原",
-    ("*", "Loop Resample failed safely: "): "环带重采样已安全失败：",
+    ("*", "Loop Resample failed safely: "): "Loop Resample 已安全失败：",
     # Reports.
-    ("*", "Locked {count} path(s): {counts}"): "已锁定 {count} 条路径：{counts}",
-    ("*", "Mesh update is already running; wait a moment."): "网格更新正在进行，请稍候。",
-    ("*", "Enter adjust mode first."): "请先进入调整模式。",
-    ("*", "Restored the mesh from before the session."): "已恢复会话开始前的网格。",
     ("*", "Reverted to {counts} segment(s)."): "已还原为 {counts} 段。",
     ("*", "Reverted to {counts} segment(s) and the original curve."): "已还原为 {counts} 段并恢复原始曲线。",
     ("*", "Kept {counts} segment(s) on the locked path(s)."): "已保留锁定路径的 {counts} 段。",

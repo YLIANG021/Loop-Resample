@@ -18,39 +18,24 @@ TRANSLATIONS = {
         "das Rad die Kurve, mit Ctrl verteilt es ihre Punkte, und jede Raste verstärkt "
         "diesen Effekt. Linksklick behält das Ergebnis, Rechtsklick setzt es zurück."
     ),
-    ("*", "Enter Loop Resample"): "Schleifen-Neuabtastung aktivieren",
     (
         "*",
-        "Lock the current mesh and selection as the resample source",
-    ): "Aktuelles Mesh und Auswahl als Quelle der Neuabtastung sperren",
-    ("*", "Loop Resample"): "Schleifen-Neuabtastung",
-    ("*", "Resample the locked paths from the session source"): (
-        "Gesperrte Pfade anhand der Sitzungsquelle neu abtasten"
+        "Quickly adjust the segment count of any edge:  scroll sets the count, Shift "
+        "smooths the edge, Ctrl spreads the points evenly, and attributes such as "
+        "UVs, seams and vertex colors survive the change intact.",
+    ): (
+        "Die Segmentanzahl beliebiger Kanten schnell anpassen: Das Rad stellt die "
+        "Segmentanzahl ein, mit Shift wird die Kante geglättet, mit Ctrl werden ihre "
+        "Punkte verteilt, und Attribute wie UVs, Nähte und Eckenfarben bleiben nach "
+        "der Anpassung vollständig erhalten."
     ),
-    ("*", "Confirm Resample"): "Neuabtastung bestätigen",
-    ("*", "Keep the current result and end the session"): (
-        "Aktuelles Ergebnis behalten und Sitzung beenden"
-    ),
-    ("*", "Cancel Resample"): "Neuabtastung abbrechen",
-    (
-        "*",
-        "Restore the mesh to its state when the session started",
-    ): "Mesh auf den Zustand zu Beginn der Sitzung wiederherstellen",
     # The overlay's chip row.
     ("*", "[Wheel] Segments {entry} → {current}"): "[Rad] Segmente {entry} → {current}",
     ("*", "[Shift] Smooth"): "[Shift] Glätten",
     ("*", "[Ctrl] Even"): "[Ctrl] Gleich",
     ("*", "[LMB] Keep   [RMB] Revert"): "[Links] Behalten   [Rechts] Zurück",
-    ("*", "Loop Resample failed safely: "): "Schleifen-Neuabtastung sicher fehlgeschlagen: ",
+    ("*", "Loop Resample failed safely: "): "Loop Resample sicher fehlgeschlagen: ",
     # Reports.
-    ("*", "Locked {count} path(s): {counts}"): "{count} Pfad(e) gesperrt: {counts}",
-    ("*", "Mesh update is already running; wait a moment."): (
-        "Die Mesh-Aktualisierung läuft bereits; einen Moment warten."
-    ),
-    ("*", "Enter adjust mode first."): "Zuerst den Anpassungsmodus aktivieren.",
-    ("*", "Restored the mesh from before the session."): (
-        "Mesh von vor der Sitzung wiederhergestellt."
-    ),
     ("*", "Reverted to {counts} segment(s)."): "Auf {counts} Segment(e) zurückgesetzt.",
     (
         "*",

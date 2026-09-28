@@ -19,46 +19,24 @@ TRANSLATIONS = {
         "Shift la rueda suaviza la curva, con Ctrl reparte sus puntos, y cada paso de "
         "rueda refuerza el efecto. Clic izquierdo lo mantiene, clic derecho lo revierte."
     ),
-    ("*", "Enter Loop Resample"): "Entrar en el remuestreo de bucle",
     (
         "*",
-        "Lock the current mesh and selection as the resample source",
-    ): "Bloquear la malla y la selección actuales como origen del remuestreo",
-    ("*", "Loop Resample"): "Remuestreo de bucle",
-    (
-        "*",
-        "Resample the locked paths from the session source",
-    ): "Remuestrear las trayectorias bloqueadas desde el origen de la sesión",
-    ("*", "Confirm Resample"): "Confirmar remuestreo",
-    (
-        "*",
-        "Keep the current result and end the session",
-    ): "Mantener el resultado actual y terminar la sesión",
-    ("*", "Cancel Resample"): "Cancelar remuestreo",
-    (
-        "*",
-        "Restore the mesh to its state when the session started",
-    ): "Restaurar la malla a su estado del inicio de la sesión",
+        "Quickly adjust the segment count of any edge:  scroll sets the count, Shift "
+        "smooths the edge, Ctrl spreads the points evenly, and attributes such as "
+        "UVs, seams and vertex colors survive the change intact.",
+    ): (
+        "Ajusta rápidamente el número de segmentos de cualquier arista: la rueda fija "
+        "la cantidad, Shift suaviza la arista, Ctrl reparte sus puntos y, tras el "
+        "ajuste, atributos como las UV, las costuras y los colores de vértice se "
+        "conservan intactos."
+    ),
     # The overlay's chip row.
     ("*", "[Wheel] Segments {entry} → {current}"): "[Rueda] Segmentos {entry} → {current}",
     ("*", "[Shift] Smooth"): "[Shift] Suave",
     ("*", "[Ctrl] Even"): "[Ctrl] Igual",
     ("*", "[LMB] Keep   [RMB] Revert"): "[Izq] Mantener   [Der] Revertir",
-    ("*", "Loop Resample failed safely: "): "El remuestreo de bucle falló de forma segura: ",
+    ("*", "Loop Resample failed safely: "): "Loop Resample falló de forma segura: ",
     # Reports.
-    (
-        "*",
-        "Locked {count} path(s): {counts}",
-    ): "Se bloquearon {count} trayectoria(s): {counts}",
-    (
-        "*",
-        "Mesh update is already running; wait a moment.",
-    ): "La actualización de la malla ya está en curso; espera un momento.",
-    ("*", "Enter adjust mode first."): "Entra primero en el modo de ajuste.",
-    (
-        "*",
-        "Restored the mesh from before the session.",
-    ): "Se restauró la malla tal como estaba antes de la sesión.",
     ("*", "Reverted to {counts} segment(s)."): "Se revirtió a {counts} segmento(s).",
     (
         "*",

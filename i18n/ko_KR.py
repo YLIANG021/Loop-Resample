@@ -17,31 +17,23 @@ TRANSLATIONS = {
         "스무스해지고, Ctrl를 누른 채로 굴리면 포인트 배분이 균일해지며, 한 칸씩 효과가 "
         "강해집니다. 좌클릭은 유지, 우클릭은 되돌립니다."
     ),
-    ("*", "Enter Loop Resample"): "루프 재샘플링 진입",
-    ("*", "Lock the current mesh and selection as the resample source"): (
-        "현재 메시와 선택을 재샘플링 소스로 잠금"
-    ),
-    ("*", "Loop Resample"): "루프 재샘플링",
-    ("*", "Resample the locked paths from the session source"): "세션 소스에서 잠긴 경로를 재샘플링",
-    ("*", "Confirm Resample"): "재샘플링 확인",
-    ("*", "Keep the current result and end the session"): "현재 결과를 유지하고 세션 종료",
-    ("*", "Cancel Resample"): "재샘플링 취소",
-    ("*", "Restore the mesh to its state when the session started"): (
-        "세션 시작 시점의 메시로 복원"
+    (
+        "*",
+        "Quickly adjust the segment count of any edge:  scroll sets the count, Shift "
+        "smooths the edge, Ctrl spreads the points evenly, and attributes such as "
+        "UVs, seams and vertex colors survive the change intact.",
+    ): (
+        "임의의 엣지의 세그먼트 수를 바로 조절합니다. 휠로 세그먼트 수를 설정하고, "
+        "Shift를 누르면 엣지가 스무스해지며, Ctrl를 누르면 포인트 배분이 "
+        "균일해집니다. 조절 후에도 UV, 심, 정점 색 등 속성이 그대로 보존됩니다."
     ),
     # The overlay's chip row.
     ("*", "[Wheel] Segments {entry} → {current}"): "[휠] 세그먼트 {entry} → {current}",
     ("*", "[Shift] Smooth"): "[Shift] 스무스",
     ("*", "[Ctrl] Even"): "[Ctrl] 균일",
     ("*", "[LMB] Keep   [RMB] Revert"): "[좌클릭] 유지   [우클릭] 되돌리기",
-    ("*", "Loop Resample failed safely: "): "루프 재샘플링이 안전하게 실패했습니다: ",
+    ("*", "Loop Resample failed safely: "): "Loop Resample이 안전하게 실패했습니다: ",
     # Reports.
-    ("*", "Locked {count} path(s): {counts}"): "경로 {count}개를 잠갔습니다: {counts}",
-    ("*", "Mesh update is already running; wait a moment."): (
-        "이미 메시 업데이트가 진행 중입니다. 잠시 기다리십시오."
-    ),
-    ("*", "Enter adjust mode first."): "먼저 조정 모드에 진입하십시오.",
-    ("*", "Restored the mesh from before the session."): "세션 시작 전의 메시로 복원되었습니다.",
     ("*", "Reverted to {counts} segment(s)."): "{counts}개 세그먼트로 되돌렸습니다.",
     ("*", "Reverted to {counts} segment(s) and the original curve."): (
         "{counts}개 세그먼트와 원본 커브로 되돌렸습니다."

@@ -18,26 +18,17 @@ TRANSLATIONS = {
         "Shift la rotella leviga la curva, con Ctrl distribuisce i punti e ogni scatto "
         "rafforza questo effetto. Il clic sinistro mantiene, il clic destro ripristina."
     ),
-    ("*", "Enter Loop Resample"): "Attiva ricampionamento ciclo",
     (
         "*",
-        "Lock the current mesh and selection as the resample source",
-    ): "Blocca la mesh e la selezione attuali come sorgente del ricampionamento",
-    ("*", "Loop Resample"): "Ricampionamento ciclo",
-    (
-        "*",
-        "Resample the locked paths from the session source",
-    ): "Ricampiona i percorsi bloccati a partire dalla sorgente della sessione",
-    ("*", "Confirm Resample"): "Conferma ricampionamento",
-    (
-        "*",
-        "Keep the current result and end the session",
-    ): "Mantieni il risultato attuale e chiudi la sessione",
-    ("*", "Cancel Resample"): "Annulla ricampionamento",
-    (
-        "*",
-        "Restore the mesh to its state when the session started",
-    ): "Ripristina la mesh allo stato in cui era all'avvio della sessione",
+        "Quickly adjust the segment count of any edge:  scroll sets the count, Shift "
+        "smooths the edge, Ctrl spreads the points evenly, and attributes such as "
+        "UVs, seams and vertex colors survive the change intact.",
+    ): (
+        "Imposta rapidamente il numero di segmenti di qualsiasi spigolo: la rotella "
+        "fissa i segmenti, Shift leviga lo spigolo, Ctrl distribuisce i punti e, dopo "
+        "la regolazione, gli attributi come UV, cuciture e colori dei vertici restano "
+        "intatti."
+    ),
     # The overlay's chip row.
     ("*", "[Wheel] Segments {entry} → {current}"): "[Rotella] Segmenti {entry} → {current}",
     ("*", "[Shift] Smooth"): "[Shift] Leviga",
@@ -46,18 +37,8 @@ TRANSLATIONS = {
     (
         "*",
         "Loop Resample failed safely: ",
-    ): "Ricampionamento ciclo non riuscito in modo sicuro: ",
+    ): "Loop Resample non riuscito in modo sicuro: ",
     # Reports.
-    ("*", "Locked {count} path(s): {counts}"): "Bloccati {count} percorsi: {counts}",
-    (
-        "*",
-        "Mesh update is already running; wait a moment.",
-    ): "L'aggiornamento della mesh è già in corso; attendi un attimo.",
-    ("*", "Enter adjust mode first."): "Prima attiva la modalità di regolazione.",
-    (
-        "*",
-        "Restored the mesh from before the session.",
-    ): "Mesh ripristinata allo stato anteriore alla sessione.",
     ("*", "Reverted to {counts} segment(s)."): "Ripristinati {counts} segmenti.",
     (
         "*",

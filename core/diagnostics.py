@@ -213,15 +213,6 @@ def print_seam_excursion(region, detail):
     )
 
 
-def print_reflex_fallback(region, detail):
-    """Report a strip that shipped a re-entrant wide face because nothing else fit."""
-    print(
-        "[Loop Resample][diagnostic] reflex-fallback "
-        f"region={region.get('region_index')} path={region.get('path_index')} "
-        f"{detail}"
-    )
-
-
 # --- temporary ladder diagnostic ----------------------------------------------
 # Added to find which step moved a strip's connectivity while only a shape axis was
 # being scrolled.  ``ladder``'s ``gap`` is the margin the search won by, so it says
@@ -295,39 +286,7 @@ def print_outer_replay(region, decision):
     )
 
 
-def print_pairing_profile(region, inner_steps, outer_steps, nodes, counts, pinches):
-    """The band's own rungs as the ladder reads them, counted out per column.
-
-    ``nodes`` are :func:`._source_pairing_nodes`'s pairs -- the source band's rungs counted in
-    the numbering the outer rail is really walked in, the same rebuilt-rail frame the
-    ``align`` line prints since the inner carry started registering the two rails' starts,
-    so the two lines can be read against each other directly.  ``counts`` is what :func:`._pairing_profile` charges against: one
-    entry per column of this band's sparser rail, holding how many of those rungs the source
-    left there.  It is the shape the search is asked to reproduce, because it is the half of
-    the record a strip rebuilt onto a different number of columns still can be -- the positions
-    the same nodes name are priced only where the rails kept the source's own columns.  Sum
-    ``want=`` and compare with ``steps=`` to see the pattern in one look: a column asking for
-    five spokes while its neighbours ask for one is the fan, and where it sits along the run is
-    the twist.  ``pinches`` is what a stack of rungs on one outer vertex costs the
-    *vocabulary* -- the number of faces this band may spend a spoke on.  Read it beside
-    ``ladder allowed=``: the kind is offered whether or not the search buys it, so a
-    ``pinches`` with no matching letter in ``dp=`` means the geometry outbid the pattern, and an
-    ``allowed=`` without it means the two columns never met.
-    """
-    print(
-        "[Loop Resample][diagnostic] pairing "
-        f"region={region.get('region_index')} steps={inner_steps}x{outer_steps} "
-        f"want=[{','.join(str(count) for count in counts)}] "
-        f"pinches={pinches} nodes=["
-        + ",".join(f"{inner}>{outer}" for inner, outer in nodes)
-        + "]"
-    )
-
-
-def print_ladder_dp(
-    region, inner_steps, outer_steps, allowed, ranked, waypoints, pairing_profile=(),
-    wide=(),
-):
+def print_ladder_dp(region, inner_steps, outer_steps, allowed, ranked, waypoints):
     """The search's cheapest ladder and its closest rival among the last moves.
 
     ``runner`` is the best complete ladder that ended on a *different* final move, so
@@ -337,18 +296,6 @@ def print_ladder_dp(
     and ``gap`` is the whole margin a shape axis had to overcome to move the strip.
 
     ``pins`` are the nodes a UV seam crossing forces the ladder to stand on.
-    ``pairing_profile`` is the same tally :func:`print_pairing_profile` spells out per column,
-    written the way the search reads it -- one entry per sparse column, holding how many of
-    this band's one-column steps should be burned before it enters that one -- and it is *not*
-    a pin: every value is a number the search is charged for missing, so reading it against
-    ``dp=`` says where the strip spent its surplus early or late.  ``-`` means the band
-    reported no pairing at all, and then the costs are the ones this search paid before the
-    pattern had a say.
-
-    ``wide`` is the band's face-count pin as ``spent/budget``: how many wide faces the
-    chosen ladder ends on against how many the source band's own face count asks for.
-    A ``!`` marks a shortfall -- the exact count survived no final, so the band is that
-    many faces heavier than the source drew it, which used to happen in silence.
     """
     best_cost, best_transitions = ranked[0]
     line = (
@@ -359,17 +306,6 @@ def print_ladder_dp(
         + f" finals={len(ranked)}"
         + " pins="
         + ("-" if not waypoints else str(sorted(set(waypoints))))
-        + " profile="
-        + (
-            "-"
-            if not pairing_profile
-            else ",".join(str(value) for value in pairing_profile)
-        )
-        + (
-            ""
-            if not wide
-            else f" wide={wide[0]}/{wide[1]}" + ("!" if wide[0] < wide[1] else "")
-        )
         + f" dp={_ladder_sequence(best_transitions)} score={best_cost:.6f}"
     )
     if len(ranked) > 1:
@@ -391,9 +327,10 @@ def print_ladder_plan(region, plan, source, swapped):
     its own geometry.  ``swapped`` marks that the local pass rewrote what the search
     chose.  ``rungs`` is what ``_step_cost`` pays ``1.2 * length ** 2`` for: two
     neighbouring columns swapping which rung is the shorter one is the flip, and its
-    threshold is where those two numbers are equal.  ``fan=`` counts how many rungs leave each
-    column of this band's sparser rail -- the one tally :func:`print_pairing_profile`'s
-    ``want=`` is charging it toward, printed here so the two read as a pair.
+    threshold is where those two numbers are equal.  ``fan=`` counts how many rungs leave
+    each column of this band's sparser rail, and that spread is the pattern read on its
+    own: a column asking for five spokes while its neighbours ask for one is the fan, and
+    where it sits along the run is the twist.
     """
     inner = plan.inner_vertices
     outer = plan.outer_vertices
@@ -407,9 +344,9 @@ def print_ladder_plan(region, plan, source, swapped):
         ).length
         for inner_index, outer_index in plan.nodes
     ]
-    # Counted exactly the way :func:`._pairing_profile` counts the source, so this line's
-    # ``fan=`` and the ``pairing`` line's ``want=`` are two sides of the same tally and can be
-    # read against each other without arithmetic.
+    # Counted on whichever of the two rails is the sparser one, so the spread says how
+    # this ladder spent its rungs per column, without needing the source's own tally next
+    # to it.
     fan = ""
     if min(inner_steps, outer_steps) > 0:
         counts = [0] * min(inner_steps, outer_steps)

@@ -1158,7 +1158,6 @@ def _consecutive_rungs_cross(
 
 def _step_base_cost(
     face,
-    kind,
     inner,
     outer,
     next_inner,
@@ -1226,7 +1225,6 @@ def _step_cost(
     if step_cache is None:
         return _step_base_cost(
             face,
-            kind,
             inner,
             outer,
             next_inner,
@@ -1243,7 +1241,6 @@ def _step_cost(
     if base_cost is _NOT_CACHED:
         base_cost = _step_base_cost(
             face,
-            kind,
             inner,
             outer,
             next_inner,
@@ -1494,8 +1491,6 @@ def _beautify_transitions(
 
 
 def _sweep_ladder(
-    inner,
-    outer,
     inner_boundary,
     outer_boundary,
     is_closed,
@@ -1625,7 +1620,6 @@ def _sweep_ladder(
                         )
                         base_cost = _step_base_cost(
                             face,
-                            kind,
                             inner_rail,
                             outer_rail,
                             next_inner,
@@ -1727,8 +1721,6 @@ def _build_transitions(
     outer_steps = len(outer) if is_closed else len(outer) - 1
     allowed = _allowed_transitions(inner_steps, outer_steps, depth)
     states, parents, expanded = _sweep_ladder(
-        inner,
-        outer,
         inner_boundary,
         outer_boundary,
         is_closed,

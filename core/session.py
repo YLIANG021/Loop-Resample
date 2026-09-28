@@ -398,23 +398,6 @@ class ResampleSession:
             self.segments[path_index],
         )
 
-    def next_counts(self, delta, target_count):
-        """Counts after one step, validated against each path's minimum."""
-        counts = (
-            [target_count] * len(self.counts)
-            if target_count > 0
-            else [count + delta for count in self.counts]
-        )
-        for count, closed in zip(counts, self.closed):
-            minimum = 3 if closed else 2
-            if count < minimum:
-                raise ValueError(
-                    pgettext("A {kind} path needs at least {minimum} points.").format(
-                        kind=pgettext("closed" if closed else "open"), minimum=minimum
-                    )
-                )
-        return counts
-
     def free(self):
         self.capture_cache = None
         if self.source is not None:
@@ -434,10 +417,6 @@ def active(context):
     ):
         return None
     return _ACTIVE
-
-
-def is_active(context):
-    return active(context) is not None
 
 
 def begin(context):

@@ -18,40 +18,23 @@ TRANSLATIONS = {
         "đường cong, giữ Ctrl và lăn để chia đều các điểm, mỗi nấc lăn tăng thêm một bậc "
         "cho hiệu ứng đó. Chuột trái giữ kết quả, chuột phải hoàn tác."
     ),
-    ("*", "Enter Loop Resample"): "Vào chế độ lấy mẫu lại vòng lặp",
     (
         "*",
-        "Lock the current mesh and selection as the resample source",
-    ): "Khóa mesh và lựa chọn hiện tại làm nguồn lấy mẫu lại",
-    ("*", "Loop Resample"): "Lấy mẫu lại vòng lặp",
-    (
-        "*",
-        "Resample the locked paths from the session source",
-    ): "Lấy mẫu lại các đường dẫn đã khóa từ nguồn của phiên",
-    ("*", "Confirm Resample"): "Xác nhận lấy mẫu lại",
-    (
-        "*",
-        "Keep the current result and end the session",
-    ): "Giữ kết quả hiện tại và kết thúc phiên",
-    ("*", "Cancel Resample"): "Hủy lấy mẫu lại",
-    (
-        "*",
-        "Restore the mesh to its state when the session started",
-    ): "Đưa mesh về trạng thái lúc bắt đầu phiên",
+        "Quickly adjust the segment count of any edge:  scroll sets the count, Shift "
+        "smooths the edge, Ctrl spreads the points evenly, and attributes such as "
+        "UVs, seams and vertex colors survive the change intact.",
+    ): (
+        "Đặt nhanh số đoạn của bất kỳ cạnh nào: lăn bánh xe để đặt số đoạn, giữ Shift "
+        "để làm mịn cạnh, giữ Ctrl để chia đều các điểm, và sau khi chỉnh các thuộc "
+        "tính như UV, đường khâu, màu đỉnh vẫn được giữ nguyên."
+    ),
     # The overlay's chip row.
     ("*", "[Wheel] Segments {entry} → {current}"): "[Lăn] Số đoạn {entry} → {current}",
     ("*", "[Shift] Smooth"): "[Shift] Làm mịn",
     ("*", "[Ctrl] Even"): "[Ctrl] Chia đều",
     ("*", "[LMB] Keep   [RMB] Revert"): "[Trái] Giữ   [Phải] Hoàn tác",
-    ("*", "Loop Resample failed safely: "): "Lấy mẫu lại vòng lặp thất bại an toàn: ",
+    ("*", "Loop Resample failed safely: "): "Loop Resample thất bại an toàn: ",
     # Reports.
-    ("*", "Locked {count} path(s): {counts}"): "Đã khóa {count} đường dẫn: {counts}",
-    (
-        "*",
-        "Mesh update is already running; wait a moment.",
-    ): "Đang cập nhật mesh, hãy chờ một lát.",
-    ("*", "Enter adjust mode first."): "Hãy vào chế độ điều chỉnh trước.",
-    ("*", "Restored the mesh from before the session."): "Đã khôi phục mesh như trước phiên.",
     ("*", "Reverted to {counts} segment(s)."): "Đã hoàn tác về {counts} đoạn.",
     (
         "*",

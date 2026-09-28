@@ -17,39 +17,24 @@ TRANSLATIONS = {
         "кривую, Ctrl распределяет её точки, и каждый шаг прокрутки усиливает эффект. "
         "ЛКМ оставляет, ПКМ возвращает."
     ),
-    ("*", "Enter Loop Resample"): "Перейти к пересэмплированию петли",
     (
         "*",
-        "Lock the current mesh and selection as the resample source",
-    ): "Заблокировать текущие меш и выделение как источник пересэмплирования",
-    ("*", "Loop Resample"): "Пересэмплирование петли",
-    ("*", "Resample the locked paths from the session source"): (
-        "Пересэмплировать заблокированные пути из источника сеанса"
-    ),
-    ("*", "Confirm Resample"): "Подтвердить пересэмплирование",
-    (
-        "*",
-        "Keep the current result and end the session",
-    ): "Оставить текущий результат и завершить сеанс",
-    ("*", "Cancel Resample"): "Отменить пересэмплирование",
-    ("*", "Restore the mesh to its state when the session started"): (
-        "Восстановить состояние меша на начало сеанса"
+        "Quickly adjust the segment count of any edge:  scroll sets the count, Shift "
+        "smooths the edge, Ctrl spreads the points evenly, and attributes such as "
+        "UVs, seams and vertex colors survive the change intact.",
+    ): (
+        "Быстро меняет число сегментов любого ребра: колесо задаёт число, Shift "
+        "сглаживает ребро, Ctrl распределяет его точки равномерно, а после "
+        "регулировки такие атрибуты, как UV, швы и цвета вершин, сохраняются "
+        "полностью."
     ),
     # The overlay's chip row.
     ("*", "[Wheel] Segments {entry} → {current}"): "[Колесо] Сегменты {entry} → {current}",
     ("*", "[Shift] Smooth"): "[Shift] Гладко",
     ("*", "[Ctrl] Even"): "[Ctrl] Ровно",
     ("*", "[LMB] Keep   [RMB] Revert"): "[ЛКМ] Оставить   [ПКМ] Вернуть",
-    ("*", "Loop Resample failed safely: "): "Пересэмплирование петли безопасно прервано: ",
+    ("*", "Loop Resample failed safely: "): "Loop Resample безопасно прервано: ",
     # Reports.
-    ("*", "Locked {count} path(s): {counts}"): "Заблокировано путей: {count} ({counts})",
-    ("*", "Mesh update is already running; wait a moment."): (
-        "Обновление меша уже выполняется; подождите немного."
-    ),
-    ("*", "Enter adjust mode first."): "Сначала войдите в режим регулировки.",
-    ("*", "Restored the mesh from before the session."): (
-        "Восстановлено состояние меша на начало сеанса."
-    ),
     ("*", "Reverted to {counts} segment(s)."): "Возвращено сегментов: {counts}.",
     ("*", "Reverted to {counts} segment(s) and the original curve."): (
         "Возвращено сегментов: {counts}; исходная кривая тоже возвращена."

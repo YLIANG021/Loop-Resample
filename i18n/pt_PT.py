@@ -20,26 +20,17 @@ TRANSLATIONS = {
         "roda reforça esse efeito. O botão esquerdo mantém o resultado; o botão direito "
         "reverte."
     ),
-    ("*", "Enter Loop Resample"): "Iniciar Reamostragem em Laço",
     (
         "*",
-        "Lock the current mesh and selection as the resample source",
-    ): "Bloqueie a malha e a seleção atuais como fonte de reamostragem",
-    ("*", "Loop Resample"): "Reamostragem em Laço",
-    (
-        "*",
-        "Resample the locked paths from the session source",
-    ): "Reamostre os caminhos bloqueados a partir da fonte da sessão",
-    ("*", "Confirm Resample"): "Confirmar Reamostragem",
-    (
-        "*",
-        "Keep the current result and end the session",
-    ): "Mantenha o resultado atual e encerre a sessão",
-    ("*", "Cancel Resample"): "Cancelar Reamostragem",
-    (
-        "*",
-        "Restore the mesh to its state when the session started",
-    ): "Restaure a malha ao estado em que estava quando a sessão começou",
+        "Quickly adjust the segment count of any edge:  scroll sets the count, Shift "
+        "smooths the edge, Ctrl spreads the points evenly, and attributes such as "
+        "UVs, seams and vertex colors survive the change intact.",
+    ): (
+        "Ajusta rapidamente o número de segmentos de qualquer aresta: role a roda "
+        "para definir a quantidade, use Shift para suavizar a aresta, Ctrl para "
+        "distribuir os pontos, e atributos como UV, costuras e cores de vértice "
+        "permanecem intactos após o ajuste."
+    ),
     # The overlay's chip row.
     ("*", "[Wheel] Segments {entry} → {current}"): (
         "[Roda] Segmentos {entry} → {current}"
@@ -47,20 +38,8 @@ TRANSLATIONS = {
     ("*", "[Shift] Smooth"): "[Shift] Suavizar",
     ("*", "[Ctrl] Even"): "[Ctrl] Uniformizar",
     ("*", "[LMB] Keep   [RMB] Revert"): "[Bot. E] Manter   [Bot. D] Reverter",
-    ("*", "Loop Resample failed safely: "): (
-        "Reamostragem em Laço falhou de forma segura: "
-    ),
+    ("*", "Loop Resample failed safely: "): "Loop Resample falhou de forma segura: ",
     # Reports.
-    ("*", "Locked {count} path(s): {counts}"): (
-        "Bloqueados {count} caminho(s): {counts}"
-    ),
-    ("*", "Mesh update is already running; wait a moment."): (
-        "A atualização da malha já está em execução; aguarde um momento."
-    ),
-    ("*", "Enter adjust mode first."): "Entre primeiro no modo de ajuste.",
-    ("*", "Restored the mesh from before the session."): (
-        "Malha restaurada ao estado anterior à sessão."
-    ),
     ("*", "Reverted to {counts} segment(s)."): "Revertido para {counts} segmento(s).",
     ("*", "Reverted to {counts} segment(s) and the original curve."): (
         "Revertido para {counts} segmento(s) e para a curva original."

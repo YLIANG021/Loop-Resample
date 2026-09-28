@@ -17,34 +17,24 @@ TRANSLATIONS = {
         "カーブがスムーズになり、Ctrl キーでポイントが均一に並びます。1 目盛ごとに"
         "効果が強まります。左クリックで維持、右クリックで元に戻す。"
     ),
-    ("*", "Enter Loop Resample"): "ループリサンプルに入る",
     (
         "*",
-        "Lock the current mesh and selection as the resample source",
-    ): "現在のメッシュと選択をリサンプルのソースとしてロックします",
-    ("*", "Loop Resample"): "ループリサンプル",
-    (
-        "*",
-        "Resample the locked paths from the session source",
-    ): "セッションのソースからロックしたパスをリサンプルします",
-    ("*", "Confirm Resample"): "リサンプルを確認",
-    ("*", "Keep the current result and end the session"): "現在の結果を維持してセッションを終了します",
-    ("*", "Cancel Resample"): "リサンプルをキャンセル",
-    ("*", "Restore the mesh to its state when the session started"): "メッシュをセッション開始時の状態に戻します",
+        "Quickly adjust the segment count of any edge:  scroll sets the count, Shift "
+        "smooths the edge, Ctrl spreads the points evenly, and attributes such as "
+        "UVs, seams and vertex colors survive the change intact.",
+    ): (
+        "任意のエッジのセグメント数を素早く調整できます。"
+        "ホイールでセグメント数を設定し、Shift でエッジをスムーズに、Ctrl "
+        "でポイントを均一に並べます。調整後も UV、シーム、"
+        "頂点色などの属性がそのまま残ります。"
+    ),
     # The overlay's chip row.
     ("*", "[Wheel] Segments {entry} → {current}"): "[ホイール] セグ数 {entry} → {current}",
     ("*", "[Shift] Smooth"): "[Shift] スムーズ",
     ("*", "[Ctrl] Even"): "[Ctrl] 均一",
     ("*", "[LMB] Keep   [RMB] Revert"): "[左] 維持   [右] 元に戻す",
-    ("*", "Loop Resample failed safely: "): "ループリサンプルは安全に失敗しました： ",
+    ("*", "Loop Resample failed safely: "): "Loop Resample は安全に失敗しました： ",
     # Reports.
-    ("*", "Locked {count} path(s): {counts}"): "{count} 本のパスをロックしました：{counts}",
-    (
-        "*",
-        "Mesh update is already running; wait a moment.",
-    ): "メッシュの更新が既に実行中です。しばらくお待ちください。",
-    ("*", "Enter adjust mode first."): "先に調整モードに入ってください。",
-    ("*", "Restored the mesh from before the session."): "セッション開始前のメッシュに戻しました。",
     ("*", "Reverted to {counts} segment(s)."): "{counts} セグメントに戻しました。",
     (
         "*",

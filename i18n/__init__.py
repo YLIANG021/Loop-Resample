@@ -9,8 +9,8 @@ The shape of the table is the one yl_meshcheckhud uses: every string is written 
 in the source, and that English sentence is itself the key.  A missing translation is not an
 error, it is the English text, so adding a string without translating it degrades to a
 language the user can read rather than to a blank chip.  ``en_US.MESSAGES`` is the list every
-other file is written against, and each locale answers all of it: fifty-eight strings in,
-fifty-eight out.
+other file is written against, and each locale answers all of it: forty-seven strings in,
+forty-seven out.
 """
 
 import bpy
