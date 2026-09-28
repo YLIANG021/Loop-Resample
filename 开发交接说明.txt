@@ -1,0 +1,1307 @@
+================================================================================
+Loop Resample 开发交接说明
+最后更新：2026-09-25（全文精简）。本次只删"不触及核心算法"的历史：UI/交互细节、
+已回退的尝试、已废首版、已随 8.26 连机器一起删除的缝对齐连载（8.19-8.24）、
+性能测量日志。被删内容原文归档到同目录 开发交接说明.archive.txt，本文只留结论。
+本文档自 2026-09-28 起随代码进仓库（.gitignore 给它开了例外），此前自 bb0d1cd 起被拦着、
+只存在于工作区。
+核心基线：a8b0edc（顶点色 + 点级属性，用户实测通过）；8.26、8.27 尚未提交。
+原开头的逐条编年史与第 13 章提交索引已删除——同样的信息 `git log --oneline`
+一条命令就有，且不会与现实脱节。
+用途：供接手的 AI / 开发者完整理解本插件的现状、设计动机、实现细节与历史决策。
+阅读建议：先读第 1、2 章建立模型，再按需查第 5、6 章的函数级说明；
+第 8 章是"踩坑史"，改任何属性传递逻辑前必读；第 9 章是回归清单。
+================================================================================
+
+--------------------------------------------------------------------------------
+1. 项目概述
+--------------------------------------------------------------------------------
+1.1 这是什么
+    一个 Blender 5.2 编辑模式插件（extension，模块路径
+    bl_ext.user_default.loop_resample）。功能：选中一条或多条边路径（loop/path），
+    进入"调整模式"后加减段数（resample），同时把路径两侧受影响的面带（strip）
+    拆除重建，并尽可能完整地保留：边属性（seam/sharp/crease/bevel 等浮点层）、
+    面属性（material_index、smooth）、UV（多 layer、多 island、跨 0/1 环绕）。
+
+1.2 目录结构
+    __init__.py          插件注册/注销入口；注销时 sessions.clear()
+    operators.py         四个算子：begin / step / confirm / cancel；_resample 主流程
+                         （begin/step 是面板两击时代的遗留，现已无人调用，见 8.30）
+    ui/                  【目录结构已变，1.2 这一段长期落后于代码，改动前先以实际文件为准】
+      interactive.py     滚轮 modal 算子 + 菜单转发算子 + _viewport_area
+      hud.py             overlay 绘制：3D 数字、chip 行、描边与圆点（含抬升两常量）
+      panels.py          编辑模式右键菜单项的 draw 函数（面板类已删）
+    core/session.py      会话容器：锁定源网格、编辑模式守卫（timer）
+    core/paths.py        选中边→有序路径、闭环相位同步
+    core/regions.py      路径→受影响区域（STRIP/CAPPED_STRIP/FAN/NGON_CAP）；
+                         冻结测量帧 region_frames / region_rails
+    core/curves.py       冻结的 C0 重采样曲线（按段数采样出坐标）
+    core/planner.py      条带重建计划（quad/tri 排布、rung 连续性打分）
+    core/rebuild.py      BMesh 拆除与重建（detached path、triangle fan、ngon cap、
+                         ordered strip）
+    core/attributes.py   边属性 + 点级属性（顶点组权重、点域顶点色）的捕获/重采样/应用；
+                         归一化参数与投影工具
+    core/surface.py      面属性 + UV + corner 域顶点色的捕获与应用（按岛分链，本插件最核心也最脆弱）
+    core/geometry.py     法线参考等几何工具
+    core/utils.py        _point 等小工具
+    core/diagnostics.py  print_timing 等诊断输出
+    core/types.py        轻量数据类型
+
+1.3 运行环境要点
+    Blender 二进制：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
+    headless 跑法：blender.exe -b --python <脚本>（千万不要加 --factory-startup，
+    否则插件不加载）。-b 模式下 bpy.app.timers 不 tick，timer 行为要直接调回调。
+    无关插件噪声：uvpackmaster4 的 GPU SystemError、hot_node 卸载时
+    FileNotFoundError，忽略即可。
+
+--------------------------------------------------------------------------------
+2. 核心概念与坐标框架（理解一切的钥匙）
+--------------------------------------------------------------------------------
+2.1 path（路径）
+    用户选中的边构成的有序链，(vertices, edges, is_closed)。多条 path 时闭环
+    相位会同步（synchronize_closed_path_phases，提交 6eb9595），保证相邻区域
+    对同一条共享轨的顶点顺序一致。
+    闭环起点（path[0][0]，下称 anchor）是重建中唯一保留元素身份、且采样相位
+    零点对齐的顶点：rebuild_detached_path 把 samples[0] 写回它，其余顶点全部
+    新建。anchor 的选择规则见 8.9（seam 优先，否则 index 最小）。
+
+2.2 region（区域）
+    每条 path 两侧受重建影响的面集合。种类：
+    - STRIP：两侧都是四边形梯带；
+    - CAPPED_STRIP：梯带尽头是 n-gon 盖或三角扇；
+    - FAN：一侧收敛到一个极点（pole），重建为绕极点的三角扇；
+    - NGON_CAP：整个闭环边界围成一个 n-gon。
+    region 字典关键字段：faces、delete_edges、path_index、outer_path_index 或
+    outer_vertices、material_index/smooth（区域默认值，仅作兜底）、frames、
+    edge_attributes、source_faces、phase_locked。
+
+2.3 rail（轨）与 (u, v) 面坐标
+    每个区域有两条轨：内轨 = 选中的 path（v=0），外轨 = 另一侧边界（v=1）。
+    u = 顶点沿轨的归一化位置 ∈ [0,1]：源顶点 i 位于 u = i / segments，
+    segments = count - (0 if closed else 1)。
+    因为 v 只取 0/1 两个值，"quad 双线性 / triangle 重心"这类二维插值全部退化为
+    "沿所属轨做一维插值"——这是 surface.py 的根本简化，不要试图引入二维插值。
+
+2.4 归一化参数为什么重要
+    所有捕获量（边属性位置、面跨度、UV 节点）都存放在"进入那一刻的源折线"
+    这个冻结框架里。后续任何段数下，当前顶点都通过投影（path_projection /
+    normalized_parameters）回到这个框架取值。这样捕获与应用的段数可以不同，
+    且 N→M→N 能逐位复原。
+
+2.5 冻结测量帧 region["frames"]
+    {"closed", "inner": {"points","segments"}, "outer": {...}}。
+    为什么必须冻结：rebuild_detached_path 会就地移动轨的首/尾顶点坐标，活网格
+    在重建后不再是合法测量基准。边属性捕获、面/UV 捕获、region_outer_parameters
+    三者共用这一个帧定义（core/regions.py），不要各自再算一份。
+
+--------------------------------------------------------------------------------
+3. 会话模型（core/session.py）
+--------------------------------------------------------------------------------
+3.1 生命周期
+    begin(context)：读编辑网格→selected_paths→相位同步→ResampleSession(obj,
+    live_bm.copy(), paths)→释放旧会话→注册 _watch timer→返回 session。
+    step：operators 里 session.next_counts / samples 驱动。
+    confirm：提交当前编辑网格，end(context) 释放会话。
+    cancel：还在 EDIT 模式内，走自己的恢复路径（把进入前的网格写回），再释放。
+    退出编辑模式：timer 触发 discard()（见 3.3）。
+
+3.2 为什么每一步都从源副本重推
+    session.source 是进入时的 detached BMesh 拷贝。每一步：
+    working_bm = session.source.copy() → 在其上推 paths/regions → 捕获属性 →
+    采样冻结曲线 → 拆除重建 → 应用属性 → staging mesh 往返提交到编辑网格。
+    没有任何状态从"上一步的网格"继承。收益：区域身份、外轨顺序、相位、复原性
+    全部由构造保证；代价：每步 O(网格) 重建，可接受。
+
+3.3 编辑模式守卫
+    _watch：0.1s 间隔的 bpy.app.timers 轮询（persistent=True，跨文件加载存活；
+    对象被删时 _editing 的 ReferenceError 分支自清理）。发现非 EDIT 就 discard()：
+    session.open_bmesh() 拿源副本→to_mesh(obj.data)→update→释放。返回 None 自停。
+    discard 用 _release()（只释放会话）而不是 clear()（会注销 timer），因为
+    discard 正运行在该 timer 内部。
+    注意（对用户说明过）：这个恢复在 Blender undo 系统之外，退出编辑模式后
+    Ctrl+Z 不会把它回退。
+
+--------------------------------------------------------------------------------
+4. 每一步的数据流（operators._resample）
+--------------------------------------------------------------------------------
+    1) working_bm = session.source.copy()
+    2) paths = session.paths(working_bm)（在 pristine 副本上重推）
+    3) regions = capture_adjacent_strips(working_bm, paths)
+    4) path_states = capture_path_edge_attributes(paths, working_bm)
+    5) 每个 region：region["frames"] = region_frames(region, paths)
+       region["phase_locked"] = 两端 path 是否都在同步集合里
+    6) 每个 region：region["edge_attributes"] = capture_region_edge_attributes(...)
+    7) 每个 region：region["source_faces"] = capture_region_faces(working_bm, region, paths)
+       （顺序不可换：frames 必须先于一切捕获；捕获必须先于任何重建变更）
+    8) snapshots = session.samples(counts, path_anchors)
+      （**必须排在捕获之后**：path_anchors 由 core/seams.py 的 region_seam_crossings
+       从缝横穿的两条轨点反推（8.26 起取代已删除的 rail_seam_anchors），采样不再是第一步）
+    9) 拆除：detach_adjacent_strips + cleanup_detached_edges
+    10) 重建：按 region 种类 dispatch（rebuild_detached_path / rebuild_ordered_strip /
+        rebuild_triangle_fan / rebuild_ngon_cap）
+    11) 应用：apply_region_faces(...) 然后 apply_region_edge_attributes(...)
+        路径边：apply_path_edge_attributes(...)
+    12) staging mesh 往返提交 + 重绘
+    失败安全：任何异常被算子捕获，报告 "Loop Resample failed safely: <exc>"，
+    编辑网格保持上一步状态。
+
+--------------------------------------------------------------------------------
+5. 边属性 / 点级属性（权重与点域顶点色）管线（core/attributes.py）函数级说明
+--------------------------------------------------------------------------------
+5.1 _edge_state / _apply_edge_state
+    边状态字典 {"seam","sharp",<浮点层名>:值}。注意 BMesh 的 edge.smooth 是
+    Mesh.use_edge_sharp 的反义。浮点层绝对值 <= 1e-6 视为不存在。
+
+5.2 capture_path_edge_attributes(paths, bm)
+    按路径边顺序冻结状态列表，供 apply_path_edge_attributes 按区间重采样。
+
+5.3 path_projection(points, is_closed, target)
+    点到折线的最近段投影，返回 (段内参数(0..segments), 段切线)。
+
+5.4 normalized_parameters(points, is_closed, vertices, segments)
+    把任意顶点列表放回冻结框架，得 u 列表。外轨重建后顶点数变了也靠它归位。
+
+5.5 capture_region_edge_attributes(regions, paths, bm)
+    只记录"会被重建销毁"的边（_destroyed_region_edges：所有邻面都在区域删除集里）。
+    每条记录 {u, outer_u, state}：
+    - 边的一端在路径上：u = 该路径顶点索引（锚定共享顶点，使跨路径的缝连续）；
+    - 否则投影中点得 u；与路径平行（|dir·tangent| > 0.5）的边跳过（无对应横档）；
+    - outer_u：另一端点（或无锚点时为 None）投影到外轨冻结帧。
+    路径自身的边不在此记录（由 5.8 恢复）。
+
+5.6 merge_edge_states(weighted) / resample_edge_states(parameters, states, closed)
+    源边 i（共 M 条）拥有区间 [i/M,(i+1)/M]（开闭路径同式，开路径末顶点在 u=1）。
+    新边取其覆盖的所有源区间的加权合并：离散标志加权多数、平局偏向"保留"
+    （丢缝比多缝危害大）；浮点层加权平均，缺失按 0 计权。
+    性质：减段数是 blend 不是丢弃；加回原段数落回原值。
+
+5.7 apply_region_edge_attributes(rebuilt_faces, region, inner_vertices,
+    inner_parameters, outer_vertices, outer_parameters, bm)
+    在重建结果里收集横档（恰好一端在内轨上的边），按 (u 代价, outer_u 代价, inner_index,
+    横档序号) 四级排序做最近匹配；同一横档可能合并多条记录（减段数时）。
+    外轨代价用于区分共享内顶点的两条横档（梯带加三角时会出现）；第三级 inner_index 是
+    跨区域的确定性来源——共享同一路径的两个区域各自遍历自己的面，横档序号不可比，而
+    inner_index 两边算出来一样，所以红线不会在路径上折（详见 8.26）。
+    【8.26 起】seam 记录另有一条窄化通道：先用 `_outer_anchor_index` 认出这条缝当初出发
+    的那个**存活外轨顶点**（定轨时该值与捕获值逐位相同，故容差取 1e-7），再把候选池收窄到
+    挂着那个顶点的横档 `rungs_by_outer`。这样红线一定接得上未修改区，而不是停在差一列处。
+    锚点找不到 / 外轨本身是被重采样的路径 / FAN、NGON_CAP 无外轨——都退回全池位置匹配。
+
+5.8 apply_path_edge_attributes(updated_paths, path_parameters, source_states, bm)
+    路径自身边用 resample_edge_states 的结果逐边写回。
+
+5.9 region_outer_parameters(region, outer_vertices)
+    读 region["frames"]["outer"]，把重建后的外轨顶点投影回冻结帧。
+
+5.10 点级属性：顶点组权重 + 点域顶点色
+    （capture_path_point_attributes / apply_path_point_attributes）
+    点级、随 path（内轨）顶点重采样，比边属性简单（纯连续插值，无区间合并、无离散
+    投票）。_point_value_layers 列出本管线携带的所有"顶点级"层，元素为
+    (kind, name, layer)：kind=="weight" 取 bm.verts.layers.deform.active，
+    kind∈{"color","float_color"} 取 bm.verts.layers.color / .float_color 里已有的层。
+    一律"只读已存在的层"：deform 用 .active 而非 verify()，颜色只遍历集合而不新建，
+    所以既无顶点组又无点域色的网格返回 None、全程 no-op，绝不凭空建层
+    （守住不变量 d 区域外不受影响）。
+    为什么点域色走这里而不走 6.9 的链：它是每个顶点一个值，不存在"同一 u 上角值
+    分歧"的缝语义，按 u 沿 path 插值就是它的正确解；且它写在 vertex 上，一次赋值
+    影响该顶点所有面，用角链反复写反而多余。
+    位置计算 _point_positions：源顶点 i 位于归一化 u=i/segments（闭合 segments=count、
+    开放=count-1），新顶点按其 u 落在相邻两源顶点之间，返回 (left, right, factor)。
+    混合分两种：_blend_weights 对 dict 权重，落在源顶点上（factor 0/1）原样拷贝该
+    顶点权重（连 1e-7 这种极小值都保留）→ N→M→N 逐位复原，只有真正混合处才用
+    DEFORM_WEIGHT_TOLERANCE=1e-6 去噪；_blend_values 对 4 分量 Vector 用 lerp，同样
+    在 factor 0/1 直接 copy 端点。闭环环绕用 %source_count。
+    只重写 path 顶点：外轨若固定则顶点与其值本就未动，若外轨自身是 path 也已作为另一
+    条 path 在此处理。扇心极点非 path 顶点，值随元素保留。
+    接入点：operators._resample 捕获段（path_states 之后）与应用段
+    （apply_path_edge_attributes 之后）各加一行。
+
+--------------------------------------------------------------------------------
+6. 面/UV/corner 顶点色管线（core/surface.py）函数级说明 —— 最核心
+--------------------------------------------------------------------------------
+6.1 历史根因（为什么旧实现必须删）
+    旧 capture_region_face_attributes：整区域 Counter 多数投票选 material/smooth
+    → 丢失逐面对应。
+    旧 capture_region_uv_attributes：_vertex_uv_samples 把一个顶点在区域所有面上
+    的所有 loop 的 UV 平均成一个值，再写回该顶点每个 loop → 跨 UV 岛的顶点被
+    抹平（用户最初"跨岛就烂"的根因）。这两个函数已删除。
+
+6.2 捕获 capture_region_faces(bm, region, paths)
+    对每个源面（跳过无内轨角的面——深度>1 区域的外排没有对应重建面）：
+    - 每个 loop 角记 {vertex, rail, u, uv:{层名: Vector}}；不在任何轨上的顶点
+      （扇心极点）rail=1、u=None，稍后替换为该面内轨角的弧心 _u_center；
+    - 面的 u 跨度 [u_start,u_end] 与 u_center 由其内轨角的最小覆盖弧 _u_span 得出
+      （闭环上取"最大间隙的补弧"）；
+    - 角进入两条轨的并查集 _RailBuilder（见 6.3）；
+    - 记录 {material_index, smooth, u_start, u_end, u_center, chains}，chains 为
+      {rail: token}，最后统一翻译成链下标（见 6.5）。
+    返回值 {"closed", "records", "rails": [链列表, 链列表], "periodic"}。
+
+6.3 _RailBuilder（并查集建链）
+    节点 key = (u, 各层 UV 舍入到 6 位小数的元组)。同一 u 上 UV 值不同 → 两个节点
+    → 这就是 UV 缝，不需要显式缝检测。
+    边 = 源面沿该轨的面边（face.edges 中两端都在该轨角集合里的边）：把两个节点
+    缝合进同一连通块。
+    连通块 = 链 = 一个岛沿该轨的连续折线。
+    wrap edge：closed 区域里 |u_a - u_b| > 0.5 的面边（跨 0/1）。检测必须放在
+    "同连通块则跳过"之前——闭环上跨 0/1 的面最后到达，那时两端点已被前面的面
+    缝合，先跳过就永远记不到 wrap（历史 bug，见 8.5）。含 wrap edge 的链
+    closed=True。
+    链输出 {"closed", "knots": [(u, {层: Vector}) 按 u 升序]}。
+
+6.4 应用 apply_region_faces(bm, rebuilt_faces, region, inner_vertices,
+    inner_parameters, outer_vertices, outer_parameters)
+    - 新面每个角定 (rail, u)：内轨顶点用 inner_parameters；外轨顶点用
+      outer_parameters；都不在（新扇心）→ rail=1, u=None；
+    - 面中心 = 内轨角 u 的最小覆盖弧心；_match_face 按"新面 u 区间与源面 span 的
+      重叠取多数"选源面（重叠为 0 才退回最近中心），继承其 material_index / smooth；
+      改重叠多数的原因与边界见 8.12；
+    - 每个角在 record["chains"][rail] 这条链上 _sample_chain 取样写回 loop。
+      共享新顶点的两个新面匹配到相邻源面 → 同链 → 同一段 → 同一个值：岛内连续；
+      缝两侧是不同链：跨岛分开。这就是"单岛连续 + 跨岛不混"的同时成立。
+      注意：不要试图在角点上"按 u 覆盖情况改选别的链"——已被用户实测打回（历史见 archive 里的 8.13）。
+
+6.5 token 而不是根（历史 bug，见 8.4）
+    add() 返回的是节点 key（token），不是并查集根：后续面的合并会换根，若记录
+    存根，翻译链号时 KeyError（用户现象："点一下就报
+    Loop Resample failed safely: (0.1875, (('UVMap', ...),))"）。
+    翻译在所有面捕获完后统一做：indices[rail][builders[rail]._find(token)]。
+
+6.6 _sample_chain(chain, u, periodic)
+    单点链直接返回该点值（扇心极点每面一条单点链 → 共享极点也保岛）。
+    closed 链：末尾追加 (首 u + 1, 首值)；u < 首 u 时 u += 1（跨 0/1 连续）。
+    开链：两端夹取。
+    段内线性插值；factor 夹 [0,1]；factor>=1 返回 second.copy()、factor=0 经
+    lerp 精确返回 first —— 这是 N→M→N 逐位复原的关键，不要"优化"掉。
+
+6.7 周期层 _periodic_layers / _lerp_uv / _lerp_wrapped
+    仅当区域闭合且该层捕获范围落在单 tile [-1e-4, 1+1e-4] 内，才认为周期=1 并做
+    ±1 展开（跨缝面存 0.99/0.01 时普通 lerp 会扫回 0.5）。跨多 tile 的是图集
+    偏移，周期未知，猜了会整 tile 平移（历史 bug，见 8.3）。
+
+6.8 特殊几何
+    - FAN 极点：rail=1 单点链；u=None 的角用面中心取样（单点链与 u 无关）。
+    - NGON_CAP：全部角在 rail=1，面边含跨 0/1 边 → 整环一条 closed 链。
+    - 深度>1 区域的外排面：捕获时跳过（重建把多排塌缩成一排梯带，只有内排有
+      对应面）。
+
+6.9 corner 顶点色与 UV 共用链（capture_region_faces / apply_region_faces 扩展）
+    【Blender 5.2 的 BMesh 颜色 API 事实，实测于 5.2.1 LTS】颜色按"字节/浮点 ×
+    点域/角域"分裂成四个集合，元素一律是 4 分量 mathutils.Vector，直接
+    loop[layer] / vertex[layer] 读写，没有 4.x 的 .color 包装，也不再需要
+    mathutils.Color：
+      BYTE_COLOR/CORNER  → bm.loops.layers.color
+      FLOAT_COLOR/CORNER → bm.loops.layers.float_color
+      BYTE_COLOR/POINT   → bm.verts.layers.color
+      FLOAT_COLOR/POINT  → bm.verts.layers.float_color
+    BMCustomLayer 上也没有 data_type 可读（返回 None），"是哪一类"只能靠遍历哪个
+    集合得知，所以 kind 由遍历方给定。
+    _corner_layers(bm) 把 uv + 两类 corner 颜色统一成 {(kind, 层名): (kind, layer)}，
+    捕获与应用共用它，避免两边键序写歪。corner 值全部按 Vector 原样存（含 alpha）。
+    颜色进入 _RailBuilder._key（对所有分量逐位舍入），所以"同 u 同 UV 但颜色不同"
+    的角也会分裂成两条链——颜色跳变被当作缝一样保留、不被平均。这是有意的取舍：
+    宁可让颜色硬边界像 UV 缝一样切链，也不丢色。
+    _lerp_value 按层分发：仅"闭合区域且落在单 tile 内"的 UV 层是 periodic，走
+    _lerp_uv 的 ±1 展开；颜色层与多 tile/开链 UV 一律走通用 Vector.lerp（factor 0
+    精确返回 first，保住逐位复原）。bounds/periodic 只对 UV 计算。
+    点域颜色不在这里处理，见 5.10。
+    无颜色层时 value_layers 只剩 uv、_key 分量数=2、分发全落到旧的 Vector.lerp 分支
+    → 逐位行为与扩展前完全一致（零回归）。operators 不需要为此改动（都在这两个函数
+    内部完成）。
+
+
+6.11 采样器的 anchor 语义（curves.py，8.26）
+    sample_catmull_rom_curve(curve, count, anchors=())：
+    anchors 非空**且**（count ≠ 源控制点数 或 源 profile 无效走均匀回退）时，改走
+    _pinned_samples——按锚点把曲线切成若干弧段，用 _allocate_interval_segments 按
+    弧长比例给每段分配段数（每段至少 1 段），锚点处精确取 control_points[i]，段内在
+    弧长上均匀取样。段数放不下全部锚点时 _pinned_samples 返回 None → 退回今天的
+    普通分布（**静默降级**，不报错、不失败）。
+    为什么 count == 源段数时不钉：那条路径本来就是逐控制点恒等采样（每个源顶点都
+    被踩中），钉了反而破坏 N→M→N 逐位复原（不变量 a）。
+    sample_by_arclength(..., forced_anchors=())：把锚点并进 detect_feature_anchors
+    的结果再排序；随后 _limit_feature_anchors 在段数吃紧时仍可能按转角强度把锚点丢掉
+    ——同样是静默降级，因为这条只在 curve is None（拟合失败）时才走。
+    诊断：控制台每步打印 [Loop Resample][diagnostic] seam-crossings path0:[3,12]->15 …
+    方括号里是该 path 被钉住的源顶点序号，箭头后是目标段数。若方括号比目标段数还长，
+    就是降级了（该步仍可能塌陷）。
+
+--------------------------------------------------------------------------------
+7. UI / 算子 / 注册
+--------------------------------------------------------------------------------
+7.1 ui.py：无会话→"进入调整"；有会话→ +/-（loop_resample_step delta=±1）、
+    确认（confirm）、取消（cancel）。派生值（当前段数等）不进 UI 控件状态。
+7.2 operators.py：四个 MESH_OT_loop_resample_* 算子；_replace_edit_bmesh 做
+    staging mesh 往返；_redraw 触发视图更新；异常统一 report "failed safely"。
+7.3 __init__.py：register/unregister；unregister 调 sessions.clear() 注销 timer。
+
+--------------------------------------------------------------------------------
+8. 踩坑史与历史决策（改属性传递前必读）
+--------------------------------------------------------------------------------
+8.1 横档连不上/连多（早期）：rung 匹配只看内轨 u，共享内顶点的两条横档分不清 →
+    加 outer_u 二级代价（5.7）。
+8.2 跨路径的缝断开：缝边锚定共享路径顶点记 u（5.5），使缝在相邻区域间连续。
+8.3 盲目 ±1 周期展开毁掉图集层：改为 _periodic_layers 限定单 tile 层（6.7）。
+8.4 并查集换根导致 KeyError：记录改存 token，统一 _find 解析（6.5）。
+8.5 wrap edge 记不到：检测移到同连通块跳过之前（6.3）。
+8.6 逐面夹取导致单岛撕裂（第 8 步初版）：初版每个新面只在"匹配源面自己的两个
+    角"之间插值并夹取 → 共享新顶点的两个新面读不同角对 → 岛裂成碎片+重叠
+    （用户截图：UV 视图黑缝与碎片交替）。改为按岛分链后修复（6.3/6.4）。
+8.8 交互模型重构（提交 e9ffa1e 内）：从"每步捕获"改为"进入时锁定源"，动机是
+    每步捕获的精度累积丢失；详见 3.2。
+8.9 【2026-09-20，待手动验收】闭环 anchor 改为 seam 优先：闭环只有起点顶点保留
+    元素身份、其余全部删除重建，新顶点相位从 anchor 起算，所以 seam 不在 anchor 上
+    时加减后会被吸附到最近的横档而偏移。改为 _closed_loop_anchor（core/paths.py）：
+    闭环 start 从"index 最小"改成"关联 seam 边的顶点里 index 最小，无 seam 候选则
+    退回 index 最小"，只读冻结源的 edge.seam，确定性可复现；多环能相位同步时
+    synchronize_closed_path_phases 仍以 index 最小重锚、覆盖本改动 → 多环同步行为
+    不变；开路径与无 seam 单环行为完全不变。
+8.10/8.11 顶点色 + 顶点组权重（首版设计与被 4.x API 打回的过程已归档）：
+    5.2 真 API：4 分量 Vector，loop[layer] / vertex[layer] 直接读写，没有 .color 包装。
+    教训：BMesh 自定义数据的任何改动，先在 headless Blender 里打印验证再上手写。
+8.12 面匹配改重叠多数：_match_face 从"最近面中心"改为"新面 u 区间与源面 span 重叠
+    最大者胜"（重叠为 0 才退回最近），修掉中心点越界导致整面跳变；边界与平票见 6.4。
+
+性能史（原 8.15-8.25，793 行打点日志已归档，只留结论）
+    打点先行：两处 O(n²)（path_projection、_match_face）合计只占全步 0.5%、DP 空转
+      不到 1%，**85% 的时间在 _rung_crosses_boundary 一个函数上**（946.7ms / 10106
+      次 = 93.7µs/次，占整次 1112ms）。本件最重要的一条历史结论：别凭直觉优化。
+    第一波（已提交 8e4abeb 位置缓存 + bdb1e5d 标量包围盒预筛）：单列点×线比较从
+      36600 降到 80，operator-total 1112.4 → 295.4ms（3.77×）。
+    第二波（8e7848d 边界索引分格到 n^(2/3)、96f6e45 打点、fb3f2c3/ca975ae 去分配化、
+      8bbef13 删 DP 四个每候选计时对、6787efc capture 会话级缓存）：operator-total
+      最终 63~83ms。
+    capture 缓存判据（6787efc）：同一次进入编辑模式连按两次加减，第一次
+      cached=False、第二次起 cached=True（~14.5ms → 1~3ms），**两次结果必须逐位
+      相同**是它唯一的正确性验收点；退出编辑模式再进才清缓存。
+    等价性验收尺（贯穿整条线）：无缝网格走位必须逐位不变（无 seam → seam_nodes
+      为空，只加 0.0）。
+
+8.26 【2026-09-21，已实现，尚未提交】缝不再约束几何：删掉 planner 的整套缝机器，改为建好后按"接得上未修改区"事后赋予
+
+    来源：用户把需求重新表述了一遍——"我其实并不想用那些属性来约束我的点线面，只是让它来
+    约束点线面生成后，缝合边属性的赋予"；具体要求是"修改区里面的红边，一定有一段是连着
+    修改区与未修改区的交点的，另一端理想情况下也能连上；两端连上、中间连不上我也能接受"。
+    这直接推翻了 8.19→8.24 五轮迭代的**前提**：那五轮全都在让缝去约束阶梯怎么走。
+
+    现象（8.19~8.24 一直没修好的那个）：一条缝横穿条带时，红线在受影响带里断开或停在
+    离未修改区差一列的地方。8.21/8.22 把它归因于"阶梯偏移 d 只能单向变化"，8.24 归因于
+    "1e4 罚分把三角赶离缝列"，两次都在改 DP 的代价函数。
+
+    根因（这一轮才看对的）：`apply_region_edge_attributes` 里**根本没有连通性概念**。它对
+    每条源记录独立做 `min(every_rung, key=rung_cost(...))`，`outer_u` 只当二级 tie-break。
+    于是一条缝的远端可以落到"离未修改区边界顶点差一列"的横档上——红线就停在那儿。
+    而 planner 那边无论怎么罚分、怎么切段，都改变不了这个匹配规则；反过来，为了让缝落在
+    特定格点上而付出的代价（8.22 的面数上涨、8.24 的三角簇）全是白交的。
+
+    关键事实（决定了新做法为什么可行，都已在代码里核对过）：
+      - 阶梯图是**连通**的，而且每个外轨顶点上至少挂着一根横档（`_transition_face` +
+        `_advance`：QUAD 在节点 (i,j) 和 (i+1,j+1) 各出一根横档，INNER_TRI 在 (i,j) 出两根，
+        闭环还有取模回绕那一根）。所以"两端连上"这件事**不需要几何让路**，恒成立。
+      - 面数 = max(inner_steps, outer_steps) + extra，而 extra 是"为了保缝多花的面"
+        （8.22 引入）。删掉缝机器后 extra **恒为 0**，面数回到最小值。
+      - 不存在"先三角化再合并成四边形"这一步，所以"保护某些边不被四边形化"这个需求
+        （用户提过）解决的是一个不存在的问题——每根横档都是真边，缝永远不需要四边形对角线。
+      - 定轨（outer_path_index is None）时，捕获记的 `outer_u` 与重建后
+        `region_outer_parameters` 算出的 `outer_parameters[k]` 是**同一个点在同一条冻结折线
+        上的同一次投影**，逐位相同。所以用一个极小容差就能判"这条缝当初是从哪个存活的外轨
+        顶点出发的"，不需要模糊匹配。
+
+    做法（一个提交，不拆）：
+      新增 —— `core/attributes.py`（+~50 行）
+        * `OUTER_ANCHOR_TOLERANCE = 1e-7`：只用来把"逐位相同"与"真的是另一个顶点"分开；
+          相邻外轨顶点在归一化参数上至少差 1/count，所以这个值宽得离谱也安全。
+        * `_outer_anchor_index(outer_u, outer_parameters, closed)`：返回这条记录的远端当初
+          所在的那个**存活外轨顶点**下标，找不到就返回 None。
+        * `apply_region_edge_attributes` 里：先按外轨顶点把横档建索引 `rungs_by_outer`
+          （把缝的查找从"记录 × 横档"的乘积里摘出来），然后**只有 seam 记录、且外轨是定轨**
+          时才把候选池收窄到 `rungs_by_outer[anchor]`；其余一切记录仍走全池。
+          池为空/锚点找不到/外轨本身是被重采样的路径（outer_path_index 非 None，两端都是
+          新点）/FAN、NGON_CAP（压根没有外轨）——全部退回今天的位置匹配，不会 KeyError。
+        * `rung_cost` 的排序键从 `(primary, secondary)` 改成
+          `(primary, secondary, inner_index, index)`。**必须**以 `inner_index` 收尾：
+          共享同一条路径的两个区域各自遍历自己的面来枚举横档，`index` 在两边不可比，
+          而 `inner_index` 是 `updated_paths[path_index][0]` 的下标、两边算出来一模一样。
+          这是"红线不在路径上折"的唯一保证（8.22 靠 pinned 集合保证，那套已删）。
+      删除 —— `core/planner.py`（−354 行里绝大部分）+ `core/diagnostics.py`（−40 行）
+        * `SEAM_ALIGNMENT_PENALTY = 1.0e4` 常量；
+        * `_rail_frame_point`、`_seam_rung_nodes`、`_seam_alignment_cost`（8.19）；
+        * `_seam_offset_band`、`_drop_unreachable_seam_nodes`、`_reachable_step`、
+          `_seam_waypoint_chain`、`_build_segmented_transitions`（8.21/8.22）；
+        * `_build_transitions` 的 `seam_nodes/start_inner/start_outer/end_inner/end_outer`
+          五个形参、`_local_transition_pair_score` 的 `seam_nodes`、
+          `_beautify_transitions` 的 `seam_nodes/swap_boundaries` 与 `segment_frames` 回放表；
+        * `build_ordered_strip_plan` 里 seam_found/seam_band/seam_nodes/seam_dropped/
+          seam_waypoints/solve_seam_nodes/pinned_columns 整块，以及包着
+          `_build_segmented_transitions` 的 try/except ValueError 降级；
+        * `diagnostics._seam_node_list` 与 `print_seam_rungs`。
+        * **保留** `diagnostics.print_seam_anchors`——那是 UV 锚点，走的是另一条通道。
+      顺手 —— `_beautify_transitions` 里原来 `segment_frames.get(index)` 恒为 None（未切段时），
+        现在改成函数开头算一次整带 `distribution_frame` 传下去。`_triangle_distribution_cost`
+        的 `frame is None` 分支算的就是同一个整带 frame，所以这一改**逐位等价**，只是省掉
+        每次调用重算。`align_outer_boundary` 的 docstring 里"one nearest seam"改成
+        "one rotation"——planner 现在已经不认识 seam 了，那句话会误导。
+
+    为什么是一个提交、不按文件边界拆两个：加了不删 → 旧的钉点还在，会把新选择盖住，测不出
+    东西；删了不加 → 比今天更差（缝完全随机落）。两者都不是"能独立验收的一步"。
+    要回退就整个 revert 到 6787efc。
+
+    无 seam 的网格**逐位不变**（这是可证的，不是期望）：
+      旧路径下 seam_nodes = {} ⇒ `_seam_alignment_cost` 恒返回 0.0，所有代价非负 ⇒ 不存在
+      −0.0 扰动排序；`_build_segmented_transitions` 在 waypoints=() 时 ends 只有一项
+      (inner_steps, outer_steps)，退化成一次 `_build_transitions(0,0→inner,outer)`，
+      swap_boundaries 收尾 discard 成空集；`segment_frames` 为空 ⇒ 传 None ⇒ 走整带公式。
+      三条都和新代码逐位对上。
+
+    打点变化（读日志时注意）：
+      - `seam-rungs` 这一行**字段被砍**：不再有 wanted/carried/chain/segments/
+        extra/rail/band/dropped/pinned/nodes，只剩 region= / path= / rungs=N 与每条
+        横档取的"内>外"（带 `<偏好` 后缀 = 缝滑到了隔壁列）。8.19/8.21/8.22/8.23/8.24
+        五节里所有"看 seam-rungs 十字段"的判据**全部作废**，别再拿它们验收。
+      - `seam-anchors` 一行已改名 `seam-crossings`（UV 锚点通道本身没动）。
+      - `scan-rung-match` 的 work 口径变了：原来是 `len(records) * len(rungs)`（上界），
+        现在是**实算的比较次数**，含 `_outer_anchor_index` 那一次外轨扫描。缝记录只扫自己
+        那一小池，所以 work 会明显下降——这是真的少算了，不是打点坏了。
+      - `scan-plan-expand` 的 work 也会降：不再有切段带来的重复展开。
+
+    仍然读 `edge.seam` 的地方（只剩两处，都是**故意保留**的）：
+      - `core/paths.py:loop_start_vertex`——闭环起点优先选一个缝穿过的顶点。它不约束几何
+        （只是把闭环旋转一下，采样点集合不变），而且对新的事后赋予**有利**：起点在缝上，
+        跨过回绕点的那条缝正好有一根横档在那儿。删掉是纯退化。
+      - 【本条**已被 2df3b9c 作废**，见 8.27】原文：`core/surface.py:rail_seam_anchors`
+        ——注意它读的是**真 UV 链的端点**，不是 edge.seam（8.14 起就是，已归档）。这是唯一一条
+        允许约束几何的通道，也是将来"是否保留 UV"开关要管的那一条。
+        作废原因：`rail_seam_anchors` 这个函数已不存在，"唯一一条约束几何的通道"改由
+        `seams.region_seam_crossings`（读 `edge.seam`）→ `region_seam_waypoints` 承担，
+        **读的是缝合边标记而不是真 UV**。所以 8.27 那个"是否保留 UV"的开关管不到它，
+        也不该管到它——它决定的是新顶点落在哪儿（几何），开关决定的是角上的 UV 数值。
+
+    本节**没做**（用户明确排在后面）：【8.27 已做其中一项】UV 开关 + N 面板属性 + 进入
+    会话时锁存（做成了 U 键 + 全局位，见 8.27；面板属性那半项没做）；把 UV 约束
+    限定到 `bm.loops.layers.uv.active`；顶点倒角权重捕获（唯一还缺的属性，约 15 行）；
+    退化 UV 的事后计数上报；发布前把 diagnostics.py 里无条件 print 收进开关。
+
+--------------------------------------------------------------------------------
+8.27 【2026-09-23，已实现，尚未提交】真 UV 开关：默认关掉，U 键在首次重建前可翻转。
+--------------------------------------------------------------------------------
+    动机：多数会话在纯建模，UV 是最后才展的；对一个切得稀碎的模型逐角插值 UV 是
+    没有意义的工作，甚至有的模型根本没有 UV 层，照旧跑一遍捕获、照旧打满整屏
+    [uvdiag] 更是白干。所以默认关。
+    ⚠ 本条记录着尚未提交的改动；commit 之后本行即可删除。
+
+--------------------------------------------------------------------------------
+8.28 【2026-09-23，已提交 916699d】形状轴不改连线：复用 transitions + 外轨朝向。
+--------------------------------------------------------------------------------
+    现象：滚 Shift/Ctrl 时条带横档配对会跳。实测同一条 3x2 带，tSmooth 0.10→0.15 一次
+    IQ→QI，gap 由 0.001298 涨到 0.089791、再涨到 0.285015，单调放大。根因是 DP 每格都
+    按当前坐标重新表决；滞回（ε 阈值）量化后否掉——要挡住整段平滑需要 ε≈70%，等于废掉求解。
+    做法：planner 把 build_ordered_strip_plan 拆成 _search_ladder（DP+beautify，返回
+    transitions/score/complete/swapped）与 _ladder_plan + _finish_ladder_plan；新入口收
+    frozen/ladders/decision。段数不变时只按旧序列重算面与节点并跑几何校验；过不了就重解
+    且**覆盖**槽（否则每格都会重演一次跳线）。缝 pins 被丢弃的退化解一律不写、并删掉旧槽。
+    外轨朝向改为 align_outer_boundary 返回 (orientation_index, rotate)，与连线一起冻结、由
+    apply_outer_decision 重放；phase_locked 区域不缓存：同步映射保证两轨等长，段数步数相等时
+    _allowed_transitions 只允许 QUAD，序列唯一，无连接选择可冻（仅省下少量几何/建梯开销）。
+    槽存 ResampleSession.laddings，键 region_index，随 session 对象销毁；不能存 region dict，
+    因为 capture 每步 _thaw_capture 重放成新 dict。shape is None（进入首步 + 右键取消）强制
+    重解，所以 9.1 e) 逐位还原不受影响。
+    取舍：同一组三值下"先平滑再改段数"与"先改段数再平滑"的连线可以不同——这正是形状继承要
+    的代价。shape/state.py 与 ui/interactive.py 里"滚动顺序不可能影响结果"已按实情改写：
+    点的位置仍与顺序无关，只有连线带历史。
+    性能：形状 tick 省 plan-align + plan-build + plan-beautify + plan-geometry ≈0.5ms/region
+    （本例 operator-total 5.5~6ms 的约 9%），条带越大省越多。
+    新日志：ladder-final 加 wiring=dp|reuse|reflow；align 在复用格打 replay=chosenN rotate=M。
+    待验收：1) 只滚 Shift/Ctrl 时连线一格不动、wiring 恒为 reuse；2) 大幅平滑+弯带时 reflow
+    出现频率；3) 带缝模型在 wiring=reuse 下缝 rung 是否仍钉在 anchor 上（看 pins= 两行）；
+    4) Enter 提交后再进会话，连线按新形状重解、跨会话不残留。
+
+--------------------------------------------------------------------------------
+8.29 【2026-09-23，已提交 5ec423c】DP 对角带剪枝：只留单一三角方向可达的格点。
+--------------------------------------------------------------------------------
+    动机：100x104 带（Δ=4）实测 plan-build 376.86ms = 整步 506ms 的 74.4%，且 DP 状态数
+    随条带长度**二次**增长（100x104→10903 态、400x404→163603、1000x1004→1009003），而其中真正
+    能补全成解的只有带内的 903 / 3603 / 9003 个。8.28 的形状轴缓存救不了这里——滚段数时
+    frozen_ladder(refresh) 恒返回 None，所以带剪枝是唯一打在"长带 + 滚段数"上的改动。
+    做法：_build_transitions 里 triangle_count 下方加 final_offset / low_offset / high_offset /
+    band_limited 四行，候选循环 `next_inner > inner_steps` 那个 continue 之后加一个带判断。
+    为什么等价（改 _allowed_transitions 的人必须回来看这段）：一个梯子最多只授权一种三角
+    （I<O→QUAD+OUTER_TRI，I>O→QUAD+INNER_TRI，等长→仅 QUAD），于是 d = outer-inner 只朝
+    一个方向走，任何能补全到 (I,O) 的路径其每个前缀都满足 min(0,Δ) ≤ d ≤ max(0,Δ)。带外态
+    不只是自己到不了终点——它的**父态也全在带外**，所以没有任何存活态是经由它到达的：删掉它
+    不改变任何一层的候选集合、不改变字典插入顺序，min() 与"并列先到先得"逐比特不变。同一条
+    事实 _seam_waypoint_nodes 早就在用（日志里 `dropped=[(22,28)=6:band ...]` 的 :band）。
+    守卫：band_limited 不是"假定单向"，而是**读 allowed 算出来的**（非 QUAD 种类 ≤1）。将来
+    若放开两种三角方向，band_limited 自动为 False、退回全矩形搜索——只会变慢，不会变错。
+    顺带：operators.py apply_counts 补 open-bmesh 计时标签。session.open_bmesh 是 31k 面的全
+    拷贝，之前整块混在 resid 里定不下来；它落在 _resample 的 reset_scans 之前，所以只能用
+    print_timing，用 accumulate_scan 会被清掉。
+    性能（待实测）：100x104 预期 plan-build 370→~50ms，scan-plan-expand work 13126→~1800。
+    收益随段数差缩水（N=100 时）：Δ=1→34x，Δ=4→12.1x，Δ=8→6.9x，Δ=40→2.2x，Δ=0→本来就 1x。
+    待验收：等价性判据是日志逐字不变——wiring= / score= / kept= / nodes= / gap= / pins= 六项
+    一个字符都不许动。**闭合/环绕带（closed=1）两本日志里都没出现过**，纸面推理之外必须
+    专门测一次。
+
+--------------------------------------------------------------------------------
+8.30 【2026-09-24，已提交 c3671b6】HUD 若干 + 右键入口改走转发算子 + 删除 N 面板 + 抬升全撤。
+--------------------------------------------------------------------------------
+    范围：全是 UI 与入口，planner / 几何一行未动。
+    a) 【本项与 b) 描述的机制仍在文档里当教训，代码已于同日全部删除，见末尾"抬升全部移除"】
+       抬升量拆成两项（ui/hud.py 顶部两个常量）。_HIGHLIGHT_LIFT_RATIO=0.002 是"沿点→眼
+       挪自己距离的 0.2%"，管尺度不变：屏幕上恒为 ≈0.002×焦距像素，与模型大小无关。
+       _HIGHLIGHT_LIFT_SLOPE 是新增的坡面项，几何含义就是 tan(允许原谅的坡角)——圆点是
+       一个圆盘，盘沿踩在比圆心更靠近相机的面上，近多少 = 盘的世界半径 × tan(坡角)。
+       0.5≈27°、1.0=45°、3.0=72°。当初只有 RATIO 时圆点被啃外半圈，缺的就是这一项。
+    b) 【别再走回头路】沿"点→眼"抬升**只在透视下不动像素**——本条就是 a) 那套代码最后被整体
+       删掉的理由，机制本身仍然成立。正交的"眼睛"是视轴上一个合成
+       点，同一抬升会把 overlay 拖向视口中心，横滑量/深度偏置量 ≈ a/D（该点离轴距离 ÷ 眼睛
+       距离），所以"贴很近 + 带子偏在一边"时同一个 SLOPE 会明显漂。实测 3.0 漂、0.1 不漂但
+       啃半边回来，当时取 0.5 折中，且**取景变了要重调**——正是这句"要重调"暴露了旋钮选错。
+       彻底解法是 clip-space 深度偏置
+       （shader 里 p.z -= bias*w，x/y/w 不动 ⇒ 像素位置逐位不变，透视正交都不会漂）：圆点那
+       半自有 shader 可以做，线那半要自己重写宽线 shader——用户判定太复杂，本轮不做。想
+       立刻摆脱横滑就切透视（小键盘 5），那时抬升系数可以直接给 1.0~1.5。
+    c) 段数读数：_counts_text 在各路径一致时折成一个数（5 条边各 5 段 → "5"），不一致照旧列
+       "4, 7, 4"。from→to 保留，两侧各过一次折叠，于是 "[Wheel] Segments 4 → 6"（同日跟进：
+       中间的 "now" 一词按用户要求去掉，只留箭头）。
+    d) 尺寸与 yl_bevelflow 对齐：他的行从不乘 context.preferences.system.ui_scale，之前在他
+       的固定值上又乘了一次，整行偏大。现在 scale 参数已从按钮行各函数删除，只有 3D 数字和
+       描边点仍跟接口缩放走。
+    e) 计数 chip 未激活时改用与其余未激活 chip 同一套灰；红字样式 _CHIP_STYLES["active"]
+       连同引用一起删除。默认/激活仍蓝。
+    f) N 面板只留按钮，下面三行提示删除。【同日跟进：整块已删，见本节末"入口收口"一段】
+    g) session.begin：没有任何边被选中时，把"两端点都被选中"的边当作源，所以点选模式下框
+       一圈顶点也能直接滚。**待验**：框选一圈会把横档也点亮 → selected_paths 可能判成分支
+       而拒绝，报的还是那句 "Select one or more non-branching paths."。
+    现象：右键菜单项在、能点、点了没有任何反应——不报错、无 overlay、滚轮无效；而 N 面板
+    按钮正常（该面板同日已删，见"入口收口"一段），Python 控制台 INVOKE_DEFAULT 正常返回
+    {'RUNNING_MODAL'}。
+    根因：modal handler 绑在算子被 invoke 的那个 region 上，而从菜单进来时那个 region 是
+    弹出菜单自己；菜单项一激活 popup 就被拆，handler 随之消失，Blender 转调 cancel()
+    （ui/interactive.py）→ _finish() 结束会话、网格未动。这就是"什么都没发生"的形状。
+    注册状态无关（那三行探测已证）；"modal 只认 PRESS 所以右键那一下不会误触发撤销"的推理
+    成立，但与本故障无关——事件根本没进 modal。
+    做法：新增 mesh.loop_resample_interactive_entry（bl_options=INTERNAL，poll 转调 modal
+    的），execute 里用 bpy.app.timers 延一个事件循环步再 INVOKE_DEFAULT；那时 popup 已拆、
+    上下文回到视口，也就是控制台那条已验证能用的条件。菜单项指向转发算子。
+    第二个故障（转发算子生效之后）：会话起来了、滚轮能改网格，但**整块 HUD 一个像素都没有**。
+    根因是延后一步的 context 只带 window、不带 area，而两个 draw handler 每帧都拿
+    area.as_pointer() 与 operator.hud_area_ptr 比对，None 意味着永远不等。修法是
+    ui/interactive.py 里的 _viewport_area(context)：context.area 是视口就用它，否则向 window
+    要第一个 VIEW_3D。"入口不同、结果不同"这条到此为止。
+    入口收口：用户判定"后面都是通过右键调用"，故 VIEW3D_PT_loop_resample 整类删除，
+    ui/panels.py 只剩菜单的 draw 函数与两个文案常量，ui/__init__.py 的导出和根 __init__.py 的
+    _CLASSES 同步删掉。仍未删（等点头）：operators.py 的 MESH_OT_loop_resample_begin 与
+    MESH_OT_loop_resample_step 是面板两击时代的算子，面板没了之后全仓库再无人调用，只靠
+    F3 / 控制台可达。
+    顺带：unregister 里 VIEW3D_MT_edit_mesh_context_menu.remove() 加了 ValueError 容错。
+    源文件每次重载都重新导入，注册进去的函数对象未必是这一个；异常抛在那儿会让所有类留在
+    注册表里，下一次 enable 反而报 class already registered。
+    抬升全部移除（同日最终决定，用户原话："先不管他穿不穿，只是保持正常的原地显示"）：
+    先修了一半（候选点"最远→最近"排队、左右各测一次，让 _world_per_pixel 不再一失败就把整批
+    SLOPE 清零）之后，实测仍然漂，而且**转动视角时描边会跟着动**——这正是 b) 预言的形状，说明
+    这条路无论怎么标定都还在"用一个数同时管深度偏置和横滑"。故 a) 那套整体撤掉：
+    _HIGHLIGHT_LIFT_RATIO / _HIGHLIGHT_LIFT_SLOPE 两个常量、_eye_position / _eye_signature /
+    _world_per_pixel / _lift_ratio / _lifted / _lifted_batches 六个函数、_HIGHLIGHT["view"]
+    这个缓存槽全部删除，换成 _highlight_batches()——点与线段按 _highlight_geometry 给出的坐标
+    原样入批，批次只在 geometry_key 变化时重建（以前每帧看眼睛，现在完全不看视角）。
+    深度测试维持 LESS_EQUAL（x-ray 时仍是 NONE），所以现在掠射面上圆点被啃、描边时隐时现是
+    **预期行为**，不是回归。下一步要治它，只有 b) 末尾两条路可走：clip-space 深度偏置，或者
+    干脆 overlay 恒在最前（depth test NONE）。_to_pixels / _window_region 没删，3D 数字定位
+    还在用。
+    待验收：1) 右键菜单项 → 会话起来（overlay 与 chip 行都出现），滚轮有效；2) 菜单里本项与
+    LoopTools 的先后（取决于加载顺序，真机看一眼）；3) 转视角 / 缩放时描边与圆点**钉在网格上
+    不动**（本轮唯一的硬指标）；作为代价，斜面上圆点可能被啃半边、背面会消失，这些先记着不管；
+    4) 点模式框一圈顶点能否直接滚（见 g 的横档问题）；5) 反复 enable/disable 五次不出现
+    "already registered"；6) N 栏里 Resample 标签页已消失，视口只剩右键一个入口。
+
+--------------------------------------------------------------------------------
+8.31 【2026-09-24，已提交 c3671b6】全仓库用户可见文案走 i18n（英/简中，跟随 Blender 语言）。
+--------------------------------------------------------------------------------
+    范围：只有文案层。几何、planner、会话逻辑一行未动，改的是 raise / report / bl_label /
+    chip 文本这些字符串怎么产生。
+    做法照搬 yl_meshcheckhud：新建 i18n/ 三个文件。
+      - en_US.py：MESSAGES 列表，**英文句子本身就是键**，60 条按用途分组（算子名与提示 /
+        chip 行 / report / 拒绝与失败）。这张表就是唯一清单，加文案先加这里。
+      - zh_CN.py：("*", 英文句子) → 中文，键与 en_US 一一对应。
+      - __init__.py：pgettext(message) 依次试 bpy.app.translations.locale、它的语言前缀、
+        preferences.view.language、它的前缀，最后 en_US；第一张**存在**的表说了算，查不到该
+        键就返回英文。所以漏译只会退化成人人看得懂的英文，不会变成空白 chip。
+    语言开关：没有。用户明确要求"系统说明语言就显示什么语言"，所以只跟随 Blender，插件内不
+    放下拉，也不加 Scene/Preference 属性。
+    语言代码的写法：Blender 简体中文的代码是 **zh_HANS**（见 datafiles/locale/languages 与
+    locale 目录名，没有 zh_CN 这个目录），所以 TRANSLATIONS 同时挂 zh_CN / zh_HANS / zh_hans /
+    zh 四个键，再加一条"取语言前缀"的兜底——将来加繁体就挂 zh_HANT。
+    注册：根 __init__.py 的 register() 第一行 i18n.register()（内部就是
+    bpy.app.translations.register(__package__, TRANSLATIONS)），unregister() 末尾
+    i18n.unregister()。
+    "*" 上下文要不要紧：要紧，因为 register 之后这张表对**整个 Blender** 生效，同名 msgid 会
+    盖掉 Blender 自己的中文。实测把全部 msgid 逐个拿去比对 Blender 5.2 自带的
+    locale/zh_HANS/LC_MESSAGES/blender.mo（39343 条），重合 **0** 条——连小写的 "open"/"closed"
+    都不在其中（Blender 只有首字母大写的 "Open"）。所以通配上下文当前无害；**新加文案时这条
+    判据要重跑一遍**，尤其是那种一两个词的消息。
+    带数字的句子一律改成命名占位符 + str.format，翻译里占位符原样待着，只有周围的字在动：
+    "[Wheel] Segments {entry} → {current}"、"Reverted to {counts} segment(s)."、
+    "Resampled {paths} path(s): {changes}; rebuilt {strips} strip(s) with {faces} face(s)"、
+    "A {kind} curve needs at least {minimum} points."（{kind} 由
+    pgettext("closed" if ... else "open") 单独翻译）、以及 rebuild 里那条
+    "{attached} of {total} rail edges ... (edge {edge} holds face {face})"。
+    坑：chip 的占位符**不能叫 {from}**，from 是 Python 关键字，format(from=...) 直接语法错，
+    所以写成 {entry}/{current}。
+    失败前缀：operators.py 顶部 FAILURE_PREFIX 是唯一一份，抛错时 pgettext(FAILURE_PREFIX)+
+    原因；ui/hud.py 的 _failure_text 在**绘制时**再 pgettext(FAILURE_PREFIX) 一次然后剥掉——
+    两处都过同一张表，所以中文下剥得掉，语言中途变了也不会留下"环带重采样已安全失败：Loop
+    Resample failed safely: ..."这种双重描述。hud 里原来的 _FAILURE_PREFIX 常量已删。
+    生效时机不一样，验收时别混：bl_label / bl_description 是 import 时求值的，改完 Blender
+    语言要 disable/enable（或重载插件）才看到新名字；chip、report、异常文案是绘制/抛出时求值，
+    立刻跟着语言变。
+    新增文案的三步：源码里 pgettext("English...")、en_US.MESSAGES 加同一条、zh_CN 加同键；
+    少任何一步都会分别表现为"中文漏译"（少第二步无所谓，少第三步只漏英文键）——所以第 10 节
+    那种一次性脚本值得再跑：本轮核过 61 declared / 61 zh_CN / 61 requested 三者相等，且没有
+    占位符漂移、没有"带占位符却没 .format"的调用点（脚本按约定放 %TEMP%，用完删，没进仓库）。
+    覆盖边界：翻的是**会出现在屏幕上**的东西——两个入口算子与三个面板算子的 bl_label /
+    bl_description、右键菜单项文字、chip 行四段、所有 report、以及 core
+    里全部 raise 的消息（ValueError 与 curves.py 那条 RuntimeError 都算，漏一条就是一条英文
+    漏进红色 chip）。**不翻**的是 core/diagnostics.py 往控制台打的行（scan / timing / seam-*
+    那些），那是给开发者读的，跟着语言变只会让日志比对失效。
+    同日撤掉的两条文案："Curve smoothing is already at full strength." 与 "Point spacing is
+    already as even as it gets."（ui/interactive.py._step 里到达满格时写在红色 chip 上的那两句）
+    按用户要求删除——到顶之后什么都不必说，chip 上那个百分比本来就在报当前位置。代码里两处
+    self.message 赋值与两张表里的键一并删掉，_step 在到顶时只是直接 return，不再有别的行为差别。
+    待验收：1) Blender 语言切简体中文、重载插件 → 右键菜单项变"滚轮调整环带"；**顺带**把语言
+    设成"System"再试一次——pgettext 读的是 bpy.app.translations.locale 与
+    preferences.view.language，若前者不带已解析的代码而后者仍是 "system"，就会出现"界面是中文、
+    我们这身还是英文"，那一条要回来补（照搬的 yl_meshcheckhud 也是同一读法，所以它要是也这样，
+    就是上游的形状）；2) chip 行四个
+    都成中文且数字照常（[滚轮] 段数 4 → 11 / [Shift] 平滑 20% / [Ctrl] 均分 / [左键] 保留
+    [右键] 还原）；3) 故意触发一次拒绝（选了分叉边）→ 红色警告 chip 是中文、且**没有**"已安全
+    失败"这段前缀；4) 控制台的 INFO/WARNING 中文；5) F3 搜 "Adjust Loops by Wheel" 还能不能
+    找到算子（英文键没了，搜索按 bl_label 走，可能只认中文——这是翻译的固有代价，先确认形
+    状再决定要不要管）；6) 一直滚 Shift / Ctrl 到满格，**什么都不该再冒出来**（那两句"已经到顶"
+    提示本轮已删），chip 上停在 100% 就是唯一反馈；7) 语言切回 English → 一切逐字
+    回到本轮之前的样子。
+
+--------------------------------------------------------------------------------
+8.32 【2026-09-24，已提交 c3671b6，已实测通过；其中的"带位置的 HUD"已于 a9bcf4a 按 8.35 撤掉】入口只在点/面模式出现 + 拒绝不再无声（带位置的 HUD）。
+--------------------------------------------------------------------------------
+    两件事，都是用户点名的。
+    一、菜单项只在编辑模式的**点模式或边模式**出现：poll 里加一条
+    tool_settings.mesh_select_mode[0] or [1]（ui/interactive.py 的
+    MESH_OT_loop_resample_interactive.poll）。菜单项走转发算子、转发算子的 poll 又是它，
+    所以一处生效，三处一致：菜单项、F3 搜索、直接调用。
+    口径改过一次：本轮最初按他的原话"只在点模式和面模式"做的是 [0] or [2]，实测结果就是
+    **纯边模式下入口彻底消失**，而"直接选一条边链"本来是最直觉的用法——他随即把要求改成
+    "点模式和边模式"，于是面模式出局。判据本身仍然只是入口门槛，不是能力检查：算子在
+    任何选择模式下都能跑（begin 先读 edge.select，边模式正是主路），组合模式里只要点了
+    或开了这两个模式之一就照常出现。
+    二、点了什么都不发生 → 现在一定有话说。原来 invoke 里 sessions.begin() 抛 ValueError 只
+    self.report 一下就 CANCELLED，而此时 _start() 根本没跑到，两个 draw handler 都没挂，
+    屏幕上连 chip 行都没有，report 又被下一次点击冲掉——这就是"无声"的形状。
+    做法：
+    - core/types.py 新增 SelectionProblem(ValueError)。**仍然是 ValueError**，所以
+      interactive.operators、面板算子里所有 except ValueError 一行都不用改；它只是多带
+      vertices / edges 两组**局部坐标**（抛出点在脱离的 bmesh 副本上，不知道自己是哪个物体，
+      所以矩阵交给调用方乘）。
+    - core/paths.py 四处拒绝改用它，并把责任元素交出去：分叉（度 ≥3 的点，句子里点名最多 4 个
+      顶点索引，全部点都画红）；既不成链也不成环（把所有选中的点画红）；有边走不到（把没被
+      走到的那些边画红线段）；开放链走不到头（把卡住的那个点画红）。
+      顺带把这几句大白话重写，英文原句是 "Selected edges branch. A path can only have degree
+      1 or 2 vertices." 这类开发口吻，中文原来译成"顶点度数只能是 1 或 2"——用户不知道"度数"
+      是什么。core/session.py begin() 里"什么都没选/选的点连不成边"那句也重写成"请选一条连续
+      的边、一圈闭合的边，或者一排有边穿过的点"。
+      **core/planner / rebuild / curves 那些句子本轮没动**：它们本来就出现在滚动时的红色 chip
+      上，不算无声，只是措辞仍然偏工程；要改是另一轮。
+    - ui/hud.py 加了一套**不依赖 session**的告示：_NOTICE 模块状态 + show_notice(context,
+      area, message, points=, segments=) / hide_notice()。两个 handler：POST_PIXEL 画那条
+      warning chip（高度就用 chip 行的 _CHIP_BOTTOM_MARGIN，因为没有 chip 行跟它抢），
+      POST_VIEW 画红点红边；红线/红点复用 _polyline_shader/_point_shader 与批次缓存，
+      depth_test 用 **NONE**（不测深度：要人去找的那个点通常埋在体内）且**不做抬升**——
+      8.30 已论证抬升在正交下必漂。到期靠 bpy.app.timers 注册 _notice_expired
+      （first_interval=_NOTICE_SECONDS=8.0，回调返回 None 自行退休；它只调 _clear_notice，
+      **不在自己回调里 unregister 自己**）。hide_notice 才做 is_registered 保护的 unregister。
+      重新 show 之前先 hide，所以连点两次不会叠两套 handler。
+    - _draw_failure_chip 里那段"缩字号直到放得下"抽成 _draw_warning(region, text, bottom)
+      给两处共用；_failure_text 多一个 limit 参数：chip 仍按 _FAILURE_LIMIT=96 砍尾，
+      独立告示用 _NOTICE_LIMIT=220——解释选择的那几句**药方在句子后半段**，砍尾正好砍掉。
+    - ui/interactive.py 新增 _show_refusal(context, error)：用 context.active_object.matrix_world
+      把局部坐标变世界坐标，再 show_notice(context, _viewport_area(context), ...)；
+      _start() 开头 hide_notice()（上一次点击的拒绝在这一次开始时就没得解释了）；
+      根 __init__.py 的 unregister() 里 hide_notice()， disable 之后不留悬空 draw handler。
+    语言：en_US / zh_CN 各删 5 条旧句、各加 5 条新句，总数仍是 61 declared / 61 zh_CN /
+    61 requested，第 10 节那个 %TEMP% 校验脚本（本轮重写了一遍：名字表要**跨模块**合并，
+    否则 hud 里 pgettext(FAILURE_PREFIX) 这种 import 来的常量会被误判成动态串）跑过 OK。
+    未实测、只是照抄既有写法的地方：告示的 ui_scale 从**注册 handler 时捕获的 context** 读
+    （draw_hud 一直这么做且一直在跑），但这条路径的 context 可能来自定时器里那次延后 invoke；
+    如果告示文字出来了而红点大小不对或控制台每帧报 context 失效，就是这里。
+    待验收：1) 点模式、边模式（以及任何含这两者之一的组合模式）右键 → 菜单项在；**纯面模式
+    右键 → 菜单项消失**，这是本轮口径改完之后的新代价，确认他确实要面模式出局；
+    2) 点模式选一个十字交叉处（横竖两圈边共用一个点）右键 → 一句中文大白话 chip 出现在
+       原本 chip 行的高度，交叉那个点上是**红点**，且网格没被改动；8 秒后自己消失，中间动视角
+       红点跟着走、不漂；
+    3) 边模式选一条不相交的边链 → 应当直接能滚轮（这是主路，别只测拒绝分支）；边模式把两圈
+       边一起选上（共用交点）→ 分叉提示 + 交点红点；
+    3b) 把点模式和面模式一起开、只选面，然后右键 → 提示"这里没有可以重采样的东西…请选一条
+       连续的边…"还是"分叉 + 一片红点"？这条用来分辨**面模式下 Blender 有没有把边也标成
+       select**，两种都算正常形状，但要把看到的是哪种报回来；
+    4) 点模式乱选几个互不相连的点 → 同 3 的提示；选一整块点阵（能连成边但每个内部点度 ≥3）→
+       分叉提示 + 红点；
+    5) 一次成功的右键（滚轮能用了）之后，屏幕上不该再有上一次留下的红字；
+    6) 语言切 English 重复 2)3)，两句都是英文、都没被砍尾；
+    7) disable 插件时控制台无 draw handler / timer 相关报错。
+
+【实测结果 2026-09-24】他一句"8.32/8.34/8.35/8.37 我都测试了没什么问题"按通过记。注意这份清单
+是 8.35 之前写的：里面的"红点/红边"判据与"8 秒"已随 8.35 / 8.37 作废，他实际验的是**当前**实现
+（一句大白话 + 1.5 秒 + 模型上不标任何东西），不是清单上原文。
+
+--------------------------------------------------------------------------------
+8.33 【2026-09-24，已提交 c3671b6】pair 阶段的 partial-rail 也报出缺的是哪条边。
+--------------------------------------------------------------------------------
+改动（1 行）：`core/regions.py:383-394` 的 pair 阶段 `partial-rail` 打印补上
+`missing_edges=_listed(edge.index for edge in rail - component_edges)`，与单轨阶段
+（`regions.py:204-215`）同一字段名、同一截断规则（前 12 个 + `..+N`）。
+
+**Why:** 他拿"两条挨着的边链，一边 6 段一边 5 段"来问为什么调不动。那本日志里
+`capture-reject path=1 reason=partial-rail covered=5/6` 只说了"差一条"，没说是哪条；
+只能靠 `capture-uncaptured path=1 face=51` 反推。**排查过程没动代码**，本轮只补这一个打点。
+
+顺手记下的结论（免得下一轮重新推）：
+    a) **段数不等本身是支持的**——planner 有 QUAD/INNER_TRI/OUTER_TRI 三种走法
+       （`core/planner.py:337-338`、`core/geometry.py:223-225`），8×12 的带就是他自己模型上
+       真实存在且捕获成功的例子（`operators.py:208` 注释）。
+    b) 判据是**两条链是否同起同终**。pair 阶段要求分量盖住两条轨的**每一条**边
+       （`regions.py:378-393`），`covered=5/6` 会把整块 5 个带面一起丢掉，而不是截掉多出的那格。
+    c) 多出那一截当场救不回来：长轨多出的边对面的面含一个不在任何轨上的顶点，单轨阶段
+       （`regions.py:330`，排除含别条轨顶点的面）和 pair 阶段（`regions.py:350`，要求全部顶点在轨上）
+       都不要它。
+
+验证：`py_compile` 过。他实测后确认了 `missing_edges=[63]` 正是长链最末那一段。
+**"错开一截"已在 8.34 落地**，走的是比这里设想的"切成两段"便宜得多的路子。
+
+--------------------------------------------------------------------------------
+8.34 【2026-09-24，已提交 a9bcf4a，已实测通过】相邻两轨允许错开一截：在 begin 处把两条链裁到带子真正盖住的那一段。
+--------------------------------------------------------------------------------
+做法（一句话）：**裁的是"链"，不是"带子"**。`begin()` 先静默跑一遍捕获，问 pair 阶段
+"这两条轨各要截掉几段"，拿到 `{path_index: (head, tail)}` 后把链本身裁短，再建 session。
+于是下游——曲线拟合、入口段数、`counts`、`region_frames` 冻的现场、`source_rungs` 的索引、
+缝的 `outer_index`、planner 的格子尺寸、rebuild——**全部按一条普通的同起同终带来算，
+一行都没改**。这是本轮最重要的决定：另一条路（把外轨记成"path 的一个子区间"＋用
+`curves.py` 的 `forced_anchors` 钉住切点）要改 5 个文件、并且每处索引都得换算，
+正是他这个项目上出过静默崩的那类活儿（见 [[regression-checklist-executed-vs-listed]]）。
+
+改动面：
+    · `core/regions.py`：新增 `_covered_run`（把"分量盖住了哪些边"读成"头尾各截几段"，
+      中间断开一律返回 None）与 `_trim_proposal`（闭合链一律不裁）；pair 阶段撞见
+      `partial` 时不再只丢带子，还记下裁剪需求；`capture_adjacent_strips` 返回值从
+      `regions` 变成 `(regions, trims)`，并新增 `quiet` 参数给 begin 那次试探用
+      （否则每次右键都会先刷一遍 rejection 噪声）。
+    · `core/session.py`：`_apply_trims`（按 (head,tail) 切 vertices/edges）、
+      `ResampleSession(..., trims)`、`paths()` 每步重新裁一遍（冻住的源上选择仍是原样 7 点）、
+      `begin()` 的"探一次→裁→再探一次"。
+
+四条护栏，任何一条不满足就**整个放弃裁剪、退回今天的行为**（不会把本来能用的选择改坏）：
+    a) 闭合链不裁（环上没有"端点"可裁）；
+    b) 带子在某条轨上**断开**（盖住的边不是连续一段）不裁——那不是"带子到此为止"，
+       是中间漏了面，裁了会把没走到的表面悄悄吞掉；
+    c) 同一条轨被两条带子要了不同的切点 → 冲突 → 该轨的裁剪作废；
+    d) 裁完再静默探一次，若又冒出**新的**裁剪需求（三轨以上才会遇到：截了 0-1 之间的带子，
+       1-2 之间的带子就不成样子了）→ 全部撤销。
+
+模型上会看到什么（**验收就看这个**）：
+    · 两条链之间那条带子正常滚轮重排，段数可以任意增减；
+    · 长链多出来那一截**完全不动**：它的两个端点里，切点那端是裁后链的端点，而开链重采样
+      本来就把首尾两点钉在原位（`curves.py:_pinned_samples` 强制含 0 与 last），另一端没人碰；
+    · 所以带子尽头那条 rung 原地不动，尾巴也原地不动，不会看到"尽头那一格在抖"；
+    · HUD 报的段数是**裁后**的（他这个例子：长链选了 7 个点，chip 显示 6）。
+
+新日志行：`[Loop Resample][diagnostic] rail-trim path=1 kept=6/7 dropped_head=0 dropped_tail=1`
+（只在 begin 出现一次）；`capture-reject ... partial-rail ... trim=0+1`（`trim=-` 表示这刀裁不了）。
+
+已知代价与未做：
+    · 屏幕上**没有**"最后一段我不再管了"的提示，只有控制台一行。他没要求过这一步的提示，
+      而且第一步之后视口高亮就只剩裁后的链（描边读的是实时选择），算是自己露了馅。
+      要不要在屏幕上说一句，【待他定】。
+    · 闭合环错开一截仍然不支持（护栏 a）。
+    · 每次右键多跑 1~2 遍静默捕获（实测他那个网格 3ms/遍），只发生在 begin，不发生在滚轮。
+    · `MESH_OT_loop_resample_begin` / `_step` 两个面板时代算子仍未裁决删不删。
+
+验证：`py_compile` 过；裁剪数学用纯 Python 打桩跑过（`_covered_run`/`_trim_proposal`/
+`_apply_trims` 共 12 条断言，含"连续段头尾各截""中间断开必须 None""越界必须抛错"
+"闭合链必须抛错"），脚本在 %TEMP% 用完即删、不进仓库。
+【待实测】1) 就他截图那组 6 段/5 段：右键之后日志出现 `rail-trim`，滚轮能用了，
+尾巴那一格不动；2) 同一条 6 段链**单独**选（不选旁边那条）→ 不该出现 `rail-trim`，
+行为与今天完全一致；3) 把两条链都选上且它们同起同终（今天本来就能滚的那种）→
+也不该出现 `rail-trim`；4) 选三条链、中间那条两头各错开一格 → 期望是**照旧拒绝**
+（护栏 c/d 生效），不要出现"滚得动但带子尽头在抖"；5) 闭合环错开 → 照旧拒绝；
+6) 滚完之后右键取消 → 网格回到源，尾巴那一格也在原位。
+
+【实测结果 2026-09-24】通过（他原话"都测试了没什么问题"，未逐条点名 1)~6)）。
+
+--------------------------------------------------------------------------------
+8.35 【2026-09-24，已提交 a9bcf4a，已实测通过】拒绝提示退回"只有一句话"：删掉模型上的红点红边，五句带编号的措辞改成大白话。
+--------------------------------------------------------------------------------
+他点名的两条：
+    一、"不需要在模型上通过 gpu 叠加告诉哪里有问题，这个是多余的，还容易出问题"；
+    二、"下面的提示有点抽象，不够通俗易懂…不需要告诉是哪个、在哪个点出问题、编号是什么，
+        编号说了毫无意义，建模的人不关心哪里有问题，只要说是有问题就行"。
+
+改动面（全是删，没有新增机制）：
+    · `ui/hud.py`：`_draw_notice_geometry` 连同它那个 POST_VIEW handler 一起删；`_NOTICE`
+      只剩 text / area / pixel_handler 三个键，`_NOTICE_COLOR` / `_NOTICE_WIDTH` /
+      `_NOTICE_POINT_SIZE` 三个常量删掉；签名 **`show_notice(context, area, message,
+      points=, segments=)` → `show_notice(area, message)`**。
+      8 秒自退休的 timer、`_draw_warning` 那条 chip、`_NOTICE_LIMIT=220` 一字未动。
+    · `ui/interactive.py`：`_show_refusal` 不再乘 `matrix_world`、不再读 `error.vertices/edges`，
+      只剩 `show_notice(_viewport_area(context), str(error))`；`from mathutils import Vector`
+      随之删掉（本文件再无 Vector 可用）。
+    · `core/types.py`：**`SelectionProblem` 整个类删掉**。它存在的唯一理由就是给叠加带坐标，
+      叠加没了它就是死重；四处抛出点回到普通 `ValueError`，所有 `except ValueError` 照旧。
+    · `core/paths.py`：`_NAMED_MAX` / `_named()` / `_segment_coordinates()` 三个辅助删掉，
+      四句重写：
+        "The selection branches at point {where}: a path can only run through points that join
+         one or two selected edges."
+         → "The selected edges fork into different directions somewhere.  Keep only one chain
+            of edges selected."（"度数 1 或 2"这类词一并没了）
+        "The selected edges form neither one open chain nor one closed loop."
+         → "The selected edges do not connect into one chain or one loop."
+        "{count} of the selected edges are not joined to this chain, so the selection is broken
+         in between."
+         → "Some of the selected edges are cut off from the rest, so the selection is broken in
+            the middle."（连数量也不报了）
+        "The selected edges do not run end to end as one open chain."
+         → "The selected edges double back on themselves instead of running from one end to the
+            other."
+    · `core/rebuild.py`："{attached} of {total} rail edges still hold faces the capture left out
+      (edge {edge} holds face {face}): ..."
+      → "This chain of edges does not run between two matching strips of faces, so there is
+         nothing here to resample."
+      **`detach-refused` 那行控制台诊断一字未动**——编号在那里才有用，他排查就靠它。
+
+语言：en_US / zh_CN 各删 5 条、各加 5 条，仍是 61 declared / 61 zh_CN / 61 requested；
+%TEMP% 校验脚本重跑 OK（无 MISSING、无 placeholder 漂移、无"仍在点元素名"）。
+
+**要记住的取舍**：屏幕上的话仍然说"为什么不行 + 该怎么办"（分叉→只选一条边链；断开→中间有缺口；
+不在两排面之间→这里没有可重采样的条带），只是**不再指出位置**。位置信息从此只在控制台的
+`[Loop Resample][diagnostic]` 行里——他排查时看日志，用户不需要看。
+另：8.32 待验收清单里 2)/3)/4) 三条的"红点/红边"判据**作废**，那三条现在只验句子。
+
+验证：`py_compile` 过（改动 5 个 py + 2 个 i18n）；i18n 交叉校验脚本跑过即删、不进仓库。
+【待实测】1) 点模式选一个十字交叉处右键 → chip 出现在原本 chip 行的高度、是一句没有编号的中文，
+    **模型上不出现任何红点红边**，8 秒后自己消失；
+    2) 这条告示挂着的时候转视角 / 切窗口 / 退出编辑模式 → 控制台不该有 draw handler 或 context
+       失效相关报错（少了一个 POST_VIEW，卸载路径比 8.32 更简单，重点确认没留悬空 handler）；
+    3) 边模式选两条同起同终的边链 → 滚轮主路照常（本轮没碰捕获，任何"滚不动"都归 8.34）；
+    4) 让 `rebuild_detached_path` 拒绝一次（8.34 待实测 5) 的闭合环错开就是这条路）→ 屏幕上是一句
+       没有编号的话，控制台仍有 `detach-refused ... edges=[...]`；
+    5) 语言切 English 重复 1)4)，两句都是英文、都没被砍尾。
+
+【实测结果 2026-09-24】通过（"都测试了没什么问题"）。1) 里写的"8 秒后自己消失"当天就被他自己改成
+1.5 秒（见 8.37），验的是新时长。
+
+--------------------------------------------------------------------------------
+8.36 【2026-09-24，已实测通过，已提交 a9bcf4a】极点扇形允许"半圈"：只选一段弧也能滚轮重排。
+--------------------------------------------------------------------------------
+他的现象：极点前面**整圈**选 → 能滚；只选**一段弧** → 右键直接拒绝（8.35 那句"这条边链没有走在
+两排对应的面之间"）。控制台 `detach-refused ... still_attached=16`，每条轨边正好还挂着 1 个面。
+补充：他另一次是模型完整、只是没选成循环，同样不行 —— 同一个门。
+
+根因（一句话）：扇形的第二条轨只有**一个顶点**，`make_outer_region` 里"沿分量边界走一圈找外轨"
+那条通用路走不出任何边（弧的 18 条边界边 = 16 条轨边 + 2 条端辐条，全都含着轨顶点），所以扇形
+一直靠**闭合**这个前提单独开了一条路；弧是开的 → 掉回通用路 → 外轨为空 → 16 个扇形面没人认领
+（外面那圈四边形被当成 CAPPED_STRIP 收走了）→ 轨边删不掉 → `rebuild_detached_path` 按老规矩拒绝。
+
+改动面（4 处，只动"认出扇形"和"重建扇形"两头，中间一行没动）：
+    · `core/regions.py:283`：扇形判定门 `if is_closed and len(non_path_vertices) == 1:` →
+      `if len(non_path_vertices) == 1:`；`regions.py:305` 的 `"closed"` 从硬编码 `True` 改成 `is_closed`。
+    · `core/rebuild.py:149`：`rebuild_triangle_fan(..., closed=True)`。三角形数 = 闭合时 `n`（末块绕回
+      首块）/ 开时 `n-1`；开弧下限 2 个轨顶点。弧两端那两条辐条**从来没被删过**（它们还挂着选择
+      外面的邻居三角形，`cleanup_detached_edges` 只删 `not edge.link_faces` 的边），所以首尾两块新
+      三角形直接复用它们，拓扑天然接得上。
+    · `operators.py:388`：FAN 调用点传 `closed=region["closed"]`。
+    · `core/rebuild.py:34`：新增 `_shared_pole()`，拒绝时如果是"一圈面全收到一个点上"的形状，换成
+      一句指名道姓的话（"…所以要整圈一起选才能重采样"）。旧的通用话术保留给别的情况。
+
+为什么不碰他担心的那些东西：
+    · 扇形**从来不走** planner / DP / 梯级 / 缝对齐：`has_ladder = kind not in {"FAN","NGON_CAP"}`
+      （`operators.py:314`），且 `plan is None` 时 `region_seam_rungs`/`apply_region_seams` 整段跳过
+      （`operators.py:431-438`）。`region["closed"]` 的其余消费方只有 `planner.py` 和
+      `geometry.py:218/238`（两个都要求有 `plan`）+ `operators.py:335` 那行日志 —— 扇形一个都进不去。
+    · 段数：开弧的三角形数由**重采样结果**决定（轨顶点数-1），没有裁链、没有对账，和 8.34 那种
+      "悄悄少一列"是两回事；滚出 M 段就是 M 段。
+    · 8.34 的裁剪对闭合链一律不裁（护栏 a），开弧走的是本轮新开的门，两条路不见面。
+
+UV（**这里更正我上一条的说法**）：我之前讲"硬编码 `True` 会让开弧的 UV 悄悄错一列"，**那句是错的**。
+    UV / 边属性 / 缝读的是 `region["frames"]["closed"]`，而 `frames` 由 `region_frames` 直接从
+    `paths[i][2]`（链真正的闭合性）取，和 `region["closed"]` 不是同一个键（`surface.py:67`、
+    `attributes.py:221`、`seams.py:144/171` 三处可查）。改成 `is_closed` 仍然该做（少一颗地雷、
+    也让日志里 `closed=0` 与实际一致），但它**不是修 bug**，也不会因此改变 UV 行为。
+    开弧的角 UV 走既有参数化通道：扇形面只有一个轨角、外轨 `us` 为空 → `_island_reaches` 跳过该轨；
+    极点没有链，`_sample_chain` 遇单 knots 链直接返回那个值；`_periodic_layers` 开链返回空，不会去
+    接"绕一圈"的首尾。记录的列参数 `u = inner_index/inner_segments` 里 `inner_segments` 开链本来就是
+    `count-1`，所以半圈落在自己那一列上，不需要新参数。
+    真正要盯的是**极点那一个顶点**的 UV/权重会不会被拉开 —— 那不是本轮新引入的（整圈今天就这样），
+    但半圈第一次会和 8.34 的裁后尾巴一起走，所以列进待实测。
+
+已知代价 / 未做：
+    · 弧**必须从这一头连续走到那一头**：中间断一格仍是 partial-rail 拒绝（`regions.py:261` 那道
+      `component_edges & path_edge_set != path_edge_set` 的门一字未动）。
+    · 新话术 `_shared_pole` 的触发路径是**推断**，不是实测：门放开后还能落到这里的，只剩"轨边上的面
+      全是三角形、共享同一个点、却没被扇形门收走"的残局（例如扇形里混进一个四边形，或分量面数 ≠
+      轨边数）。到底哪几种选法会走到，让他测的时候顺带确认，日志 `detach-refused` 会说话。
+    · 端点那两块新三角形的形状由极点位置决定（首尾两块共用原来那两条辐条的方向）—— 整圈时同样如此。
+
+验证：`py_compile` 过（`core/regions.py` `core/rebuild.py` `operators.py` + 两个 i18n + `core/paths.py`
+`core/types.py` `ui/hud.py` `ui/interactive.py`）；i18n 交叉校验 = 62 declared / 62 zh_CN，静态字面量
+55 条全部解析到已登记 msgid，无 MISSING / 无 ORPHAN / 无占位符漂移，脚本在 %TEMP% 用完即删。
+【待实测】1) 就他截图那组：边模式选那段弧 → 右键能滚，滚完扇形三角形数 = 轨顶点数-1，弧两端那两条
+        辐条仍在原来那两个轨顶点上（没挪、没多、没少）；
+    2) 同一条弧 N→M→N → 与源逐位一致，重点是两端那 2 个三角形和极点连出去的边；
+    3) UV：极点那个顶点的 UV 前后不动；弧两端缝上的 UV 没被拉到别的岛上；UV 开关关掉时行为与 8.27 一致；
+    4) 顶点组权重：极点顶点权重不变；
+    5) 一条弧 + 另一个正常闭合环同时选（多路径）→ 两个都能滚；
+    6) **整圈老路回归**：三角形数还是 = 轨顶点数，不许少一块（本轮改了 `closed` 的来源，这条最关键）；
+    7) 弧中间故意断一格再右键 → 照旧拒绝，屏幕一句大白话，控制台 `capture-reject ... partial-rail`。
+
+【实测结果 2026-09-24】他跑过：**半圈能滚了，UV 也对**（原话"你解决了，我测试也没问题，uv也是对的"）。
+上面 1)~7) 按通过记；他这次没有单独点名 4) 顶点组权重与 7) 断一格，暂按"没报问题"处理。
+仍未提交。  →  已随 a9bcf4a 提交（2026-09-24）。
+
+--------------------------------------------------------------------------------
+8.37 【2026-09-24，已提交 a9bcf4a，已实测通过；剩一条"待裁决"见本节末】拒绝句子按他定稿重写、告示 1.5 秒、工具名不再翻译、tooltip 砍到 0.77 倍。
+--------------------------------------------------------------------------------
+三件事，全部是文案与显示层，**没有碰一行几何**。
+
+一、**告示时长**：他自己把 `_NOTICE_SECONDS` 从 8.0 改成了 **1.5**（`ui/hud.py:83`）。
+    他另外提过"最后 0.5 秒做渐隐"，我评估后**他否掉了**：视口不会自己重绘，要动画就得在 draw 回调里
+    自我 `tag_redraw()`，等于那半秒每帧重画一次整个视口——"每帧重绘不值得"。以后别再提这个方案。
+    仍然活着的两个事实：① 会话内那行红字不是计时器而是状态（`operator.message` 挂着就一直显示，
+    下一次动作把它换掉），② 同一句拒绝**还额外走一遍 Blender 的 ERROR toast**
+    （`ui/interactive.py:160`），那个寿命不归我们管。要不要砍掉这行只留我们的告示，【待他定】。
+
+二、**11 句拒绝/失败措辞定稿**（编号 = 上一轮给他看的 C 类编号，1:1）：
+    1 请选择一条连续的边或者点。
+    2 选中的边有交叉，请只选一个方向。          ← "请检查"他同意换成给动作的后半句
+    3 选择的边未相连，无法构成连续边。
+    4 选中的边不连续，中间存在断点。
+    5 选中边已连成圈，请取消闭环。              ← 见下面"记账"
+    6 这里没有可重采样的东西。请选一条连续的边或者点。  ← 保留前半句，与 1 区分开
+    7 请选择一条路径，或多条以四边形相连的并行路径。
+    8 这条边旁边的面全部收拢到同一个点上，所以要选整圈才能重采样。
+    9 边的位置不正确，缺少可重采样的面。        ← 用"重采样"，与全仓库一致
+    10 所选路径包含无法重采样的分叉。
+    11 源网格已与锁定的选择不一致。
+    句号已统一补上（他原稿 3/5/10 没写）。
+    **记账（他的决定，别再翻）**：第 5 句挂在 `ordered_selected_path` 最后那道兜底门上，
+    分叉先被 2 拦、断块先被 4 拦，正常流形网格我构造不出能让它现身的选择；而**闭合环本身是支持的**
+    （整圈、闭环都能滚），所以万一弹出，"取消闭环"会把人支到错方向。他听完仍选择照用。
+
+三、**工具名恒英文 + tooltip 变短**：
+    · `ui/interactive.py`：两个 `bl_label` 不再走 `pgettext`（`MESH_OT_loop_resample_interactive`
+      = "Adjust Resample by Wheel"，是 F3 里那条；`..._entry` = "Adjust Loops by Wheel"）。
+    · `ui/panels.py`：菜单项的 `text=` 从 `pgettext(_ENTRY_TEXT)` 改成直接读 `bl_label`，
+      `_ENTRY_TEXT` 常量与 `pgettext` 导入随之删掉 —— **现在只有一个名字源**，翻译表碰不到它。
+    · tooltip **照旧翻译**，但英文从 308 → 204 字符、中文从 95 → **73 字符**（0.77 倍，他点名要的
+      缩量）。新英文 msgid 是 key，所以中英文同时换了。
+    · i18n：删掉两条已无人用的算子名 msgid，**62 → 60**（en_US / zh_CN 各 60）。
+
+**机制提醒（下次改文案必读）**：msgid 就是英文句子本身，所以**只改 `zh_CN.py` 不生效**——
+`ui/hud.py` 里那些句子的英文必须同步换成同一个字符串，否则查表落空、屏幕上退回英文。
+本轮 1~6 号是中英文同时改，7~11 号只改中文（英文保持不变）。
+
+验证：`compileall` 过；AST 交叉校验 = 60 declared / 60 translated / 无 missing / 无 orphan /
+无 unresolved pgettext 字面量 / 无重复 key，脚本在 %TEMP% 用完即删。
+【待实测】1) 三种选择形状各拒绝一次，屏幕句子应分别是 1 号（什么都没选到）、2 号（十字/井字）、
+    4 号（断开的两块）；2) 中文界面下右键菜单项显示 **英文** "Adjust Loops by Wheel"，
+    F3 搜出来的那条也显示英文；3) 悬停 tooltip 是缩短后的中文，读得顺；4) 1.5 秒的手感（他自己定的
+    数，确认一次就行）；5) 语言切 English，6 条新英文整句完整、不被砍尾；
+    6) 滚轮主路、8.36 的开弧、8.34 的裁链各跑一次，确认没有连带损伤（本轮没碰捕获）。
+
+【实测结果 2026-09-24】通过（"都测试了没什么问题"）。**唯一还悬着的是文案层的一个重复**：拒绝时
+`ui/interactive.py:159` 的 `self.report({"ERROR"}, ...)` 与 1.5 秒告示各弹一次同一句话，Blender 那
+一份在视口顶部顶栏、时长由它自己管。删不删等他裁决（见本节末"待裁决"）。
+
+【待裁决 · 一句话弹两次】`ui/interactive.py:155-160` 捕获 `ValueError` 之后连做两件事：
+  a) `_show_refusal` → 我们的 `show_notice`，画在视口里（`SpaceView3D.draw_handler_add`），1.5 秒；
+  b) `self.report({"ERROR"}, ...)` → Blender 自己的错误通道，句子出现在**视口顶部**的红底提示条
+     （时长 Blender 管，≈2~3 秒），同时写进 Info 编辑器的历史。
+同一句话因此各弹一次、位置不同。删 b) 的风险：`show_notice` 只在拿得到 VIEW_3D area 时才画
+（`hud.py:819` 见 `area is None` 直接 return，处理器也挂在 SpaceView3D 上），在没有 3D 视口的
+窗口布局里调用本工具时 b) 是唯一还活着的通道。助手建议：把 b) 降级成**退路**——`_show_refusal`
+返回"有没有画进视口"，只有没画成才 `report`，两边都不留空白。
+
+--------------------------------------------------------------------------------
+9. 不变量与手动回归清单
+--------------------------------------------------------------------------------
+9.1 不变量
+    a) N→M→N 逐位复原（顶点/边/面/每角 UV/每角顶点色/点域顶点色/顶点组权重/材质/
+       smooth/seam/sharp/浮点层）。【8.27 起】"每角 UV"这一项**只在 UV 开关打开时**成立；
+       关掉时重建带的角 UV 是 bmesh 默认值，不属于"复原"范畴（见 8.27 取舍 a）。其余各项
+       两个状态下都必须成立。
+    b) 岛内连续：共享顶点的相邻新面 UV 相同；缝边数与源网格相同。
+    c) 跨岛不混：一个面的所有角始终在同一岛内。
+    d) 区域外网格完全不受影响。
+    e) 退出编辑模式 / 取消 = 进入前状态逐位一致。
+    f) 确认/取消/退出后无 session、无 timer、无 staging mesh 残留。
+9.2 手动清单（用户的工作流，插件内不放测试套件）
+    单岛环带加减→回原段数比对；跨缝环带加减；环绕型 UV（0/1 相接）加减；
+    扇形盖（极点）加减；n-gon 盖；开放网格行；多材质多 smooth 混合区域；
+    退出编辑模式看是否还原；UV 编辑器目视岛是否连续/分离。
+    【8.12 相关】多材质/多 smooth 混合区域加减→边界两侧面的材质与 shading 是否
+    跟着"新面主要覆盖哪侧"走、不再因中心点越界整面跳变；N→M→N 仍逐位复原。
+    【8.26 相关】本轮是**行为改动**，不是性能改动，所以验收看形状不看数字。
+    三个用例，从最关键的开始：
+      1) 一条缝横穿条带、缝的两端都落在**未修改区**（开放单行条带最直观）：加减段数后
+         那条红线应当**两端都接上**未修改区的红线，中间允许折、允许走斜线，但不允许断头
+         停在离边界差一列的地方。这是本轮唯一的硬指标。
+      2) 一条路径一次穿过**多根**缝（用户那个 3 缝曲面就是标准用例）：同一条路径两侧的
+         两个区域，红线在**路径上**必须接得住、不出现错位台阶。判据是目视——旧的
+         "两行 pinned 内层下标集合必须相同"那把尺子已经随 8.19-8.24 的机器一起删了。
+         若看到红线在路径处错开一列，那是 `rung_cost` 第三级 inner_index 没能对齐，
+         属于要查的问题。
+      3) 无 seam 的网格：走位、面数、UV、颜色、权重必须与 6787efc **逐位一致**。
+         这是本轮唯一保留的旧判据，也是"删机器没删坏几何"的兜底。
+    另外必须看的：
+      - **面数应当下降或持平**，且回到源段数那一次必须等于 max(内,外)（旧的 extra 恒为 0）。
+        面数上涨就是回退信号；
+      - 三角摆位：8.24 那个"缝列一根三角都不挂"的簇应当消失，三角沿带均匀散开。
+        现在没有任何代价项为缝让路，摆位只由 step-cost + 三角散布 + 横档连续性决定；
+      - 控制台：`seam-rungs` 一行照旧出现（字段已缩减为 region= / path= / rungs=N
+        加每条横档取的"内>外"、带 `<偏好` 后缀表示滑到隔壁列）；旧十字段
+        （wanted/carried/pinned/extra…）已随 8.19-8.24 删除。`seam-anchors` 已改名
+        为 `seam-crossings`（方括号里是被钉的源顶点序号），另有 `seam-jogs` 行
+        汇报沿路径走的红线段；
+        `scan-rung-match` 的 work 明显下降（口径改成了实算比较次数，见 8.26）；
+      - FAN（扇形盖）与 NGON_CAP 区域：这两类没有外轨，缝走全池位置匹配，行为应与
+        改动前一致。若这两类区域上报错或缝乱跳，回来报告；
+      - 外轨本身也是一条被重采样的路径（两条平行路径之间）：两端都是新点，缝同样走
+        全池匹配，**不保证**接得上——这是设计上的取舍，不算 bug；
+      - N→M→N 回到源段数仍逐位复原。
+    【闭环岛 + 单 tile 环绕 UV】上下不封口的柱体、选两条闭合圆环之间的全部边做
+    加减：加减后不再报错（a8b0edc 引入的必崩 TypeError 已由 ad98326 修掉，注意
+    `_lerp_uv` 的 periodic 形参），**且**环绕 UV 在 0/1 相接处不出现整条岛被平移
+    一个 tile / 中间被拉回 0.5 的现象，N→M→N 逐位复原。
+    【8.9 相关】单环带 seam 加减→seam 是否被新顶点踩中不偏移、且 N→M→N 仍逐位
+    复原；单环无 seam→与改动前完全一致；多环同步→零变化。
+    【8.10/8.11 相关】四种颜色各测一遍（BYTE/CORNER、FLOAT/CORNER、BYTE/POINT、
+    FLOAT/POINT，顶点绘制默认给的是 FLOAT 那一档）：环带加减→颜色随段数平滑、跨岛不混、
+    N→M→N 逐位复原；带顶点组的内环→权重随段数正确插值、N→M→N 逐位复原；无 color 层 /
+    无顶点组的网格→行为与改动前逐位一致（no-op）。
+
+--------------------------------------------------------------------------------
+10. headless 验证方法与坑（若将来要写临时脚本）
+--------------------------------------------------------------------------------
+    放 %TEMP%、用完删除；不进插件目录、不进 git。
+    - 不要 --factory-startup；
+    - -b 下 timer 不 tick，直接调 sessions._watch() 模拟；
+    - 签名比对必须与元素顺序无关（重建会改变顶点/边/面顺序）；
+    - 读 obj.data 要在退出编辑模式之后（EDIT 中读到的是旧数据块）；
+    - 收集 BMesh 元素与使用之间不要切换编辑模式（元素失效 ReferenceError）；
+    - 合成缝数据时，缝必须放在"共享顶点的两个 loop 值不同"，不能放在一个面
+      自己的边内部（否则并查集会把两侧缝合成一条链，测试假绿/假红）。
+    - "某个 API 在 5.x 长什么样"这类问题在这里几分钟就能问清：-b 下
+      bpy.ops.object.mode_set(mode='EDIT')、bmesh.from_edit_mesh 与插件算子都能直接
+      调用（2026-09-20 实测），不要凭 4.x 记忆下结论（8.11 的教训）。
+    注意：2026-09-20 起权限系统可能拦截写临时脚本；被拦就不要绕过，改做静态
+    检查（ast 解析、grep 残留符号）并把验证交还用户手动。同日实测未被拦。
+    注意：用户已明确"后续不要再自行测试，实现完交用户手动验收"（2026-09-20）。
+
+--------------------------------------------------------------------------------
+11. 延后工作进展（顶点色 / 顶点组权重，2026-09-20 已实现，未提交待验收）
+--------------------------------------------------------------------------------
+    两项均已实现（细节见 5.10、6.9，首版丢色原因见 8.11），未提交，等用户手动验收后
+    再定提交。
+    a) 顶点色：按存储域分成两条通道，不是一条。
+       corner 域（BYTE/CORNER + FLOAT/CORNER）走 surface.py 的链机制（6.9），值是
+       4 分量 Vector，读写直接 loop[layer] / vertex[layer]（5.2 没有 .color 包装，也
+       不再用 mathutils.Color）；color 必须进 _RailBuilder._key，否则同位同 UV 不同色
+       会被平均丢色；periodic 只作用 UV，颜色走通用 Vector.lerp。
+       point 域（BYTE/POINT + FLOAT/POINT）没有"角分歧"语义，不能走链，并入 b 的点级
+       path 通道。
+    b) 顶点组权重 bm.verts.layers.deform + 点域顶点色：点级，随 path（内轨）顶点重
+       采样（5.10）。没有用 resample_edge_states 的区间加权，而是更简单的"按归一化 u
+       在源顶点序列上线性插值、端点原样、闭环取模"；一律只读已存在的层
+       （deform.active / 遍历颜色集合），保证无属性网格全程 no-op 且不建层。接入点不在
+       region 管线而在 path 边应用段之后（operators 各加一行）。
+    尚未覆盖的属性：通用 float/int/string 自定义属性（bm.loops.layers.float 等）、
+    shape key、皮肤标记——需要时另立章节评估。
+
+--------------------------------------------------------------------------------
+12. 约定与风格
+--------------------------------------------------------------------------------
+    - 注释只写"为什么"，不写"做什么"；模块头 docstring 讲设计动机。
+    - 倾向删除而不是加机器：弱控件直接删，派生值不进 UI。
+    - 不在仓库放测试套件；用户手动验收为准。
+    - 用户手动验收通过的代码状态视为冻结基线：后续改进必须先征得同意再动，
+      不要"顺手优化"已验收的逻辑（2026-09-20 的教训：验收后的自发重写被回退）。
+    - 提交说明写详细：是什么/为什么/怎么办分模块写清。
+
+--------------------------------------------------------------------------------
+13. 面板时代四算子删除（2026-09-28，未提交待验收）
+--------------------------------------------------------------------------------
+    裁决：用户明确"不需要任何 F3"，8.38/§11 记的"仍未删（等点头）"就此结掉。
+    判据复核：全仓库唯一的 bpy.ops 调用是 ui/interactive.py 的
+    loop_resample_interactive("INVOKE_DEFAULT")；无键位映射、无 layout.operator 字符串、
+    .md/.toml 里也没有绑定。四个类除 __init__.py 的 import 与 _CLASSES 外零引用。
+
+    删的链条（一次做完，缺一环就在 register 期炸）：
+      a) operators.py 四个类共 115 行：begin(97-125)、step(128-176)、
+         confirm(613-625)、cancel(628-651)。
+      b) __init__.py 的 from .operators import (...) 整段 + _CLASSES 的四项，
+         注册类从 6 个降到 2 个（wheel + entry 转发器）。
+      c) core/session.py 的 is_active() 与 ResampleSession.next_counts()：
+         两者的唯一调用点就在四个 poll/execute 里，随之成死函数。
+         begin/end/active/clear/open_bmesh 都还被 wheel 用着，留着。
+      d) operators.py 随之失效的 from .core import session as sessions（全文件不再
+         直接碰 session 模块），与两处只描述"stepper 算子"的文字：模块头 docstring
+         改成本文件已无 Operator、apply_counts 的 docstring 去掉"两条入口不会走偏"。
+      e) i18n：四个类带 12 个键（不是先前估计的 6 个——bl_description 和
+         self.report 的文案都算），12 键 × 13 份表 = 156 条，删 305 行。
+         en_US.MESSAGES 由 58 → 46，i18n/__init__.py 的"fifty-eight in, fifty-eight out"
+         同步改 46。核对：13 份表各 46 条、两份差异表都为空、代码里 40 个字面量键
+         全部在表内、46 条全部有调用点 reaching（4 条走 template 变量、2 条走
+         FAILURE_PREFIX / UNMARKED_CUT_NOTE 常量）。
+
+    同时删掉 12 里"死参数"两条：core/planner.py 的 _step_base_cost 形参 kind、
+    _sweep_ladder 形参 inner/outer（函数体早已改用 inner_rail/outer_rail 与
+    boundary_geometry），连同 4 处调用点一起摘，签名与实参逐项核过。
+    删完全库 AST 复扫：未使用形参归零。
+
+    本轮同时清掉的死诊断（原 P1，见 §12 之外的另一次记录）：diagnostics.py 的
+    print_reflex_fallback、print_pairing_profile（d360933 之后零调用点，且 docstring
+    引用的 _source_pairing_nodes / _pairing_profile 在 planner 里已不存在）、
+    print_ladder_dp 上两个从未传的形参与其打印分支，以及 seams.py 里没人接的
+    return tuple(joins)。两盏主灯都是 False，日志输出逐字节不变。
+
+    仍未删（各有理由，别当成漏掉）：
+      - DIAGNOSE_LADDER / DIAGNOSE_UV 两块约 450 行、17 个门控点：6efd190 定为
+        "发版时一次性拆"；且块内夹着三个没有门控的打印函数，直接删块会改到
+        拒绝分支的行为，要拆得先把那三个挪出临时块。
+      - R3.2 的借列分支 + 其中的 print_seam_excursion：静态可达性判它"活"，
+        实测任何探针网格都进不去；AST 可达 ≠ 运行时会走，删它需要单独点头。
+      - operators.py 的 print_timing("operator-total") 这个计时标签没改：wheel 本身
+        也是 Operator，句子不算谎，而改了就没法和历史日志逐条对比。
+
+    headless 复核（blender -b --factory-startup，只证不崩与注册得上，不作验收）：
+    register OK / _CLASSES=2 / 四个 MESH_OT_ 名字已不在 bpy.types / 两个 wheel 类仍在；
+    is_active 与 next_counts 确认取不到；begin→apply_counts 11→13→16→11→
+    restore_source→end→unregister 全程无异常，回到 (55, 94, 40) 与进入前一致。
+    滚轮手势本身离了窗口跑不了，仍须用户应用内按 §9.2 过一遍。
+
+--------------------------------------------------------------------------------
+14. 菜单项悬浮说明补写 + 12 份翻译（2026-09-28，未提交待验收）
+--------------------------------------------------------------------------------
+    现象：光标停在右键菜单的"Adjust Loops by Wheel"上，弹出的是 MESH_OT_
+    loop_resample_interactive_entry 的类 docstring——712 字符、11 行，讲的是"菜单里
+    不能直接起 modal，所以要延一帧用 timer 转发"，是写给我们看的实现说明，而且
+    13 份表里没有对应键，所以永远只有英文。
+
+    原因：那个类没有 bl_description。Blender 在没有 bl_description 时拿类
+    docstring 当悬浮文本，于是开发者散文漏到了界面上。
+
+    做了：
+      - ui/interactive.py 给 entry 类加 bl_description = pgettext(...)，并留两行注释
+        说明"不写它，docstring 就会顶上来"，防止以后被当成重复文案删掉。
+        类 docstring 一字未动，仍是实现说明。
+      - 文案定过两版。**第一版**是用户那句"Loop Resample 支持快速调节任意环带或边链的
+        段数……"，我当时把"属性完整保留"补成点名四项（UV、接缝、顶点色、顶点组权重），
+        理由是 §11 里 shape key / 自定义属性 / skin 权重仍记为未覆盖。用户看完否掉，
+        换成现在落在树里的**第二版**：
+          快速调节任意边的段数，滚轮设定段数，Shift 平滑边线，Ctrl 均匀分布，
+          调节后 UV、接缝、顶点色等属性完整保留。
+        英文源句（它就是查表用的键）：
+          "Quickly adjust the segment count of any edge:  scroll sets the count, Shift
+          smooths the edge, Ctrl spreads the points evenly, and attributes such as UVs,
+          seams and vertex colors survive the change intact."
+        第二版有两处比原先的把关宽，已点明、由用户定，别当成我漏看：
+          ① "任意边"比"任意环带或边链"宽——真实判据是"两侧贴着相匹配面条的边链"，
+             孤立一条边会走 "does not run between two matching strips of faces" 拒绝；
+          ② "等属性"把 §11 明写未覆盖的 shape key / 自定义属性 / skin 权重又含进来了。
+        Shift/Ctrl 两段沿用本仓既有措辞，好让 12 份表里同类词对得上。
+      - en_US.MESSAGES 46 → 47，12 份表各加一条，i18n/__init__.py 的
+        "forty-six in, forty-six out" 同步改 47。换第二版时只动文本，键数仍是 47。
+
+    核对（AST + blender -b --factory-startup，只证不崩与表对得上，不作验收）：
+    13 份表各 47 条、双向差集为空、无重复键、无空值、无与英文同文的漏翻；
+    interactive.py 里那个字面量与 en_US 的键逐字符相等；旧键 "Loop Resample reshapes
+    any loop or chain" 在 14 个文件里都已不存在。13 个语言码逐个走 pgettext，除 en_US
+    外全部返回本地化文本。
+    替换的做法：按"整块行"删（从 "    (" 到 "    ),"，先断言块内含旧键、删后全文件不再
+    含旧键、重插后 ast.parse 过）——AST 节点的 lineno 指向的是括号内的第一段字符串而不是
+    左括号，直接用 lineno 删会把 "    (" 和 "    )," 留在原地变成语法碎片。
+    另测得：bl_description 是在**模块 import 时**求值的（不是 register 时），所以中途改
+    Blender 语言不会让两处 tooltip 换语言，要重启才换——wheel 那条从一开始就是这个行为，
+    本轮没有改变它。bpy.app.translations.locale 在 Python 侧不可写，要离线验证分发就临时
+    替换 i18n._locale_candidates。非拉丁语翻译一律直接写 UTF-8 字面量，不要用 \uXXXX。
+
+--------------------------------------------------------------------------------
+15. 插件定名 Loop Resample，右键菜单项改用产品名（2026-09-28，未提交待验收）
+--------------------------------------------------------------------------------
+    决定：名字**不改**（simple resample / simple resample tools 都否掉），保持
+    "Loop Resample"。理由两条：① LoopTools 自己源码里的 "loop" 就已经是任意相连边链
+    ——get_connected_selections 只回一个 circular 布尔，check_loops 也只拒
+    len<3／全顶点／叠边，所以"loop 把功能说窄了"这个担心不成立；② 和 LoopTools 排在
+    一起，蹭它的名次。
+
+    用户的政策：产品名不管什么语言都显示英文。他给的做法是"在翻译表里把前后对照都写
+    成 Loop Resample"。核下来这条妙招在本仓**早已由缺席实现**，不需要那 12 行死字：
+      - 两个 bl_label 在 13 份表里一条都没有，i18n/en_US.py:9-10 的表头注释就是这条
+        规则的存档："The two operator names are deliberately absent"。
+      - 查不到的键由 i18n/__init__.py:99 直接回英文原文，所以"表里写 13 行相同"与
+        "表里不写"落地完全一样，前者只是多 12 行以后要跟着改的维护债。
+      - 菜单文本取自 ui/panels.py:46 的 text=...bl_label，改名就是一行。
+
+    做了：ui/interactive.py:533 entry 的 bl_label 由 "Adjust Loops by Wheel" 改成
+    "Loop Resample"，加两行注释说明它故意不进表（防以后被当重复文案补上翻译）。
+    代价用户看过并明说"无所谓"：菜单项从此没有动词，F3 搜 "wheel"/"adjust" 不再命中
+    ——不过这条 entry 本就是 INTERNAL，真正在 F3 列表里露脸的是 modal 那条
+    "Adjust Resample by Wheel"，本轮未动，两条措辞仍不一致。
+    tooltip 走 bl_description，12 份翻译一字未改，名字没有进句子。
+
+    背景：operators.py:50 FAILURE_PREFIX = "Loop Resample failed safely: " 是 i18n 表里
+    唯一把产品名写进译文的串，而它原来 12 份翻译**每一份都把名字本地化了**（环带重采样／環帶重取樣／Schleifen-Neuabtastung／
+    El remuestreo de bucle／rééchantillonnage de boucle／Ricampionamento ciclo／
+    ループリサンプル／루프 재샘플링／resampling pętli／Reamostragem em Laço／
+    Пересэмплирование петли／Lấy mẫu lại vòng lặp），与"名字永远英文"直接冲突。
+    做了（第二批，用户一句"顺便把那 12 条翻译的前缀也改好"）：键一字未动（en_US.MESSAGES
+    仍是 47 条），只换 12 个 value，代码一行没碰。做法是"品牌打头 + 只译后半句"：
+      环带重采样已安全失败：                → Loop Resample 已安全失败：
+      環帶重取樣已安全失敗：                → Loop Resample 已安全失敗：
+      ループリサンプルは安全に失敗しました：  → Loop Resample は安全に失敗しました：
+      루프 재샘플링이 안전하게 실패했습니다  → Loop Resample이 안전하게 실패했습니다
+      Schleifen-Neuabtastung sicher ...     → Loop Resample sicher fehlgeschlagen:
+      El remuestreo de bucle falló ...      → Loop Resample falló de forma segura:
+      Échec sans risque du rééch... de boucle → Loop Resample a échoué sans risque :
+      Ricampionamento ciclo non riuscito ...  → Loop Resample non riuscito in modo sicuro:
+      Bezpiecznie przerwano resampling pętli  → Loop Resample bezpiecznie przerwano:
+      Reamostragem em Laço falhou ...       → Loop Resample falhou de forma segura:
+      Пересэмплирование петли безопасно ...  → Loop Resample безопасно прервано:
+      Lấy mẫu lại vòng lặp thất bại an toàn  → Loop Resample thất bại an toàn:
+    12 条都比原句短，所以 fr/pl/pt 三份原先为长度折行的 value 收回一行；it_IT 那份折的是
+    键，键的折行保持原样。尾随空格沿用各自旧例：拉丁语族 ": "、日语 "： "、zh 两份仍无
+    尾随空格（本来靠全角冒号断开）。
+    连带核对：ui/hud.py:236 把前缀从消息里剥掉用的是同一个 pgettext 结果，换 value 不会
+    让芯片把失败说两遍。全仓 12 个本地化产品名（含 §13 删掉的旧文案）现已 0 命中。
+    **顺带查出来一件该记的事**（我先前口头说错过一次，以此为准）：FAILURE_PREFIX 这条串
+    **在界面上根本不显示**。链路是 operators.py:169 拼 "前缀+原因" → interactive.py:361
+    存进 self.message → hud.py:614 走 _failure_text，而它在 236-237 行正好把前缀整段剥掉，
+    芯片只画原因那句；show_notice 走同一个函数，同样剥。所以中文里的拒绝芯片一直是
+    "闭合曲线至少需要 3 个点。"，改前改后都没有产品名——这 12 条 value 现在的身份是哨兵
+    （operators 用它拼、HUD 用它认），不是文案。headless 逐语言验过：13/13 仍然
+    brand-first=True 且 prefix-stripped=True，配对没被换 value 打断。
+    真要让品牌在拒绝时露面，得动 _failure_text（已验收代码），比如画
+    "Loop Resample｜<原因>"、把"已安全失败"那半句丢掉——否则芯片里"失败"说两遍，正是这段
+    函数当初剥前缀的理由；另外还要吃 _FAILURE_LIMIT 的宽度。用户尚未点，未做。
+
+    核对（blender -b --factory-startup，只证不崩，不作验收）：register/unregister 通过；
+    entry bl_label 读回 'Loop Resample'、bl_options 仍 ['INTERNAL']；'Loop Resample' 在
+    en_US.MESSAGES 里为 False、在 30 个语言码的表里零命中；13 份表逐一走 pgettext，
+    label 全部返回 'Loop Resample'，同一轮里 tooltip 除 en_US 外全部返回本地化文本——
+    "名不换、说明换"两条同时成立。ui/ 里其余 "Loop Resample" 字样都在 docstring、注释
+    和 print 日志前缀，非用户可见；HUD 不画产品名。
+    第二批另测得：13 份表换完 value 之后仍各 47 条、双向差集为空、无重复键、无空值、
+    无"与英文同文的漏翻"；13 个语言码逐个走 pgettext(operators.FAILURE_PREFIX)，返回值
+    全部以 "Loop Resample" 打头；ui/hud.py 取到的仍是同一个 FAILURE_PREFIX 常量，剥前缀
+    的 startswith 与加前缀用的是同一次查表结果，故芯片不会重复描述失败。
+    实机应看到：中文下菜单项 "Loop Resample"、悬浮说明仍是中文那句、失败芯片
+    "Loop Resample 已安全失败：…"。
+
+--------------------------------------------------------------------------------
+================================================================================
