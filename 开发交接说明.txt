@@ -1300,8 +1300,27 @@ UV（**这里更正我上一条的说法**）：我之前讲"硬编码 `True` �
     无"与英文同文的漏翻"；13 个语言码逐个走 pgettext(operators.FAILURE_PREFIX)，返回值
     全部以 "Loop Resample" 打头；ui/hud.py 取到的仍是同一个 FAILURE_PREFIX 常量，剥前缀
     的 startswith 与加前缀用的是同一次查表结果，故芯片不会重复描述失败。
-    实机应看到：中文下菜单项 "Loop Resample"、悬浮说明仍是中文那句、失败芯片
-    "Loop Resample 已安全失败：…"。
+    实机应看到：中文下菜单项 "Loop Resample"、悬浮说明仍是中文那句；失败芯片仍只显示原因
+    那句（前缀被 _failure_text 剥掉，与改 value 之前一致），所以芯片上看不出本轮动过什么。
+
+--------------------------------------------------------------------------------
+16. 仓库上线：YLIANG021/Loop-Resample（Private，2026-09-28）
+--------------------------------------------------------------------------------
+    此前 origin 一直是占位符 https://github.com/YOUR_USERNAME/loop_resample.git，52 个提交
+    从没出过本机。本轮按用户点定的名字新建 **Private** 仓库 Loop-Resample 并把 main 整条推
+    上去（远端 HEAD 与本机一致，43 个文件、约 632 KB）。
+
+    两件后来人会踩的事：
+      - 本机没有 gh CLI，git 也建不了仓库。做法是从 Windows 凭据管理器取现成的 GitHub
+        token（git credential fill，scopes 含 repo），直接 POST /user/repos。token 只在内存
+        里用，不打印、不落盘。
+      - 这个网络下 git 走 HTTP/2 会 Recv failure: Connection was reset 或 443 连不上，
+        加 -c http.version=HTTP/1.1 就通；REST API 走普通 HTTPS 不受影响。所以"API 说提交
+        已经在远端、git 却报网络错"时，先按 HTTP/1.1 重试，别重复推。
+
+    .gitignore 由"*.txt 全拦"改成给本文档开一条例外（!开发交接说明.txt），其余 txt/md、
+    Addon_pack.vbs、__pycache__ 照旧不进仓库。入库前把 52 个提交全扫了一遍 PAT / AWS key /
+    私钥 / 凭据赋值，无命中。
 
 --------------------------------------------------------------------------------
 ================================================================================
