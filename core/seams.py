@@ -2,13 +2,18 @@
 
 A crossing is a chain that cuts a band from one rail to the other.  Half of what makes one
 is ``edge.seam`` -- the red line the user actually sees -- and the other half is every edge
-whose two faces store different corner values, because that is where a UV island parts
-whether or not anyone marked it.  Both go into one pool: a cut nobody marked has to be
-stepped over exactly like a marked one, and :mod:`.surface` splits its island chains on the
-very same comparison, down to the rounding (see :func:`.surface.island_boundary_edges`).
-Reading the values instead of trusting the marks is what keeps a rebuilt face inside one
-island on a mesh whose seams were left unmarked -- or marked somewhere other than where the
-values change.
+whose two faces store different UVs, because that is where a UV island parts whether or not
+anyone marked it.  Both go into one pool: a cut nobody marked has to be stepped over exactly
+like a marked one, and :mod:`.surface` splits its island chains on the very same rounding
+(see :func:`.surface.island_boundary_edges`).  Reading the values instead of trusting the
+marks is what keeps a rebuilt face inside one island on a mesh whose seams were left
+unmarked -- or marked somewhere other than where the UVs change.
+
+Colors are deliberately not in that pool.  A corner color that disagrees across an edge is a
+value the transfer keeps two copies of, not a boundary a rebuilt face would straddle, and
+cutting the band on it would spend a pinned vertex and sometimes a loaned column on a
+difference no island cares about.  It still splits a chain in :mod:`.surface`; it never
+steers a rung here.
 
 The band one resampled path owns is the path plus the strips on both sides of it, so a
 seam crossing that band leaves it through a rail vertex the source already has.  That
@@ -19,10 +24,25 @@ is allowed to steer the search, and it is what keeps a rebuilt face from straddl
 UV islands -- leaving the column to the search alone put rungs a whole column off the
 pinned vertex.
 
+Finding that pinned vertex again is a search of the rebuilt rail for the crossing's source
+index fraction, and it is exact rather than approximate: a rail's parameters are measured by
+projecting each rebuilt vertex back onto the source in *segment-index* space, so the vertex
+the pin held on source vertex ``k`` reads back as ``k / segments`` -- the very number the
+crossing carries -- whichever way the rail array happens to be walked.  What that search
+cannot tell is that a pin was refused, so the sampler's own landing table rides along to say
+so: :func:`region_seam_waypoints` reports a crossing it had to aim at the nearest sample
+instead of the promised one.
+
 The two strips either side of a path can still take different columns when one crossing
 reaches the shared path at two vertices, and the red line finishes its crossing by
 running along the path -- whose edges are rebuilt anyway.  Both sides aim for the vertex
 the sampler pinned, so normally there is nothing to join.
+
+When there is, the join says why: each rung end carries the reason this strip came to stand
+where it does -- ``no-slot`` for a pin the sampler refused, ``rung-slid`` for a column the
+ladder never offered, ``pinned`` for the vertex the crossing itself named -- and a gap
+between two ends whose own causes are all ``pinned`` can only be the two rails reading one
+source position as two different vertices, which is what ``classification`` reports.
 
 What that joining does is stretch a mark the user already drew, so it stays that way: a
 crossing made of unmarked edges carries no seam flag, and :func:`region_seam_rungs` offers
@@ -39,6 +59,7 @@ from .attributes import (
     merge_edge_states,
 )
 from .diagnostics import (
+    print_landing_fallback,
     print_seam_crossing_skipped,
     print_seam_jogs,
     print_seam_rungs,
@@ -73,7 +94,7 @@ def region_seam_crossings(region, paths, bm):
     """Every boundary chain that enters one rail of a region and leaves the other.
 
     The chains are drawn from two sources at once: the seam marks the rebuild destroys,
-    and the edges whose two faces store different corner values.  Whichever way a cut was
+    and the edges whose two faces store different UVs.  Whichever way a cut was
     found, one that crosses the band pins the same two rail vertices.
 
     A chain whose two rail ends are not exactly one inner and one outer vertex
@@ -186,6 +207,20 @@ def region_seam_crossings(region, paths, bm):
     return crossings
 
 
+def _pinned(path_landings, path_index, source_index):
+    """Whether the sampler held one source vertex on a slot of its own.
+
+    ``path_landings`` is what :meth:`.session.ResampleSession.samples` returns beside the
+    coordinates: per locked path, ``None`` when the step left the path standing on its own
+    source points, otherwise the source indices it did pin.  A rail that is not a locked
+    path is never resampled, so every one of its vertices is still itself.
+    """
+    if path_index is None:
+        return True
+    landing = path_landings[path_index]
+    return landing is None or source_index in landing
+
+
 def _nearest_index(parameters, target, closed):
     """The rebuilt rail vertex a captured position is closest to."""
     return min(
@@ -194,35 +229,44 @@ def _nearest_index(parameters, target, closed):
     )
 
 
-def region_seam_waypoints(region, inner_parameters, outer_parameters):
+def region_seam_waypoints(region, path_landings, inner_parameters, outer_parameters):
     """The ladder node each seam crossing needs, decided before the ladder is solved.
 
-    A crossing enters the strip on one inner rail vertex and leaves on one outer one.
-    The sampler pins the inner vertex exactly onto its source position and the outer
-    rail is not resampled at all, so both rebuilt indices are already known here.
-    Handing the pair to the search as a node its path must pass through is what keeps
-    the rung from sliding a column off the pinned vertex: a slid rung invents a face
-    with corners on two islands, and neither island holds a UV for the corner that
-    ended up on the far side, so it clamps and the face collapses onto the boundary.
+    A crossing enters the strip on one inner rail vertex and leaves on one outer one.  The
+    sampler pins the inner vertex onto its own source position; the outer rail is only
+    pinned too where it is a locked path of its own, and an unlocked one keeps every vertex
+    it started with, so both rebuilt indices are read back off the rails' parameters here.
+    Handing the pair to the search as a node its path must pass through is what keeps the
+    rung from sliding a column off the pinned vertex: a slid rung invents a face with
+    corners on two islands, and neither island holds a UV for the corner that ended up on
+    the far side, so it clamps and the face collapses onto the boundary.
 
     This is the one place a seam is allowed to reach into the solve, and it stays a
-    narrow exception to the rule that attributes do not steer geometry: it names the
-    two vertices the pinning already created and asks only that they be connected.
+    narrow exception to the rule that attributes do not steer geometry: it names the two
+    vertices the pinning already created and asks only that they be connected.
     """
     crossings = region.get("seam_crossings") or ()
     if not crossings or not inner_parameters or not outer_parameters:
         return ()
     closed = bool(region["frames"]["closed"])
-    return tuple(
-        (
-            _nearest_index(inner_parameters, crossing["inner_u"], closed),
-            _nearest_index(outer_parameters, crossing["outer_u"], closed),
+    inner_path_index = region["path_index"]
+    outer_path_index = region.get("outer_path_index")
+    nodes = []
+    for crossing in crossings:
+        if not _pinned(path_landings, inner_path_index, crossing["inner_index"]):
+            print_landing_fallback(region, "inner", crossing["inner_index"])
+        if not _pinned(path_landings, outer_path_index, crossing["outer_index"]):
+            print_landing_fallback(region, "outer", crossing["outer_index"])
+        nodes.append(
+            (
+                _nearest_index(inner_parameters, crossing["inner_u"], closed),
+                _nearest_index(outer_parameters, crossing["outer_u"], closed),
+            )
         )
-        for crossing in crossings
-    )
+    return tuple(nodes)
 
 
-def region_seam_rungs(region, plan, inner_parameters, outer_parameters):
+def region_seam_rungs(region, plan, inner_parameters, outer_parameters, path_landings):
     """Where each seam crossing attaches to the ladder the search already chose.
 
     The crossing's outer vertex is the one that has to be exact, and asking for it
@@ -237,6 +281,11 @@ def region_seam_rungs(region, plan, inner_parameters, outer_parameters):
     them -- and the path vertices a *marked* crossing reached:
     :func:`paint_path_seam_jogs` joins those when the strip on the far side of a path
     chose a different one.
+
+    Each end carries how this strip came to stand on it, because that is the only witness
+    the join has to explain itself with later: ``no-slot`` when the sampler refused to pin
+    that source vertex at all, ``rung-slid`` when the ladder offered no column at the vertex
+    the crossing named, and ``pinned`` when the rung is exactly where the crossing asked.
     """
     crossings = region.get("seam_crossings") or ()
     if not crossings or not inner_parameters or not outer_parameters:
@@ -253,6 +302,7 @@ def region_seam_rungs(region, plan, inner_parameters, outer_parameters):
     by_node = {}
     carried = []
     ends = []
+    inner_path_index = region["path_index"]
     outer_path_index = region.get("outer_path_index")
     for crossing in crossings:
         outer_index = _nearest_index(outer_parameters, crossing["outer_u"], closed)
@@ -280,23 +330,40 @@ def region_seam_rungs(region, plan, inner_parameters, outer_parameters):
             rungs.append(rung)
         rung["weighted"].append((1.0, crossing["state"]))
         carried.append(crossing["id"])
-        # A crossing the corner values revealed rather than a mark carries no flag of its
+        # A crossing the UVs revealed rather than a mark carries no flag of its
         # own to join up with, and finishing it by painting the path edges between the two
         # ends would draw a red line the source never had.  Its rung still paints below.
         if crossing["marked"]:
             ends.append(
                 (
-                    region["path_index"],
+                    inner_path_index,
                     crossing["inner_index"],
                     plan.inner_vertices[inner_index],
+                    (
+                        "no-slot"
+                        if not _pinned(
+                            path_landings, inner_path_index, crossing["inner_index"]
+                        )
+                        else "rung-slid"
+                        if inner_index != preferred
+                        else "pinned"
+                    ),
                 )
             )
             if outer_path_index is not None:
+                # The outer rail's column is the one the crossing names, so a rung here
+                # never slid; the only way this end can be anything but the pinned vertex
+                # is the sampler having refused to hold it.
                 ends.append(
                     (
                         outer_path_index,
                         crossing["outer_index"],
                         plan.outer_vertices[outer_index],
+                        "no-slot"
+                        if not _pinned(
+                            path_landings, outer_path_index, crossing["outer_index"]
+                        )
+                        else "pinned",
                     )
                 )
     for rung in rungs:
@@ -334,33 +401,70 @@ def apply_region_seams(bm, plan, region, rungs):
 def paint_path_seam_jogs(bm, updated_paths, ends):
     """Join the two halves of a red line that reached one path at two vertices.
 
-    ``ends`` holds ``(path index, source vertex index, rebuilt vertex)`` for every rung end
-    of a marked crossing that sits on a resampled path.  The strips either side of that path
-    report the same source vertex, so a pair of different rebuilt vertices is one line with
-    a gap in it, and the gap runs along the path's own edges.  Only the seam flag travels --
-    crease and bevel values on those edges belong to the path, not to the crossing.
+    ``ends`` holds ``(path index, source vertex index, rebuilt vertex, cause)`` for every
+    rung end of a marked crossing that sits on a resampled path.  The strips either side of
+    that path report the same source vertex, so a pair of different rebuilt vertices is one
+    line with a gap in it, and the gap runs along the path's own edges.  Only the seam flag
+    travels -- crease and bevel values on those edges belong to the path, not to the
+    crossing.
+
+    Returns one record per line it joined, ``{path_index, source_index, landed_vertices,
+    steps, reason}`` -- ``landed_vertices`` numbers the path's own slots the join ran
+    between -- and prints the same.  The reason is the point: a gap between two ends
+    of one crossing is a defect the user can only be told about if the log says which of
+    its three causes it is.  ``no-slot`` means the sampler refused to hold that source
+    vertex on either rail, so the two strips aimed at whatever vertex was nearest;
+    ``rung-slid`` means one strip's ladder had no rung at the vertex its crossing named,
+    which :mod:`.planner` already said out loud with a ``seam-skip`` line and this repeats
+    only as the consequence; ``classification`` means both strips stood on the vertex they
+    each asked for and still chose different ones, so the two readings of one position
+    disagreed.  A strip that never reached a rung at all reports ``no-column`` at itself and
+    contributes no end here, so that name stays a skip rather than becoming a jog.
     """
     grouped = {}
-    for path_index, source_index, vertex in ends:
-        grouped.setdefault((path_index, source_index), set()).add(vertex)
+    for path_index, source_index, vertex, cause in ends:
+        by_vertex = grouped.setdefault((path_index, source_index), {})
+        by_vertex.setdefault(vertex, set()).add(cause)
 
     joins = []
-    for (path_index, source_index), landed in sorted(grouped.items()):
+    for (path_index, source_index), by_vertex in sorted(grouped.items()):
         path_vertices = updated_paths[path_index][0]
-        place_of = {vertex: index for index, vertex in enumerate(path_vertices)}
-        touched = sorted(place_of[vertex] for vertex in landed if vertex in place_of)
+        order = {vertex: index for index, vertex in enumerate(path_vertices)}
+        touched = sorted(
+            (order[vertex], causes)
+            for vertex, causes in by_vertex.items()
+            if vertex in order
+        )
         if len(touched) < 2:
             continue
         steps = _paint_arc(
             bm,
             path_vertices,
-            touched[0],
-            touched[-1],
+            touched[0][0],
+            touched[-1][0],
             updated_paths[path_index][2],
         )
         if steps:
-            joins.append((path_index, source_index, steps))
+            causes = set()
+            for _, landed_causes in touched:
+                causes |= landed_causes
+            if "no-slot" in causes:
+                reason = "no-slot"
+            elif "rung-slid" in causes:
+                reason = "rung-slid"
+            else:
+                reason = "classification"
+            joins.append(
+                {
+                    "path_index": path_index,
+                    "source_index": source_index,
+                    "landed_vertices": [index for index, _ in touched],
+                    "steps": steps,
+                    "reason": reason,
+                }
+            )
     print_seam_jogs(joins)
+    return tuple(joins)
 
 
 def _paint_arc(bm, vertices, first, last, closed):

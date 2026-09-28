@@ -128,6 +128,20 @@ def print_seam_crossings(anchors_per_path, counts):
     )
 
 
+def print_landing_fallback(region, rail, source_index):
+    """Report a crossing the sampler pinned nowhere, so its rung position is a guess.
+
+    One line per rail end, and only when the landing table had nothing for the source
+    vertex: a step that held every pin says nothing here, so a quiet log means the seam
+    aimed at vertices the sampler actually created.
+    """
+    print(
+        "[Loop Resample][diagnostic] landing-fallback "
+        f"region={region.get('region_index')} path={region.get('path_index')} "
+        f"rail={rail} source={source_index}"
+    )
+
+
 def print_seam_rungs(region, rungs):
     """Report which ladder column each seam crossing took in one rebuilt strip.
 
@@ -153,15 +167,24 @@ def print_seam_jogs(joins):
     """Report red lines that finished crossing a path by running along it.
 
     Silent when every crossing found the same path vertex on both sides, which is the
-    normal case -- so a missing line is not a missing seam.
+    normal case -- so a missing line is not a missing seam.  Each join names the cause
+    :func:`.seams.paint_path_seam_jogs` worked out, because a jog the log cannot explain
+    is a defect nobody can tell the difference between a refused pin, a slid rung and a
+    rail that read the crossing at two different vertices.
     """
     if not joins:
         return
     print(
         "[Loop Resample][diagnostic] seam-jogs "
         + " ".join(
-            f"path{path}>vertex{source}:{steps}edge(s)"
-            for path, source, steps in joins
+            "path{path}>vertex{source}:{steps}edge(s):{reason}[{slots}]".format(
+                path=join["path_index"],
+                source=join["source_index"],
+                steps=join["steps"],
+                reason=join["reason"],
+                slots=",".join(str(index) for index in join["landed_vertices"]),
+            )
+            for join in joins
         )
     )
 

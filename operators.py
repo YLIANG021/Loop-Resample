@@ -6,11 +6,13 @@ import bpy
 import bmesh
 
 from .core import (
+    apply_ordered_strip_plan,
     apply_path_edge_attributes,
     apply_path_point_attributes,
     apply_region_edge_attributes,
     apply_region_faces,
     apply_region_seams,
+    build_ordered_strip_plan,
     cleanup_detached_edges,
     detach_adjacent_strips,
     frozen_ladder,
@@ -18,7 +20,6 @@ from .core import (
     paint_path_seam_jogs,
     rebuild_detached_path,
     rebuild_ngon_cap,
-    rebuild_ordered_strip,
     rebuild_triangle_fan,
     region_outer_parameters,
     region_rungs,
@@ -191,6 +192,36 @@ def _step_request(session, counts, shape):
     }
 
 
+def _region_scope(region, kind, inner_vertices, outer_vertices):
+    """Which region a stage is working on, as fields for the failure line.
+
+    The step rebuilds every strip first and applies them after, so both passes need the
+    same identity and neither can inherit it from the other: a raise in the apply pass has
+    to name the region it was applying, not the one whose plan happened to be solved last.
+    """
+    return {
+        "region": region.get("region_index"),
+        "kind": kind,
+        "path": region["path_index"],
+        "outer": (
+            f"path{region['outer_path_index']}"
+            if region.get("outer_path_index") is not None
+            else "source" if region.get("outer_vertices") else "none"
+        ),
+        "rails": f"{len(inner_vertices)}x{len(outer_vertices)}",
+        "closed": int(region["closed"]),
+        "ladder": int(kind not in {"FAN", "NGON_CAP"}),
+        "phase": int(bool(region.get("phase_locked"))),
+        "faces": len(region["faces"]),
+        "delete": len(region.get("delete_edges") or ()),
+        "pole": (
+            getattr(region.get("pole_vertex"), "index", "-")
+            if kind == "FAN"
+            else "-"
+        ),
+    }
+
+
 def apply_counts(context, session, counts, shape=None):
     """Resample every locked path to ``counts`` and write the result into the edit mesh.
 
@@ -320,7 +351,11 @@ def _resample(session, bm, counts, shape=None):
             + " tEven={:.2f}".format(shape.t_even)
         )
     mark("samples")
-    snapshots = session.samples(counts, path_anchors, shape=shape)
+    # The landing table says which crossings the sampler could not pin.  The rung positions
+    # themselves still come out of the rails' parameters, which measure a rebuilt vertex in
+    # the source's own index frame -- but a refused pin leaves that search answering with
+    # the nearest sample, and only the table knows the difference.
+    snapshots, path_landings = session.samples(counts, path_anchors, shape=shape)
 
     # The copy arrived wearing the selection the session was locked with, and the capture
     # was the last thing that read it.  Taking it off here, while its indices still name
@@ -353,6 +388,7 @@ def _resample(session, bm, counts, shape=None):
 
     rebuilt_face_count = 0
     seam_landings = []
+    prepared = []
     for region in regions:
         kind = region["kind"]
         inner_vertices = updated_paths[region["path_index"]][0]
@@ -372,27 +408,7 @@ def _resample(session, bm, counts, shape=None):
             if has_ladder and not region.get("phase_locked")
             else None
         )
-        start_scope(
-            region=region.get("region_index"),
-            kind=kind,
-            path=region["path_index"],
-            outer=(
-                f"path{region['outer_path_index']}"
-                if region.get("outer_path_index") is not None
-                else "source" if region.get("outer_vertices") else "none"
-            ),
-            rails=f"{len(inner_vertices)}x{len(outer_vertices)}",
-            closed=int(region["closed"]),
-            ladder=int(has_ladder),
-            phase=int(bool(region.get("phase_locked"))),
-            faces=len(region["faces"]),
-            delete=len(region.get("delete_edges") or ()),
-            pole=(
-                getattr(region.get("pole_vertex"), "index", "-")
-                if kind == "FAN"
-                else "-"
-            ),
-        )
+        start_scope(**_region_scope(region, kind, inner_vertices, outer_vertices))
         frozen = frozen_ladder(
             ladders,
             region,
@@ -432,9 +448,51 @@ def _resample(session, bm, counts, shape=None):
             "region-parameters", time.perf_counter() - region_started,
             len(inner_vertices) + len(outer_vertices),
         )
+        plan = None
+        if has_ladder:
+            # The solve reads the two rails and nothing else: it takes no BMesh, so every
+            # strip can be settled before the first face of any of them exists, and a seam
+            # can be compared with the region on the far side of the same path before
+            # either side is applied.
+            mark("plan")
+            region_started = time.perf_counter()
+            plan = build_ordered_strip_plan(
+                inner_vertices,
+                outer_vertices,
+                region,
+                region_seam_waypoints(
+                    region, path_landings, inner_parameters, outer_parameters
+                ),
+                frozen=frozen,
+                ladders=ladders,
+                decision=decision,
+            )
+            accumulate_scan(
+                "strip-plan", time.perf_counter() - region_started, len(plan.faces)
+            )
+        prepared.append(
+            {
+                "region": region,
+                "kind": kind,
+                "inner": inner_vertices,
+                "outer": outer_vertices,
+                "inner_parameters": inner_parameters,
+                "outer_parameters": outer_parameters,
+                "plan": plan,
+            }
+        )
+
+    for entry in prepared:
+        region = entry["region"]
+        kind = entry["kind"]
+        inner_vertices = entry["inner"]
+        outer_vertices = entry["outer"]
+        inner_parameters = entry["inner_parameters"]
+        outer_parameters = entry["outer_parameters"]
+        plan = entry["plan"]
+        start_scope(**_region_scope(region, kind, inner_vertices, outer_vertices))
         mark("rebuild")
         region_started = time.perf_counter()
-        plan = None
         if kind == "FAN":
             rebuilt_faces = rebuild_triangle_fan(
                 bm,
@@ -446,18 +504,7 @@ def _resample(session, bm, counts, shape=None):
         elif kind == "NGON_CAP":
             rebuilt_faces = rebuild_ngon_cap(bm, inner_vertices, region)
         else:
-            rebuilt_faces, plan = rebuild_ordered_strip(
-                bm,
-                inner_vertices,
-                outer_vertices,
-                region,
-                region_seam_waypoints(
-                    region, inner_parameters, outer_parameters
-                ),
-                frozen=frozen,
-                ladders=ladders,
-                decision=decision,
-            )
+            rebuilt_faces = apply_ordered_strip_plan(bm, plan, region)
         accumulate_scan(
             "strip-rebuild", time.perf_counter() - region_started, len(rebuilt_faces)
         )
@@ -479,7 +526,9 @@ def _resample(session, bm, counts, shape=None):
         mark("region-attributes")
         region_started = time.perf_counter()
         rungs, carried, landings = (
-            region_seam_rungs(region, plan, inner_parameters, outer_parameters)
+            region_seam_rungs(
+                region, plan, inner_parameters, outer_parameters, path_landings
+            )
             if plan is not None
             else ((), (), ())
         )

@@ -12,7 +12,6 @@ from .geometry import (
     cached_reference_normals,
     reference_normal as _reference_normal,
 )
-from .planner import build_ordered_strip_plan
 from .utils import _point
 
 
@@ -261,35 +260,3 @@ def region_rungs(region, plan, inner_vertices):
     return [
         (index, (vertex, pole_vertex)) for index, vertex in enumerate(inner_vertices)
     ]
-
-
-def rebuild_ordered_strip(
-    bm,
-    inner_vertices,
-    outer_vertices,
-    region,
-    waypoints=(),
-    frozen=None,
-    ladders=None,
-    decision=None,
-):
-    """Plan, validate, and apply one ordered strip reconstruction.
-
-    The plan comes back with the faces because its ladder nodes are where the seam and
-    the destroyed rungs are recorded; looking an edge up by its two endpoints beats
-    rediscovering it from the faces that were just created.
-
-    ``frozen``, ``ladders`` and ``decision`` carry the saved wiring through to the
-    planner, which is the only place that knows when a ladder may be replayed and when
-    it has to be solved again.
-    """
-    plan = build_ordered_strip_plan(
-        inner_vertices,
-        outer_vertices,
-        region,
-        waypoints=waypoints,
-        frozen=frozen,
-        ladders=ladders,
-        decision=decision,
-    )
-    return apply_ordered_strip_plan(bm, plan, region), plan

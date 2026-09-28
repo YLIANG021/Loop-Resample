@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "loop_resample"
-version = "0.1.0"
+version = "0.1.1"
 name = "Loop Resample"
 tagline = "Reshape any loop or chain, any segment count, attributes survive"
 maintainer = "YLIANG"

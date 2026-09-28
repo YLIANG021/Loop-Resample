@@ -234,6 +234,15 @@ def sample_catmull_rom_curve(
     ``even`` is one strength of the distribution axis, from equal index steps toward
     equal arc length.  Zero hands back the arithmetic below untouched, which is the
     whole reason reverting a session lands on the mesh it started from.
+
+    ``(samples, landing)`` comes back, and ``landing`` names the returned slot each pinned
+    source point stands on.  Only :mod:`.seams` reads it, and only to say out loud which of
+    its crossings the slots could not hold: a refused pin leaves a rung aiming at the
+    nearest sample, and nothing else about the step tells that apart from a pin that held.
+    ``None`` means the step was the identity one, so slot ``k`` still holds source point
+    ``k``; an empty mapping means nothing is pinned at all -- either the rail had fewer
+    rentable slots than there were vertices to hold, which leaves every sample on the plain
+    distribution, or the path was never asked to hold any.
     """
     minimum = 3 if curve.is_closed else 2
     if target_count < minimum:
@@ -305,6 +314,13 @@ def sample_catmull_rom_curve(
     if not curve.is_closed:
         samples[0] = curve.control_points[0].copy()
         samples[-1] = curve.control_points[-1].copy()
+    landing = (
+        None
+        if valid_profile
+        and positions is table
+        and target_count == len(curve.control_points)
+        else {}
+    )
     if pin:
         points = curve.control_points
         ordered = sorted(
@@ -320,7 +336,8 @@ def sample_catmull_rom_curve(
         if slots is not None:
             for slot, index in zip(slots, ordered):
                 samples[slot] = points[index].copy()
-    return samples
+        landing = dict(zip(ordered, slots)) if slots is not None else {}
+    return samples, landing
 
 
 def parameterize_boundary(vertices, is_closed, curvature_weight=DEFAULT_CURVATURE_WEIGHT):
@@ -442,6 +459,10 @@ def sample_by_arclength(
     slot of the even distribution below, so a corner keeps its own vertex while the
     points between corners keep the spacing this step asked for rather than an
     interval of their own.
+
+    ``(samples, landing)`` comes back with the same meaning the curve sampler gives it, and
+    this fallback has no identity case: its slots are even in the *weighted* parameter, so
+    only the table says where a held corner ended up.
     """
     minimum = 3 if is_closed else 2
     if target_count < minimum:
@@ -476,4 +497,4 @@ def sample_by_arclength(
     if slots is not None:
         for slot, index in zip(slots, anchors):
             samples[slot] = _point(boundary.vertices[index])
-    return samples
+    return samples, dict(zip(anchors, slots)) if slots is not None else {}

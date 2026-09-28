@@ -192,9 +192,10 @@ class ResampleSession:
             tuple(_point(vertex) for vertex in path[0]) for path in paths
         )
         self.closed = tuple(bool(path[2]) for path in paths)
-        # How each strip's rails are paired, frozen per region for as long as its
-        # ladder grid keeps its size.  The shape axes move points without being asked
-        # to re-pair them; the count axis and the baseline step re-solve.  It lives here
+        # Each strip's frozen wiring as one unit: how its rails are paired, the transitions
+        # that pairing was solved into, the loan they were priced under and the crossings
+        # they route through.  The shape axes move points without being asked to re-pair
+        # them; the count axis and the baseline step re-solve.  It lives here
         # rather than on a region dict because ``capture`` replays a thawed copy of the
         # captured regions every step, and it dies with the session so no wiring can
         # leak into the next one.
@@ -346,8 +347,14 @@ class ResampleSession:
         only takes the moved points, and carries no measure table -- re-weighting that
         fallback would mean changing a third sampler for a source that is already
         broken.
+
+        Returns ``(coordinates, landings)``.  ``landings[path]`` is the sampler's answer to
+        where each pinned source vertex was put, in the same index frame as that path's
+        coordinate list; :mod:`.seams` reads it only to report a crossing whose pin the
+        slots could not hold.
         """
         outputs = []
+        landings = []
         for index, (curve, points, closed, count) in enumerate(
             zip(
                 self.curves if shape is None else shape.curves,
@@ -360,21 +367,22 @@ class ResampleSession:
             if shape is not None and shape.points[index] is not None:
                 points = shape.points[index]
             if curve is None:
-                coordinates = sample_by_arclength(
+                coordinates, landing = sample_by_arclength(
                     points,
                     count,
                     closed,
                     forced_anchors=path_anchors,
                 )
             else:
-                coordinates = sample_catmull_rom_curve(
+                coordinates, landing = sample_catmull_rom_curve(
                     curve,
                     count,
                     anchors=path_anchors,
                     even=shape.t_even if shape is not None else 0.0,
                 )
             outputs.append(list(coordinates))
-        return outputs
+            landings.append(landing)
+        return outputs, landings
 
     def parameters(self, path_index, vertices, frame=None):
         """Place current path vertices in the locked source's parameter frame.

@@ -716,6 +716,34 @@ def _seam_waypoint_nodes(waypoints, allowed, inner_steps, outer_steps, depth=0):
     return nodes, tuple(sorted(dropped))
 
 
+def _cached_waypoint_attempt(frozen, waypoints, inner_steps, outer_steps):
+    """The promises a saved ladder was won on, handed back to the solve that replaces it.
+
+    ``waypoints`` are what the crossings ask for *after* the shape axis moved the rails, and
+    a moved rail can answer one of them with its neighbour: the pinned vertex still reads
+    back as its own source fraction, but the samples around it have been re-spaced, so the
+    nearest column to a crossing that sits between two vertices is a coin the moved rail
+    flips.  The entry's own nodes are the columns its wiring actually routed through, so
+    re-solving on them keeps the strip on the ladder it had instead of flipping it to
+    whichever one the re-spaced rail happens to point at now.
+
+    ``dropped`` is still measured against the live crossings, under the new rule ``moved``:
+    a crossing the replayed wiring never promised is one the rung painter slides, and the
+    line has to say which.  Nothing is renegotiated here -- a strip that lost its freeze
+    gets one answer, the same one it gave when the ladder was won.
+    """
+    depth = frozen["depth"]
+    allowed = _allowed_transitions(inner_steps, outer_steps, depth)
+    nodes = frozen["waypoints"]
+    dropped = tuple(
+        sorted(
+            (inner_index, outer_index, "moved")
+            for inner_index, outer_index in set(waypoints) - set(nodes)
+        )
+    )
+    return depth, allowed, nodes, dropped
+
+
 def _surplus_names(allowed):
     """Which kinds this strip may spend a rail column with, for the seam-skip line."""
     return "+".join(kind for kind in allowed if kind != "QUAD") or "none"
@@ -726,7 +754,9 @@ def _waypoint_reach_diagnostic(nodes, dropped, allowed):
 
     ``band`` says the strip can never reach that ``d = outer - inner`` whatever the other
     crossings ask for, ``chain`` that the position lost the monotone competition to the
-    ones kept, and ``lattice`` that it is not a rung the ladder has at all.  A pruned
+    ones kept, ``lattice`` that it is not a rung the ladder has at all, and ``moved`` that
+    the crossing only appeared after a frozen wiring had already been refused, so the
+    ladder being rebuilt now is not the one that promise was weighed against.  A pruned
     crossing otherwise leaves only a slid rung behind, which names no reason.
     """
     dropped_text = " ".join(
@@ -1745,7 +1775,10 @@ def frozen_ladder(ladders, region, inner_vertices, outer_vertices, refresh=False
     Only a step that leaves the ladder's grid the same size has anything to say about a
     saved sequence, which is precisely what the shape axes are: :mod:`.curves` keeps a
     path's sample count alone unless the count wheel moved, so the rails advance over
-    the same number of columns and the saved run of transitions still names faces.
+    the same number of columns and the saved run of transitions still names faces.  The
+    entry comes back whole -- the transitions, the order they count, the loan they were
+    priced under and the crossings they route through -- because a replay the geometry
+    refuses has to be rebuilt on the promises that wiring was won on.
 
     ``refresh`` is the step taken with no shape applied -- the session's baseline, run
     first and again on right-click cancel.  It re-solves even when the grid matches,
@@ -1954,11 +1987,14 @@ def build_ordered_strip_plan(
     and the local swap are skipped outright and only the two rails' coordinates move,
     which is what stops a shape axis from re-pairing a strip it was never asked to
     touch.  ``ladders`` is where a solved ladder is written back under
-    ``region["region_index"]``, together with the ``decision`` the outer rail was walked
-    by -- the two are one unit, since the saved transitions are indices into that order.
-    A ladder that no longer fits its rails is re-solved and *does* overwrite the entry,
-    so a freeze that outlived its own geometry costs one flip and then settles instead
-    of costing one flip per tick.
+    ``region["region_index"]`` as one unit -- the transitions, the ``decision`` the outer
+    rail was walked by because the saved transitions are indices into that order, the
+    ``depth`` of loan they were priced under, and the ``waypoints`` they actually route
+    through.  A ladder that no longer fits its rails is re-solved and *does* overwrite the
+    entry, so a freeze that outlived its own geometry costs one flip and then settles
+    instead of costing one flip per tick -- and that one flip is taken on the saved
+    promises rather than on what the re-spaced rails answer now, which is what keeps the
+    flip from moving a crossing to a neighbouring column as well as moving the wiring.
     """
     closed = region["closed"]
     if len(inner_vertices) < (3 if closed else 2):
@@ -2014,9 +2050,28 @@ def build_ordered_strip_plan(
         # before the search spends a sweep proving the narrow band cannot reach, and only
         # when the wider band actually keeps a crossing the narrow one gave up: a loan that
         # buys no node would cost this strip faces for nothing, and a strip with nothing
-        # dropped is never offered one at all.
-        attempts = [(0, allowed, seam_nodes, dropped_nodes)]
-        if dropped_nodes:
+        # dropped is never offered one at all.  Kept and bought are compared as node *sets*,
+        # not as lengths, because the wider band reorders which rungs the ladder may stand
+        # on and can reach a new crossing while losing one of this band's own -- and a rung
+        # the strip already pinned is worth more than one it is only being offered.
+        attempts = [(0, allowed, seam_nodes, dropped_nodes, "unreachable")]
+        if reused and frozen["waypoints"]:
+            # The wiring this step was entitled to replay refused its geometry, but the
+            # crossings it was won on are the same crossings, and the moved rails do not get
+            # to renegotiate them.  So the saved node set is the one offered to the search
+            # and the narrow set stays behind it as the answer this strip gave before the
+            # seam asked for anything -- which also means a rebuilt ladder never spends a
+            # second sweep on a loan the freeze already decided.
+            attempts = [
+                (
+                    *_cached_waypoint_attempt(
+                        frozen, tuple(waypoints), inner_steps, outer_steps
+                    ),
+                    "moved",
+                ),
+                (0, allowed, seam_nodes, dropped_nodes, "unreachable"),
+            ]
+        elif dropped_nodes:
             borrowed_allowed = _allowed_transitions(
                 inner_steps, outer_steps, SEAM_EXCURSION_DEPTH
             )
@@ -2027,7 +2082,7 @@ def build_ordered_strip_plan(
                 outer_steps,
                 SEAM_EXCURSION_DEPTH,
             )
-            if len(borrowed_nodes) > len(seam_nodes):
+            if set(seam_nodes) < set(borrowed_nodes):
                 attempts.insert(
                     0,
                     (
@@ -2035,9 +2090,15 @@ def build_ordered_strip_plan(
                         borrowed_allowed,
                         borrowed_nodes,
                         borrowed_dropped,
+                        "unreachable",
                     ),
                 )
-        for loan, loan_allowed, loan_nodes, loan_dropped in attempts:
+            else:
+                # The loan was weighed and put down, so the crossings still dropped did not
+                # go because no band could reach them.  Naming that is the difference
+                # between a band too narrow for the mesh and a strip that refused to pay.
+                attempts[0] = (0, allowed, seam_nodes, dropped_nodes, "traded")
+        for loan, loan_allowed, loan_nodes, loan_dropped, skip_reason in attempts:
             if loan:
                 print_seam_excursion(
                     region,
@@ -2047,9 +2108,14 @@ def build_ordered_strip_plan(
                     ),
                 )
             elif loan_dropped:
+                # ``unreachable`` is the band's own refusal; ``moved`` is the frozen wiring
+                # declining to chase a crossing that only appeared when its rails were
+                # re-spaced; ``traded`` is a wider band that would have reached it at the
+                # price of one this band already had.  Three different things, and a log
+                # that names one of them wrongly names none of them.
                 print_seam_crossing_skipped(
                     region,
-                    "unreachable",
+                    skip_reason,
                     _waypoint_reach_diagnostic(
                         loan_nodes, loan_dropped, loan_allowed
                     ),
@@ -2092,6 +2158,8 @@ def build_ordered_strip_plan(
                     "transitions": transitions,
                     "score": score,
                     "decision": decision,
+                    "depth": loan,
+                    "waypoints": loan_nodes,
                 }
             else:
                 # Only a complete ladder is ever kept, and a refusal to keep one has to

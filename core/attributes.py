@@ -333,14 +333,15 @@ def apply_region_edge_attributes(bm, region, inner_parameters, rungs, carried=()
 def region_outer_parameters(region, outer_vertices, frame_points=None):
     """Place the outer rail in the frozen frame its seam crossings were measured in.
 
-    A fixed rail projects back onto itself exactly; a rail that is itself a
-    resampled path only approximates it, which is enough to pick the nearest
-    vertex for a crossing to land on.
+    Both rails come back in the source's segment-index unit, so this is a change of
+    coordinates and not an approximation: a fixed rail maps onto itself exactly, and a
+    rail that is itself a resampled path puts the vertex the sampler pinned on source
+    vertex ``k`` at ``k / segments`` -- the number the crossing carries -- while the
+    samples between the pinned vertices land wherever the distribution left them.
 
     ``frame_points`` stands in for that rail's own frozen points where the step moved
-    them, which keeps the approximation the same size it always was: a moved rail
-    sampled from its own moved curve is only off the frame it is asked about by the
-    difference between that curve and its chords.
+    them.  The index frame is the same length and the same order, so the pin still reads
+    back at ``k / segments``; only the positions the projection runs against move.
     """
     frames = region.get("frames") or {}
     outer = frames.get("outer") or {}

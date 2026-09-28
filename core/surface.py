@@ -6,26 +6,29 @@ rail chains: one rail's source corners sorted by u, where corners disagreeing at
 the same u start a new chain.  A chain is therefore one island's continuous
 polyline along the rail, and sampling the chain of the matched source face keeps
 neighbouring rebuilt faces in agreement at every shared vertex while an island
-boundary still cuts them apart.  Note this splits on the *stored values*, which is
-not the same set of edges as the marked seam -- the red line only says where the user
-thinks the islands part, and :mod:`.seams` now reads the same disagreement to decide
-where new vertices land (see :func:`island_boundary_edges`), while this decides which
-island a corner reads
-from.  Corner vertex colors -- both the byte and the float layer Blender
-exposes -- travel the same chains and share the split-when-corners-disagree rule,
-so a color change is preserved even where it coincides with a UV seam; only UV
-layers are treated as periodic.
+boundary still cuts them apart.  This splits on *every* stored value, which is a wider
+set of edges than the one :mod:`.seams` cuts the band on: a disagreement has to reach
+the geometry by way of a mark the user drew or a UV that parts, while a corner that
+differs only in color changes nothing about where vertices go and everything about what
+they inherit.  So this decides which island a corner reads from, and which copy of a
+painted color a face keeps; :func:`island_boundary_edges` decides, out of the UV layers
+alone, where a rebuilt vertex has to stand.  Corner vertex colors -- both the byte and
+the float layer Blender exposes -- travel the same chains and share the
+split-when-corners-disagree rule, so a color change is preserved even where it coincides
+with a UV seam; only UV layers are treated as periodic.
 
 Only two v values ever occur -- 0 on the inner rail, 1 on the outer rail -- so
 sampling a face reduces to interpolating along the rail the corner belongs to.
 
-One case interpolation cannot answer: a rail vertex an island boundary leaves through
-keeps *two* corners at one u, and closing the ring stitches both into the same chain,
+One case interpolation cannot answer: a rail vertex the stored values disagree at keeps
+*two* corners at one u, and closing the ring stitches both into the same chain,
 so the chain is a function of u that has to pick one.  It always picks the one reached
 from below, which is right for the face ending there and a whole island away from the
 face starting there -- that face reads a chord across the map.  So a corner standing on
 such a vertex takes the value the matched source face stores there, which is the copy
-its own island has; see :func:`_tied_corner`.
+its own island has; see :func:`_tied_corner`.  A tie that only colors disagree is
+resolved by the same lookup, and costs nothing but the read: both copies carry one UV,
+and the face gets its own color either way.
 
 A boundary with no seam mark on it used to be unanswerable, because no rebuilt vertex
 stood there at all.  :func:`island_boundary_edges` now hands those to :mod:`.seams`,
@@ -99,12 +102,27 @@ def _corner_layers(bm):
     return layers
 
 
+def _uv_corner_layers(bm):
+    """The corner values that decide where the band is cut open, which are its UVs.
+
+    :func:`_corner_layers` hands back these plus the color layers, and the transfer
+    needs the whole set, because a painted corner that disagrees with its neighbour is
+    still a value a rebuilt face has to inherit from one copy or the other.  Whether a
+    disagreement is worth a *vertex* is a different question, and only two answers count:
+    a mark the user drew, and a UV that parts.  A color alone says nothing about islands.
+    """
+    return {
+        key: layer for key, layer in _corner_layers(bm).items() if key[0] == "uv"
+    }
+
+
 def corner_signature(values):
     """The per-corner values of one loop, cut to the step every comparison rounds to.
 
     Both halves of the island test read this: :class:`._RailBuilder` keys a rail corner
-    by it, and :func:`island_boundary_edges` compares the two faces of an edge with it.
-    One definition is what makes "this corner disagrees" mean the same thing in each.
+    by the whole set, and :func:`island_boundary_edges` compares the two faces of an edge
+    by its UV entries only.  One definition of the rounding is what makes "these corners
+    differ" mean the same thing in each.
     """
     return tuple(
         (
@@ -128,7 +146,7 @@ def _loop_values(loop, layers):
 
 
 def island_boundary_edges(edges, bm):
-    """Edges whose two faces store different corner values for the same vertex.
+    """Edges whose two faces store different UVs for the same vertex.
 
     The red line is what a user thinks of as a seam, but what the transfer reads is the
     stored corners, and the two disagree on any mesh whose seams were never marked --
@@ -138,11 +156,16 @@ def island_boundary_edges(edges, bm):
     the marked ones: same test, same rounding, so a boundary this cannot see is one the
     chain splitting cannot see either.
 
+    The test is the UVs alone.  A corner color that disagrees across an edge splits a
+    chain, and the face on each side keeps its own color -- but no island parts there,
+    no face straddles a texture map, and the user never drew a line, so it buys a pinned
+    vertex and the extra face a loan for it costs.
+
     An edge with a face on only one side, or on more than two, has no pair to compare
-    and is not a boundary.  With no corner layers at all nothing disagrees, which is the
+    and is not a boundary.  With no UV layer at all nothing disagrees, which is the
     common case: a mesh without a UV map gains no boundary here and no pinning.
     """
-    layers = _corner_layers(bm)
+    layers = _uv_corner_layers(bm)
     if not layers:
         return ()
     corners = {}
@@ -322,8 +345,12 @@ def capture_region_faces(bm, region, paths):
             # break a tie; the dump names candidates by it.
             record["diag_id"] = order
     unmarked_cuts = _unmarked_boundaries(
-        region, doubled, inner_vertices, outer_vertices,
-        inner_segments, outer_segments,
+        region,
+        [builder.uv_doubled_parameters() for builder in builders],
+        inner_vertices,
+        outer_vertices,
+        inner_segments,
+        outer_segments,
     )
     if DIAGNOSE_UV and unmarked_cuts:
         print_uv_note(
@@ -343,17 +370,22 @@ def capture_region_faces(bm, region, paths):
 
 
 def _unmarked_boundaries(
-    region, doubled, inner_vertices, outer_vertices, inner_segments, outer_segments
+    region, uv_doubled, inner_vertices, outer_vertices, inner_segments, outer_segments
 ):
     """Rail vertices an island boundary splits that no crossing was built on.
 
     A rebuilt vertex on the cut is what makes the corner answerable, and only a crossing
-    puts one there -- :mod:`.seams` now reads one off a mark or off the stored corners,
-    so a cut neither reaches is the one a face still has to cover both islands at once.
-    No choice of corner values makes that face small, so it is drawn as a chord across
-    the map, and this is what the closing note counts.  Which boundaries are split comes
-    from the stored corner values, and only to decide *what to say*: this reaches no
-    waypoint, no anchor and no vertex position.
+    puts one there -- :mod:`.seams` now reads one off a mark or off a parted UV, so a cut
+    neither reaches is the one a face still has to cover both islands at once.  No choice
+    of corner values makes that face small, so it is drawn as a chord across the map, and
+    this is what the closing note counts.
+
+    The set handed in is the UV one and not the wider :meth:`_RailBuilder.doubled_parameters`,
+    because the note's entire advice is "mark a seam here": a u that doubles only on a
+    painted color already transfers every corner its own face stores, has no boundary a
+    mark could line up, and would be reported as a defect the user has no way to fix.
+    Which boundaries are split still comes from the stored values, and only to decide
+    *what to say*: this reaches no waypoint, no anchor and no vertex position.
     """
     marked = {
         vertex
@@ -375,8 +407,8 @@ def _unmarked_boundaries(
     cuts = []
     for rail, (values, vertices, segments) in enumerate(
         (
-            (doubled[0], inner_vertices, inner_segments),
-            (doubled[1], outer_vertices, outer_segments),
+            (uv_doubled[0], inner_vertices, inner_segments),
+            (uv_doubled[1], outer_vertices, outer_segments),
         )
     ):
         if not values:
@@ -450,10 +482,10 @@ class _RailBuilder:
     def doubled_parameters(self):
         """The u values this rail holds more than one corner at.
 
-        That is where an island boundary leaves the rail: one mesh vertex, two
-        corners with different values, and a chain -- which is a function of u --
-        can only answer one of them.  Every source face that stands on such a
-        vertex is asked which copy is its own; see :func:`_tied_corner`.
+        That is where a stored value has to be chosen rather than interpolated: one mesh
+        vertex, two corners, and a chain -- which is a function of u -- can only answer
+        one of them.  Every source face that stands on such a vertex is asked which copy
+        is its own; see :func:`_tied_corner`.
         """
         seen = set()
         doubled = set()
@@ -461,6 +493,32 @@ class _RailBuilder:
             if key[0] in seen:
                 doubled.add(key[0])
             seen.add(key[0])
+        return frozenset(doubled)
+
+    def uv_doubled_parameters(self):
+        """The u values this rail holds more than one *UV* at.
+
+        :meth:`doubled_parameters` is the wider set: two corners that differ only in
+        color are two knots, so they double a u here too, yet no island parts there and
+        no crossing was ever asked to pin one.  Only this narrower answer can back the
+        closing note's promise that a face at the position it names reads a chord across
+        the texture map.
+        """
+        first = {}
+        doubled = set()
+        for key in self._parent:
+            signature = corner_signature(
+                {
+                    name: value
+                    for name, value in self._values[key].items()
+                    if name[0] == "uv"
+                }
+            )
+            u = key[0]
+            if u not in first:
+                first[u] = signature
+            elif first[u] != signature:
+                doubled.add(u)
         return frozenset(doubled)
 
     def _key(self, corner):
