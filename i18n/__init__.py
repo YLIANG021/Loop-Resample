@@ -9,7 +9,11 @@ Every string is written in English in the source, and that English sentence is i
 key.  A missing translation is not an error, it is the English text, so adding a string
 without translating it degrades to a language the user can read rather than to a blank chip.
 ``en_US.MESSAGES`` is the list every other file is written against, and each locale answers
-all of it: forty-eight strings in, forty-eight out.
+all of it: the same keys in and out, one per line of that list.
+
+Registering the tables with Blender rather than only reading them here is what lets the
+hover text of our own operators come out translated: an operator description is looked up at
+draw time under ``("*", sentence)``, which is exactly the key these tables are written with.
 """
 
 import bpy

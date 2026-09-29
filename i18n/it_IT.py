@@ -231,6 +231,6 @@ TRANSLATIONS = {
         "*",
         "The wheel could not start: this viewport no longer has a mesh to adjust.",
     ): (
-        "La rotellina non ha potuto avviarsi: questa vista non contiene più una mesh da regolare."
+        "La rotella non ha potuto avviarsi: questa vista non contiene più una mesh da regolare."
     ),
 }

@@ -197,12 +197,12 @@ TRANSLATIONS = {
         "*",
         "Only available in mesh Edit Mode, with the vertex or edge select mode turned on.",
     ): (
-        "Chỉ khả dụng trong chế độ Sửa của lưới, với chế độ chọn là đinh hoặc cạnh."
+        "Chỉ khả dụng trong chế độ Sửa của lưới, với chế độ chọn là đỉnh hoặc cạnh."
     ),
     (
         "*",
         "The wheel could not start: this viewport no longer has a mesh to adjust.",
     ): (
-        "Không thể bắt đầu con lăn: khung nhìn này không còn lưới đềiều chỉnh."
+        "Không thể bắt đầu bánh xe: khung nhìn này không còn lưới để điều chỉnh."
     ),
 }

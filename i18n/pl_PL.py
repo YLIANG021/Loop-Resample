@@ -188,7 +188,7 @@ TRANSLATIONS = {
         "*",
         "Only available in mesh Edit Mode, with the vertex or edge select mode turned on.",
     ): (
-        "Dędostępne tylko w trybie edycji siatki, gdy wybór ustawiony jest na wierzchołki lub krawędzie."
+        "Dostępne tylko w trybie edycji siatki, gdy wybór ustawiony jest na wierzchołki lub krawędzie."
     ),
     (
         "*",

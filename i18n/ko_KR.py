@@ -171,12 +171,12 @@ TRANSLATIONS = {
         "*",
         "Only available in mesh Edit Mode, with the vertex or edge select mode turned on.",
     ): (
-        "메시 편집 모드에서만 사용할 수 있습니다. 선택 모드를 정점 또는 변으로 설정하세요."
+        "메시 편집 모드에서만 사용할 수 있습니다. 선택 모드를 정점 또는 엣지로 설정하세요."
     ),
     (
         "*",
         "The wheel could not start: this viewport no longer has a mesh to adjust.",
     ): (
-        "회레를 시작할 수 없습니다: 이 뷰에 조정할 메시가 없습니다."
+        "휠을 시작할 수 없습니다: 이 뷰에 조정할 메시가 없습니다."
     ),
 }

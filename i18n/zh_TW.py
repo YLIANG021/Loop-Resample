@@ -17,7 +17,7 @@ TRANSLATIONS = {
     ): (
         "鎖定目前的選取項，再用滾輪設定它的段數。按住 Shift 滾動可平滑曲線，"
         "按住 Ctrl 滾動可讓點的分布更均勻，每滾一格加強一檔。"
-        "左鍵維持，右鍵回復之前的狀態"
+        "左鍵維持，右鍵回復之前的狀態。"
     ),
     (
         "*",
@@ -147,12 +147,12 @@ TRANSLATIONS = {
         "*",
         "Only available in mesh Edit Mode, with the vertex or edge select mode turned on.",
     ): (
-        "僅在網格的編輯模式下可用，且選擈模式需為頂點或邊。"
+        "僅在網格的編輯模式下可用，且選取模式需為頂點或邊。"
     ),
     (
         "*",
         "The wheel could not start: this viewport no longer has a mesh to adjust.",
     ): (
-        "ヶ轉未能啟動：此影挀中已沒有可調整的網格。"
+        "滾輪未能啟動：此視窗中已沒有可調整的網格。"
     ),
 }

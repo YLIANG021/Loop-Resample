@@ -153,16 +153,31 @@ def _show_refusal(context, error):
     return True
 
 
+# The two menu tooltips, kept in English on purpose.  Blender translates an operator's
+# description itself, at the moment it draws the hover text, through the same
+# ``("*", sentence)`` table the overlay reads -- so these sentences come out in whatever
+# language the interface is in, and follow a language change the moment it happens.
+# Running them through ``pgettext`` here instead would freeze them in the language that
+# happened to be set when the add-on loaded, because the description is read off the class
+# once, at registration, and never asked again.
+_TOOLTIP_MAIN = (
+    "Lock the selection, then scroll to set its segment count.  Shift scrolls smooth "
+    "the curve, Ctrl scrolls spread its points, and each tick strengthens that effect.  "
+    "Left-click keeps it, right-click reverts."
+)
+_TOOLTIP_ENTRY = (
+    "Quickly adjust the segment count of any edge:  scroll sets the count, Shift "
+    "smooths the edge, Ctrl spreads the points evenly, and attributes such as "
+    "UVs, seams and vertex colors survive the change intact."
+)
+
+
 class MESH_OT_loop_resample_interactive(bpy.types.Operator):
     """Scroll to set the locked paths' counts, shape and spacing, live."""
 
     bl_idname = "mesh.loop_resample_interactive"
     bl_label = "Adjust Resample by Wheel"
-    bl_description = pgettext(
-        "Lock the selection, then scroll to set its segment count.  Shift scrolls smooth "
-        "the curve, Ctrl scrolls spread its points, and each tick strengthens that effect.  "
-        "Left-click keeps it, right-click reverts."
-    )
+    bl_description = _TOOLTIP_MAIN
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -562,11 +577,7 @@ class MESH_OT_loop_resample_interactive_entry(bpy.types.Operator):
     bl_label = "Loop Resample"
     # Without this the class docstring would surface as the menu's hover text, and that
     # text is about the deferred invoke rather than about what the tool does.
-    bl_description = pgettext(
-        "Quickly adjust the segment count of any edge:  scroll sets the count, Shift "
-        "smooths the edge, Ctrl spreads the points evenly, and attributes such as "
-        "UVs, seams and vertex colors survive the change intact."
-    )
+    bl_description = _TOOLTIP_ENTRY
     # Not a thing to search for: the operator it forwards to is the one that belongs in the
     # list, and two entries worded identically would read as one of them being broken.
     bl_options = {"INTERNAL"}
