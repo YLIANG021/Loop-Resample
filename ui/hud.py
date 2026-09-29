@@ -13,14 +13,13 @@ The number is segments, not points, because a resampled ring is described by how
 pieces it was cut into -- that is the number on the wire, and the one the user counts.
 See ``segment_counts`` for why it is one less than the planner's point count.
 
-The row of chips along the bottom is yl_bevelflow's, and it stays what his is: a readout,
-not a control.  Nothing here is clickable, because the wheel already is the control; what the
-row carries is which axis the wheel is pointed at, and how far along it the standing mesh
-sits at.  The second of those is now a percentage rather than a pole word: a tick raises one
-function further instead of choosing between two, so the reading is a value the wheel
-actually chose.  It gains his row's
-other job too: when the planner refuses a step, the reason lands in the row as a warning chip,
-because a scroll that does nothing and says nothing reads as a dead wheel.
+The row of chips along the bottom is a readout, not a control.  Nothing here is clickable,
+because the wheel already is the control; what the row carries is which axis the wheel is
+pointed at, and how far along it the standing mesh sits at.  The second of those is a
+percentage rather than a pole word: a tick raises one function further instead of choosing
+between two, so the reading is a value the wheel actually chose.  The row takes a second job
+too: when the planner refuses a step, the reason lands in it as a warning chip, because a
+scroll that does nothing and says nothing reads as a dead wheel.
 
 That lesson is why the second half of this file exists.  A refusal can also happen before a
 session starts -- the selection on screen is not one the tool can use -- and then there is no
@@ -64,9 +63,8 @@ _SHADOW_COLOR = (0.05, 0.05, 0.05, 0.85)
 # The adjusted paths, traced over the mesh they are being rebuilt on.  Two colours
 # because two things are being said: the *edge* is what got resampled, so it is fluorescent
 # green and reads as a line, and the *point* on it is the number printed above it, so the
-# dot is the same bright yellow as that number and reads as a node.  yl_meshcheckhud's
-# technique, worth borrowing whole: one POST_VIEW handler, the POLYLINE_UNIFORM_COLOR
-# builtin, and a batch of world-space segments.
+# dot is the same bright yellow as that number and reads as a node.  Both come from one
+# POST_VIEW handler, the POLYLINE_UNIFORM_COLOR builtin, and a batch of world-space segments.
 _HIGHLIGHT_COLOR = (0.2, 1.0, 0.2, 1.0)
 _HIGHLIGHT_POINT_COLOR = (1.0, 0.95, 0.1, 1.0)
 _HIGHLIGHT_WIDTH = 2.5
@@ -97,10 +95,10 @@ _FAILURE_LIMIT = 96
 # A refusal that came before the session got as far as starting has nowhere to be squeezed,
 # so it is allowed the whole sentence and a smaller font instead of a cut ending.
 _NOTICE_LIMIT = 220
-# The chip row is yl_bevelflow's, measure for measure: his buttons are laid out at a
-# fixed 1.3 * 0.96 spacing scale, the text is lifted off its padding by hand.  The one place
-# this row parts from his is the outline, which he draws one pixel wide and this draws two --
-# see _CHIP_BORDER.
+# The chip row's spacing is a fixed 1.3 * 0.96 scale and the text is lifted off its padding by
+# hand, so the band is measured in its own pixels rather than in interface units.  The one
+# place it is deliberately heavier than the plates it surrounds is the outline, at two pixels
+# -- see _CHIP_BORDER.
 _CHIP_BUTTON_SCALE = 0.96
 _CHIP_UI_SCALE = 1.3 * _CHIP_BUTTON_SCALE
 _CHIP_PADDING_X = 9.0
@@ -280,7 +278,7 @@ def _polyline_shader():
 
 
 def _point_shader():
-    """The round, soft-edged dot yl_meshcheckhud draws its problem vertices with.
+    """The round, soft-edged dot the path points are drawn with.
 
     The built-in point shader would do, but it squares off at the edges and takes no
     antialiasing, and a row of those reads as a dashed ruler rather than a set of points.
@@ -315,11 +313,14 @@ def _point_shader():
     return _HIGHLIGHT_POINT_SHADER
 
 
-def _rounded_box_geometry(width, height, radius, border_width, resolution=12):
-    """Corner arcs and triangle indices for a rounded rectangle, keyed by a rounded size.
+def _rounded_box_batches(width, height, radius, border_width, shader, resolution=12):
+    """The two triangles of a rounded rectangle, as batches ready to draw.
 
-    Taken from yl_bevelflow's HUD.  The key quantises the size so a chip that changes
-    width by a pixel when the count gains a digit keeps the batch it already built.
+    The key quantises the size so a chip that changes width by a pixel when the count gains
+    a digit keeps the batch it already built.  The vertices are stored offset from the box's
+    own bottom-left rather than from the region's, which is what lets one batch serve a chip
+    that moves: where the plate sits is applied as a matrix translation at draw time, so a
+    batch built for one frame is still correct in the next one.
     """
     key = (
         int(float(width) // 5) * 5,
@@ -371,10 +372,18 @@ def _rounded_box_geometry(width, height, radius, border_width, resolution=12):
         )
 
     cached = (
-        tuple(outer_verts),
-        tuple(inner_verts),
-        tuple(background_indices),
-        tuple(border_indices),
+        batch_for_shader(
+            shader,
+            "TRIS",
+            {"pos": [(width / 2.0, height / 2.0)] + list(inner_verts)},
+            indices=background_indices,
+        ),
+        batch_for_shader(
+            shader,
+            "TRIS",
+            {"pos": list(outer_verts) + list(inner_verts)},
+            indices=border_indices,
+        ),
     )
     _BOX_CACHE[key] = cached
     while len(_BOX_CACHE) > _BOX_CACHE_LIMIT:
@@ -385,29 +394,19 @@ def _rounded_box_geometry(width, height, radius, border_width, resolution=12):
 def _draw_rounded_box(x, y, width, height, background, border, radius, border_width):
     """A filled rounded rectangle with an outline, in region pixels from the bottom left."""
     radius = min(radius, min(width, height) / 2)
-    outer_rel, inner_rel, background_indices, border_indices = _rounded_box_geometry(
-        width, height, radius, border_width
-    )
     shader = _uniform_color_shader()
+    background_batch, border_batch = _rounded_box_batches(
+        width, height, radius, border_width, shader
+    )
     shader.bind()
     gpu.state.blend_set("ALPHA")
-
-    background_verts = [(x + width / 2, y + height / 2)] + [
-        (x + offset_x, y + offset_y) for offset_x, offset_y in inner_rel
-    ]
-    batch = batch_for_shader(
-        shader, "TRIS", {"pos": background_verts}, indices=background_indices
-    )
+    gpu.matrix.push()
+    gpu.matrix.translate((x, y, 0.0))
     shader.uniform_float("color", background)
-    batch.draw(shader)
-
-    border_verts = [(x + offset_x, y + offset_y) for offset_x, offset_y in outer_rel]
-    border_verts += [(x + offset_x, y + offset_y) for offset_x, offset_y in inner_rel]
-    batch = batch_for_shader(
-        shader, "TRIS", {"pos": border_verts}, indices=border_indices
-    )
+    background_batch.draw(shader)
     shader.uniform_float("color", border)
-    batch.draw(shader)
+    border_batch.draw(shader)
+    gpu.matrix.pop()
     gpu.state.blend_set("NONE")
 
 
@@ -425,7 +424,7 @@ def _counts_text(values, closed):
 
 
 def _chips(operator):
-    """The three axes and the two clicks, as the typed parts yl_bevelflow's chip row takes.
+    """The three axes and the two clicks, as the typed parts the chip row takes.
 
     Every axis names the key that claims the wheel, armed or not, so the row reads as a
     list of what drives what and the lit one is where the next tick lands.  Under a held
@@ -500,7 +499,7 @@ def _draw_chip(
     text_size,
     scale=1.0,
 ):
-    """One chip: yl_bevelflow's rounded box, his text placement, our outline width.
+    """One chip: a rounded box, text lifted off its padding, an outline two pixels wide.
 
     ``width``/``box_height``/the two offsets are the chip's *resting* measures, the ones the
     row was laid out with, and ``scale`` grows the drawing about the chip's own centre from
@@ -538,10 +537,9 @@ def _draw_chip(
 def _chip_metrics(chips, text_size=None):
     """Widths, height and total run of a row of chips, in region pixels.
 
-    Nothing here is multiplied by the interface scale, because yl_bevelflow's row is not
-    either: his measures are his own fixed spacing and that is the size they land at on
-    screen.  Multiplying them by ``ui_scale`` on top made this band a size larger than the
-    one his HUD draws.
+    Nothing here is multiplied by the interface scale: the paddings and the gap are already
+    written as the pixels they are meant to land at on screen, and scaling them on top grew
+    the whole band past the spacing they describe.
 
     ``text_size`` is let through because both the row and the failure notice have to fit
     the region they are drawn in, and the only way to know that is to measure at a size and
@@ -618,7 +616,7 @@ def _draw_failure_chip(operator, region, above):
 
 
 def _draw_chip_row(operator, region):
-    """Lay the chips out as one centred band, the way yl_bevelflow's HUD does.
+    """Lay the chips out as one band, centred horizontally near the bottom of the region.
 
     The band belongs to the region rather than the area: the numbers above are region
     pixels too, and a viewport with a toolbar is a few pixels shorter than its area.
@@ -946,7 +944,7 @@ def _draw_notice(area):
 
 
 def clear_box_cache():
-    """Forget every rounded chip box so the next frame rebuilds its geometry."""
+    """Forget every rounded chip box so the next frame rebuilds its batches."""
     _BOX_CACHE.clear()
 
 

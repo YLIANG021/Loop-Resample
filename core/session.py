@@ -1,7 +1,6 @@
 """Frozen source snapshot shared by every step of one adjust session."""
 
 import bmesh
-import bpy
 
 from ..i18n import pgettext
 
@@ -29,7 +28,6 @@ from .utils import _point
 
 _ACTIVE = None
 _ACTIVE_KEY = None
-_WATCH_INTERVAL = 0.1
 
 # The only capture outputs that name a BMesh element.  Everything else a capture
 # produces is already a copied value or a plain number, so it can be handed to the
@@ -477,57 +475,18 @@ def begin(context):
     _release()
     _ACTIVE = session
     _ACTIVE_KEY = obj.data.as_pointer()
-    if not bpy.app.timers.is_registered(_watch):
-        bpy.app.timers.register(
-            _watch, first_interval=_WATCH_INTERVAL, persistent=True
-        )
     return session
 
 
-def end(context):
-    """Drop the active session and release its source mesh."""
-    if active(context) is None:
-        return
-    clear()
+def end():
+    """Drop the session the scroll owned and release its source mesh.
 
-
-def discard():
-    """Restore the frozen source over the mesh after edit mode ended on its own.
-
-    There is no edit bmesh to write into at this point, so the restore goes through
-    ``to_mesh`` and leaves the redraw and the undo push to whatever the user does
-    next -- unlike Cancel, which runs inside edit mode and does both.
+    Unconditional on purpose: there is one session live at a time, the modal that began it is
+    the only thing that calls this, and ``begin`` releases whatever came before it.  The
+    match against the context this used to do could only ever fail, and a fail left the
+    session and its frozen copy of the mesh standing with nothing left to free them.
     """
-    session = _ACTIVE
-    if session is None or _editing(session.obj):
-        return None
-    restored = session.open_bmesh()
-    _release()
-    try:
-        restored.to_mesh(session.obj.data)
-        session.obj.data.update()
-    except ReferenceError:
-        pass
-    finally:
-        restored.free()
-    return session
-
-
-def _editing(obj):
-    try:
-        return obj.mode == "EDIT"
-    except ReferenceError:
-        return False
-
-
-def _watch():
-    """Self-stopping poll that ends the session as soon as edit mode does."""
-    if _ACTIVE is None:
-        return None
-    if _editing(_ACTIVE.obj):
-        return _WATCH_INTERVAL
-    discard()
-    return None
+    clear()
 
 
 def _release():
@@ -541,5 +500,3 @@ def _release():
 def clear():
     """Release the session, if any; also called when the add-on unregisters."""
     _release()
-    if bpy.app.timers.is_registered(_watch):
-        bpy.app.timers.unregister(_watch)

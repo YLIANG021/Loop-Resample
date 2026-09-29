@@ -210,15 +210,18 @@ def capture_region_faces(bm, region, paths):
     is_fan = region.get("kind") == "FAN"
     pole_vertex = region.get("pole_vertex")
     pole_uv = None
-    if is_fan and pole_vertex:
+    active_uv = bm.loops.layers.uv.active
+    if is_fan and pole_vertex and active_uv is not None:
         # Find the UV of the pole vertex from any source face that contains it.
-        # The pole sits at the center of all its triangles in UV space.
+        # The pole sits at the center of all its triangles in UV space.  A mesh that has
+        # never been unwrapped has no active layer at all, and then there is no pole UV to
+        # carry -- the transfer below already reads that as "skip the UV corner".
         for face in region["faces"]:
             if not face.is_valid:
                 continue
             for loop in face.loops:
                 if loop.vert is pole_vertex:
-                    pole_uv = loop[bm.loops.layers.uv.active].uv.copy()
+                    pole_uv = loop[active_uv].uv.copy()
                     break
             if pole_uv is not None:
                 break

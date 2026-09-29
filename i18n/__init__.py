@@ -5,11 +5,11 @@ add-on has exactly one surface (the viewport overlay) and it should read like th
 the interface around it.  ``pgettext`` therefore asks Blender which locale it picked, and
 falls back to English for anything it cannot match.
 
-The shape of the table is the one yl_meshcheckhud uses: every string is written in English
-in the source, and that English sentence is itself the key.  A missing translation is not an
-error, it is the English text, so adding a string without translating it degrades to a
-language the user can read rather than to a blank chip.  ``en_US.MESSAGES`` is the list every
-other file is written against, and each locale answers all of it: forty-seven strings in,
+Every string is written in English in the source, and that English sentence is itself the
+key.  A missing translation is not an error, it is the English text, so adding a string
+without translating it degrades to a language the user can read rather than to a blank chip.
+``en_US.MESSAGES`` is the list every other file is written against, and each locale answers
+all of it: forty-seven strings in,
 forty-seven out.
 """
 
@@ -61,9 +61,14 @@ TRANSLATIONS = {code: table.TRANSLATIONS for table, codes in _LOCALES for code i
 
 _FALLBACK = "en_US"
 
+# The two settings a language change moves, paired with the table they resolve to.  This is
+# cached because the overlay asks for four strings every frame, and resolving them used to
+# rebuild a candidate list and a seen-set for each one of them.
+_RESOLVED = (None, None)
 
-def _locale_candidates():
-    """Every name worth trying for the language Blender is currently answering in.
+
+def _locale_candidates(locale, language):
+    """Every name worth trying for a language given the two settings that name it.
 
     ``bpy.app.translations.locale`` is what the interface is actually drawing with, and it
     is the only one of the two that is set even when the user left the language on the
@@ -73,10 +78,7 @@ def _locale_candidates():
     a table keyed to one spelling still has to answer the other.
     """
     candidates = []
-    for value in (
-        getattr(bpy.app.translations, "locale", "") or "",
-        getattr(bpy.context.preferences.view, "language", "") or "",
-    ):
+    for value in (locale, language):
         if not value:
             continue
         candidates.append(value)
@@ -86,18 +88,33 @@ def _locale_candidates():
     return candidates
 
 
+def _active_table():
+    """The table for the language Blender is drawing in, re-resolved only when it changes."""
+    global _RESOLVED
+    settings = (
+        getattr(bpy.app.translations, "locale", "") or "",
+        getattr(bpy.context.preferences.view, "language", "") or "",
+    )
+    if settings != _RESOLVED[0]:
+        seen = set()
+        table = None
+        for candidate in _locale_candidates(*settings):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            table = TRANSLATIONS.get(candidate)
+            if table is not None:
+                break
+        _RESOLVED = (settings, table)
+    return _RESOLVED[1]
+
+
 def pgettext(message):
     """The string for ``message`` in the language Blender is drawing in."""
-    seen = set()
-    for candidate in _locale_candidates():
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        translations = TRANSLATIONS.get(candidate)
-        if translations is None:
-            continue
-        return translations.get(("*", message), message)
-    return message
+    translations = _active_table()
+    if translations is None:
+        return message
+    return translations.get(("*", message), message)
 
 
 def register():

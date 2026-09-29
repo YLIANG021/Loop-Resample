@@ -6,6 +6,7 @@ name = "Loop Resample"
 tagline = "Reshape any loop or chain, any segment count, attributes survive"
 maintainer = "YLIANG"
 type = "add-on"
+website = "https://github.com/YLIANG021/Loop-Resample"
 
 tags = ["Modeling", "Mesh"]
 

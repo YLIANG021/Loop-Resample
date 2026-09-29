@@ -99,11 +99,14 @@ Loop Resample 开发交接说明
 --------------------------------------------------------------------------------
 3.1 生命周期
     begin(context)：读编辑网格→selected_paths→相位同步→ResampleSession(obj,
-    live_bm.copy(), paths)→释放旧会话→注册 _watch timer→返回 session。
-    step：operators 里 session.next_counts / samples 驱动。
-    confirm：提交当前编辑网格，end(context) 释放会话。
-    cancel：还在 EDIT 模式内，走自己的恢复路径（把进入前的网格写回），再释放。
-    退出编辑模式：timer 触发 discard()（见 3.3）。
+    live_bm.copy(), paths)→释放旧会话→返回 session。
+    step：目标段数由 wheel 算子自己算（delta 累加），session.samples(counts, anchors,
+    shape) 出采样；operators.apply_counts / restore_source 落到编辑网格。
+    （session.next_counts 随 §13 的四个面板时代算子一起删了。）
+    confirm：提交当前编辑网格，end() 释放会话。
+    cancel：还在 EDIT 模式内，走自己的恢复路径（把进入前的网格写回），再 end()。
+    会话只从这两个出口结束：modal 期间键盘鼠标全被算子吃掉，用户切不了编辑模式，
+    所以守卫写在出口上而不是写在定时器上（见 3.3）。
 
 3.2 为什么每一步都从源副本重推
     session.source 是进入时的 detached BMesh 拷贝。每一步：
@@ -112,14 +115,22 @@ Loop Resample 开发交接说明
     没有任何状态从"上一步的网格"继承。收益：区域身份、外轨顺序、相位、复原性
     全部由构造保证；代价：每步 O(网格) 重建，可接受。
 
-3.3 编辑模式守卫
-    _watch：0.1s 间隔的 bpy.app.timers 轮询（persistent=True，跨文件加载存活；
-    对象被删时 _editing 的 ReferenceError 分支自清理）。发现非 EDIT 就 discard()：
-    session.open_bmesh() 拿源副本→to_mesh(obj.data)→update→释放。返回 None 自停。
-    discard 用 _release()（只释放会话）而不是 clear()（会注销 timer），因为
-    discard 正运行在该 timer 内部。
-    注意（对用户说明过）：这个恢复在 Blender undo 系统之外，退出编辑模式后
-    Ctrl+Z 不会把它回退。
+3.3 会话只从出口结束，没有轮询（2026-09-29 起）
+    曾经有：_watch 以 0.1s 间隔 bpy.app.timers 轮询（persistent=True，跨文件载入存活）探
+    obj.mode，发现非 EDIT 就 discard()（open_bmesh→to_mesh(obj.data)→update→释放），并且
+    用 _release() 而不是 clear()，因为它正跑在该 timer 内部。
+    删的原因不是"轮询不合规"一条（虽然审核规则确实明令禁止持续轮询），是用户实测把它
+    的前提打掉了：进入调整后键盘与鼠标被算子锁死，快捷键和点击都切不了模式，它探的那件
+    事没有入口。整条移除：_watch / _WATCH_INTERVAL / _editing / discard，连带 session.py
+    的 import bpy（该文件再无 bpy）。
+    现在 end() 无条件 clear()。原来它先比 active(context)（按 obj.data.as_pointer()），
+    比不上就 return——而"比不上"那次正是把会话连同冻结网格副本原地漏掉的时刻；同一时刻
+    只有一个会话，begin() 本来就先 _release()，所以那道门只可能添乱。调用点随之从
+    sessions.end(context) 变成 sessions.end()。
+    代价（已知并认下）：modal 若被两个出口之外的路径拆掉（异常强行终止一类），不再有
+    定时器把冻结源 to_mesh 盖回去，屏幕停在最后一步；内存由 __init__.unregister() 里的
+    session.clear() 收。原记的"这个恢复在 undo 系统之外、退出编辑模式后 Ctrl+Z 撤不掉"
+    也随该路径一起消失——cancel 仍在 EDIT 内侧，照样可撤。
 
 --------------------------------------------------------------------------------
 4. 每一步的数据流（operators._resample）
@@ -1090,7 +1101,9 @@ UV（**这里更正我上一条的说法**）：我之前讲"硬编码 `True` �
 --------------------------------------------------------------------------------
     放 %TEMP%、用完删除；不进插件目录、不进 git。
     - 不要 --factory-startup；
-    - -b 下 timer 不 tick，直接调 sessions._watch() 模拟；
+    - -b 下 timer 不 tick，直接调回调模拟。全文现在只剩两处 timer：
+      hud._notice_expired（告示到期）与 interactive._start_wheel_modal（菜单里延一帧起
+      modal）；原先的 sessions._watch 已按 3.3 整条删除。
     - 签名比对必须与元素顺序无关（重建会改变顶点/边/面顺序）；
     - 读 obj.data 要在退出编辑模式之后（EDIT 中读到的是旧数据块）；
     - 收集 BMesh 元素与使用之间不要切换编辑模式（元素失效 ReferenceError）；
@@ -1321,6 +1334,58 @@ UV（**这里更正我上一条的说法**）：我之前讲"硬编码 `True` �
     .gitignore 由"*.txt 全拦"改成给本文档开一条例外（!开发交接说明.txt），其余 txt/md、
     Addon_pack.vbs、__pycache__ 照旧不进仓库。入库前把 52 个提交全扫了一遍 PAT / AWS key /
     私钥 / 凭据赋值，无命中。
+
+--------------------------------------------------------------------------------
+17. 按审核规范整改第一轮（2026-09-29，未提交待验收）
+--------------------------------------------------------------------------------
+    依据是那份《Blender扩展审核与开发规范（完整整合版）》。第一轮只查不改，查出的问题按
+    用户点定的编号修，其余留在这儿当"看过但判了不办"的记录。
+
+17.1 已改
+    a) blender_manifest.toml：工作树那份被截断（license = [ 没闭合、整个 [build] 段没了），
+       按 HEAD 复原并补 website = "https://github.com/YLIANG021/Loop-Resample"。现在与
+       HEAD 的差只剩这一行。blender --command extension validate 报 Success。
+    b) __init__.py：删掉 import 期的 _reload_submodules()（del sys.modules[...] 是规范点名
+       禁止项）。它不只是难看——它把 ui 子模块冲掉，于是 from .ui import
+       draw_edit_mesh_context_menu 每次导入都拿到一个新的函数对象，unregister 里的
+       remove() 配不上 prepend()，**每重载/重新启用一次右键菜单就多叠一条 Loop Resample**
+       （原先还拿 except ValueError: pass 把失配咽掉，现整条去掉，remove() 裸调）。
+    c) core/surface.py:212 capture_region_faces 的 FAN 分支直接读 bm.loops.layers.uv.active，
+       网格一个 UV 层都没有时它是 None，loop[None] 抛错被 operators 的 except Exception 兜住
+       ——屏幕上表现为"在未展 UV 的模型上选中极点扇形，滚轮永远不动，提示是一串没翻译的
+       Python 异常原文"。现在 active_uv 取一次、并进 if is_fan and pole_vertex and
+       active_uv is not None，循环里用 loop[active_uv]。下游 record_pole_uv is None 本来就
+       读作"这个角没有 UV"（同函数 722 行早有这么一道门），所以只补了漏的那一处。
+    d) i18n/__init__.py：pgettext 原先每解析一条串就重读一遍 preferences.view.language 并
+       新建候选 list + seen set，而 HUD 一帧问四条。改成 _RESOLVED = (settings, table)：
+       只有 (translations.locale, view.language) 这一对变了才重算。_locale_candidates 改成
+       收这两个值当参数。
+    e) ui/hud.py：chip 底板每帧、每个 chip 新建 2 个 GPU batch（顶点进了 _BOX_CACHE，batch
+       没进）。现在 _rounded_box_geometry → _rounded_box_batches(..., shader)，缓存里存的是
+       两个 origin 空间的 Batch，_draw_rounded_box 用 gpu.matrix.push()/translate((x,y,0))/
+       pop() 把它们挪到落点。仿射性 P·T·v = P·(v+t) 保证画出来的像素与改前逐项相同，不依赖
+       当时矩阵是什么。clear_box_cache() 本来就在 _finish 里与 clear_highlight_cache() 并调，
+       batch 的生命周期跟会话一致。
+    f) 代码里点名别的插件的注释：12 处（hud 8、interactive 1、entry_icon 2、i18n 1）全部改
+       写成"这段自己为什么这么定"，理由都留着。**先前口头估的 3 处是数错了。** 现在 .py 里
+       grep yl_ 零命中。yl_bevelflow 与本项目同在 user_default/ 下、同一作者，属自我复用，
+       所以 manifest 不需要加 copyright——需要交代的只剩注释这层，已办。
+    g) core/session.py 的 _watch 常驻轮询：整条删除，理由与代价见 3.3；§3.1/§3.3/§10 三处
+       文档同步改掉（§3.1 顺手补了 next_counts 已随 §13 删除这件事，原文还在写它）。
+
+17.2 判了不办（用户明确说不用管，或评估后不动）
+    - 打包方式（Addon_pack.vbs 手搓 zip）与"开发文件会进包"：用户点名不用管。
+    - ui/entry_icon.py 在启用瞬间 bpy.utils.previews.new() 建集合：规范确实点名"注册类时
+      立即加载图标"，但本图标只有一张、且菜单第一项就要用它，懒加载会把加载成本挪进 draw
+      回调，那里抛异常会带走整个右键菜单。判不改。
+    - __init__.py unregister 里 except RuntimeError 的 "missing bl_rna" 分支：不在本轮编号里。
+    - manifest 的 maintainer 缺 <email>、i18n 子包的 __package__ 键：同上，未动。
+    - operators.py:169 把 str(error) 直接拼进 HUD：c) 修的是崩溃本身，未翻译的 Python 原文
+      这条通道还在，要收得单独定一类措辞。
+
+17.3 本轮实测结论（用户 2026-09-29 报告）
+    chip 条位置/大小/圆角/描边与改前一致，armed chip 放大不漂。g) 的前提同样出自这次实测：
+    进入调整后键盘与鼠标被锁死，快捷键与点击都切不了编辑模式。
 
 --------------------------------------------------------------------------------
 ================================================================================

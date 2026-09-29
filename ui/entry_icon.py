@@ -8,10 +8,9 @@ an image file and hands back an int for ``icon_value=``.  The type people search
 ``bpy.types.PreviewImage``, is gone from both 4.2.1 and 5.2, but this module is not, and the
 installed binaries agree on it.
 
-The shape is yl_meshcheckhud's (``ui/icons.py``), including the contract that a missing or
-unloadable picture yields ``0`` rather than an exception: an icon that cannot load should
-cost the item its picture and nothing else, because a throw from a draw callback takes the
-whole menu with it.
+The contract this module keeps is that a missing or unloadable picture yields ``0`` rather
+than an exception: an icon that cannot load should cost the item its picture and nothing else,
+because a throw from a draw callback takes the whole menu with it.
 """
 
 import os
@@ -26,8 +25,7 @@ _collection = None
 
 
 def _icon_path():
-    """``icons/`` sits at the extension root, beside ``ui/``, which is where
-    yl_meshcheckhud keeps its own pictures.
+    """``icons/`` sits at the extension root, beside ``ui/`` where this module is.
     """
     return os.path.normpath(
         os.path.join(os.path.dirname(__file__), os.pardir, _ICON_FILE)

@@ -1,11 +1,10 @@
 """Scroll-to-set interaction for a resample session it starts itself.
 
-The skeleton is yl_bevelflow's: a ``POST_PIXEL`` draw handler tied to the operator's own
-life, the wheel for single steps, and one hook per outcome.  Three things are deliberately
-not copied.  The number is painted on the path it belongs to instead of into a box at the
-middle of the screen; the chips below it are worded for this operator; and nothing here
-reads the mouse position, because a sideways drag turns a view navigation into a hundred
-new points.  The wheel is the control, the overlay is the readout, and the keyboard is not
+The skeleton is a ``POST_PIXEL`` draw handler tied to the operator's own life, the wheel for
+single steps, and one hook per outcome.  Three choices are this operator's own.  The number is
+painted on the path it belongs to instead of into a box at the middle of the screen; the chips
+below it are worded for this operator; and nothing here reads the mouse position, because a
+sideways drag turns a view navigation into a hundred new points.  The wheel is the control, the overlay is the readout, and the keyboard is not
 part of the deal: no key confirms, no key cancels, because the two outcomes each have a
 click of their own and the rest of Blender's keys belong to other tools.
 
@@ -480,7 +479,7 @@ class MESH_OT_loop_resample_interactive(bpy.types.Operator):
         # left behind is memory held for nothing, and worse, the next right-click would
         # find it and keep adjusting the mesh from the selection that was
         # current two tools ago.
-        sessions.end(context)
+        sessions.end()
         self._tag_redraw(context)
 
     def _tag_redraw(self, context):
@@ -552,8 +551,8 @@ class MESH_OT_loop_resample_interactive_entry(bpy.types.Operator):
         # This much is known here and nowhere later: the menu runs with the clicked viewport
         # as its area, while the deferred invoke will not have one at all.
         _MENU_CLICK["area"] = context.area
-        # Guarded the way the session watcher guards its own: a second click before the
-        # first callback runs would otherwise register the same function twice.
+        # Guarded against itself: a second click before the first callback runs would
+        # otherwise register the same function twice and invoke the wheel twice.
         if not bpy.app.timers.is_registered(_start_wheel_modal):
             bpy.app.timers.register(_start_wheel_modal, first_interval=0.0)
         return {"FINISHED"}
