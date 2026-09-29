@@ -38,6 +38,7 @@ TRANSLATIONS = {
     ("*", "Reverted to {counts} segment(s) and the original curve."): (
         "{counts}개 세그먼트와 원본 커브로 되돌렸습니다."
     ),
+    ("*", "Left the curve as it was."): "커브를 원래대로 유지했습니다.",
     ("*", "Kept {counts} segment(s) on the locked path(s)."): (
         "잠긴 경로에 {counts}개 세그먼트를 유지했습니다."
     ),

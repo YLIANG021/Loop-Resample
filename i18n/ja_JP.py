@@ -40,6 +40,7 @@ TRANSLATIONS = {
         "*",
         "Reverted to {counts} segment(s) and the original curve.",
     ): "{counts} セグメントと元のカーブに戻しました。",
+    ("*", "Left the curve as it was."): "カーブは変更前のままです。",
     (
         "*",
         "Kept {counts} segment(s) on the locked path(s).",

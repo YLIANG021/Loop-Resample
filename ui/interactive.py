@@ -397,7 +397,7 @@ class MESH_OT_loop_resample_interactive(bpy.types.Operator):
         the counts, the shape and the selection come with it for nothing.
         """
         if self.applied_state == _ENTRY_STATE:
-            return True, "Left the curve as it was."
+            return True, pgettext("Left the curve as it was.")
         moved_shape = self.applied_state[1:] != (0.0, 0.0)
         restore_source(context, self.session, self.entry_counts)
         self.applied_state = _ENTRY_STATE
@@ -526,6 +526,11 @@ class MESH_OT_loop_resample_interactive_entry(bpy.types.Operator):
 
     Deferred by a timer, the popup is gone and the context is the viewport again -- the same
     condition that makes a call from the Python console work.
+
+    What is forwarded here is this extension's own operator, not a native one.  The rule
+    against wrapper operators is about re-wrapping Blender's own so a user can reach them from
+    a panel; nothing native does what ``MESH_OT_loop_resample_interactive`` does, and this
+    class exists only because a menu popup cannot host a modal handler.
     """
 
     bl_idname = "mesh.loop_resample_interactive_entry"

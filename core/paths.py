@@ -1,5 +1,7 @@
 """Selected-edge path ordering and component discovery."""
 
+from collections import deque
+
 from ..i18n import pgettext
 
 
@@ -219,9 +221,9 @@ def synchronize_closed_path_phases(paths):
         root_anchor = min(reordered[root][0], key=lambda vertex: vertex.index)
         reordered[root] = _closed_path_reorder(reordered[root], root_anchor, True)
         synchronized.add(root)
-        queue = [root]
-        while queue:
-            current = queue.pop(0)
+        pending = deque((root,))
+        while pending:
+            current = pending.popleft()
             current_vertices = reordered[current][0]
             for neighbor in sorted(adjacency[current]):
                 if neighbor in synchronized:
@@ -240,5 +242,5 @@ def synchronize_closed_path_phases(paths):
                     forward,
                 )
                 synchronized.add(neighbor)
-                queue.append(neighbor)
+                pending.append(neighbor)
     return reordered, synchronized

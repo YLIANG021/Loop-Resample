@@ -39,6 +39,7 @@ TRANSLATIONS = {
     ("*", "Reverted to {counts} segment(s) and the original curve."): (
         "Возвращено сегментов: {counts}; исходная кривая тоже возвращена."
     ),
+    ("*", "Left the curve as it was."): "Кривая оставлена без изменений.",
     ("*", "Kept {counts} segment(s) on the locked path(s)."): (
         "На заблокированных путях оставлено сегментов: {counts}."
     ),

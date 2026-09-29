@@ -231,8 +231,7 @@ def _failure_text(message, limit=_FAILURE_LIMIT):
         return ""
     text = str(message)
     prefix = pgettext(FAILURE_PREFIX)
-    if text.startswith(prefix):
-        text = text[len(prefix) :]
+    text = text.removeprefix(prefix)
     text = " ".join(text.split())
     if limit is not None and len(text) > limit:
         text = text[: limit - 3].rstrip() + "..."
@@ -698,7 +697,14 @@ def draw_hud(operator, context):
     Registered as a ``POST_PIXEL`` handler on the viewport region, which is why the pixel
     coordinates below need no projection of their own.
     """
-    area = context.area
+    # The context is the one captured when the modal started, so reading it is the only part
+    # of this that can meet a dead area.  A raise out of a draw handler costs the whole
+    # viewport its overlays, and Blender does not say which handler threw.
+    try:
+        area = context.area
+        scale = max(0.1, context.preferences.system.ui_scale)
+    except (AttributeError, ReferenceError, RuntimeError):
+        return
     if area is None:
         return
     if not getattr(operator, "labels_shown", False):
@@ -708,7 +714,6 @@ def draw_hud(operator, context):
     region = _window_region(area)
     if region is None:
         return
-    scale = max(0.1, context.preferences.system.ui_scale)
     row_top = _draw_chip_row(operator, region)
     if row_top is not None:
         _draw_failure_chip(operator, region, row_top)
@@ -811,7 +816,11 @@ def draw_highlight(operator, context):
     and are depth tested against it.  ``LESS_EQUAL`` rather than ``NONE`` because the
     outline sits exactly on the surface and should disappear when the mesh turns away.
     """
-    area = context.area
+    # Same stale-context read as draw_hud: both handlers were handed the invoke-time context.
+    try:
+        area = context.area
+    except (AttributeError, ReferenceError, RuntimeError):
+        return
     if area is None or not getattr(operator, "highlight_shown", False):
         return
     if area.as_pointer() != getattr(operator, "hud_area_ptr", None):

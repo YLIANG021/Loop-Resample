@@ -39,6 +39,7 @@ TRANSLATIONS = {
     ("*", "Reverted to {counts} segment(s) and the original curve."): (
         "已回復為 {counts} 段並還原原始曲線。"
     ),
+    ("*", "Left the curve as it was."): "曲線維持原樣。",
     ("*", "Kept {counts} segment(s) on the locked path(s)."): "已維持鎖定路徑的 {counts} 段。",
     (
         "*",

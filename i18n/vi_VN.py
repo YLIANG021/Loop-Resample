@@ -40,6 +40,7 @@ TRANSLATIONS = {
         "*",
         "Reverted to {counts} segment(s) and the original curve.",
     ): "Đã hoàn tác về {counts} đoạn và đường cong gốc.",
+    ("*", "Left the curve as it was."): "Đã giữ đường cong nguyên trạng.",
     (
         "*",
         "Kept {counts} segment(s) on the locked path(s).",

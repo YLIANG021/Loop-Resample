@@ -41,6 +41,7 @@ TRANSLATIONS = {
     ("*", "Reverted to {counts} segment(s) and the original curve."): (
         "Przywrócono segmenty: {counts} oraz oryginalną krzywą."
     ),
+    ("*", "Left the curve as it was."): "Pozostawiono krzywą bez zmian.",
     ("*", "Kept {counts} segment(s) on the locked path(s)."): (
         "Na zablokowanych ścieżkach zachowano segmenty: {counts}."
     ),

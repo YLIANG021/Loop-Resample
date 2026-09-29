@@ -1315,6 +1315,8 @@ UV（**这里更正我上一条的说法**）：我之前讲"硬编码 `True` �
     的 startswith 与加前缀用的是同一次查表结果，故芯片不会重复描述失败。
     实机应看到：中文下菜单项 "Loop Resample"、悬浮说明仍是中文那句；失败芯片仍只显示原因
     那句（前缀被 _failure_text 剥掉，与改 value 之前一致），所以芯片上看不出本轮动过什么。
+    （2026-09-29 跟进：剥前缀那两行 startswith+切片已换成 str.removeprefix，见 17.4，行为逐字
+    不变，上一段那句结论照旧成立。）
 
 --------------------------------------------------------------------------------
 16. 仓库上线：YLIANG021/Loop-Resample（Private，2026-09-28）
@@ -1379,13 +1381,67 @@ UV（**这里更正我上一条的说法**）：我之前讲"硬编码 `True` �
       立即加载图标"，但本图标只有一张、且菜单第一项就要用它，懒加载会把加载成本挪进 draw
       回调，那里抛异常会带走整个右键菜单。判不改。
     - __init__.py unregister 里 except RuntimeError 的 "missing bl_rna" 分支：不在本轮编号里。
-    - manifest 的 maintainer 缺 <email>、i18n 子包的 __package__ 键：同上，未动。
+    - i18n 子包的 __package__ 注册名：第一轮未动，第二轮按 17.4 改了。
     - operators.py:169 把 str(error) 直接拼进 HUD：c) 修的是崩溃本身，未翻译的 Python 原文
       这条通道还在，要收得单独定一类措辞。
 
 17.3 本轮实测结论（用户 2026-09-29 报告）
     chip 条位置/大小/圆角/描边与改前一致，armed chip 放大不漂。g) 的前提同样出自这次实测：
     进入调整后键盘与鼠标被锁死，快捷键与点击都切不了编辑模式。
+
+17.4 第二轮：建议级里的零风险六件（2026-09-29，已随本提交入库，待实机验收）
+    提交 7c5fae3 之后接着做的一轮，只挑"改了不可能出问题"的那六件。判了不办的与需点头的
+    另见 17.5。
+
+    a) ui/hud.py:236 _failure_text：startswith + 切片 → str.removeprefix（Python 3.9+，
+       4.2 自带 3.11，安全）。行为逐字不变。
+    b) i18n/__init__.py：翻译表注册名从子包 ...loop_resample.i18n 改成顶层扩展包名，写法用
+       规范给的 from .. import __package__ as _ROOT_PACKAGE。特意试过另一条看似更省事的
+       __spec__.parent —— 它在包的 __init__ 里等于包自己的名字，拿到的还是子包，所以不能用。
+       另外确认过这条相对导入不会被循环卡住：顶层 __init__ 正在执行时 i18n 经 core.session
+       被拉进来，而 __package__ 在模块体运行前就已置好（用最小复现包实测打印出 rootpkg）。
+       我们的 pgettext 走自己的查表，不依赖这个注册名，所以界面文案一字不变。
+    c) "Left the curve as it was."（一次没滚就右键还原时那句 INFO）从来没进过 i18n 目录，
+       中文界面下会蹦英文。现在进了：en_US.MESSAGES 47 → 48，12 张表各补一条，
+       i18n/__init__.py 头那句"fifty/forty-seven in, out"改 forty-eight。核过：12 张表键集
+       与 MESSAGES 完全相同、无重复、代码里所有字面量 pgettext 键都能解析到目录内（三处走
+       变量：FAILURE_PREFIX、UNMARKED_CUT_NOTE、template，三者指向的句子都在表里）。
+    d) ui/interactive.py entry 类 docstring 补一段：它转发的是**自家**算子，规范 877 条禁的是
+       重包 Blender 原生算子；这个类存在只是因为菜单 popup 挂不住 modal handler。
+    e) ui/hud.py：draw_hud 与 draw_highlight 各自把 context 的属性读取裹进
+       except (AttributeError, ReferenceError, RuntimeError)。两个 handler 拿的都是 invoke 期
+       的 context，视口被换掉时读 .area 会抛而不是返回 None；从 draw 回调抛出去赔的是整个
+       视口的叠加层，而 Blender 不告诉你是哪个 handler 抛的。scale 顺手上提到同一个 try 里，
+       因为 context.preferences 是同一类读法。
+    f) core/paths.py 闭环同相位 BFS：局部 queue + pop(0) → collections.deque + popleft，变量
+       改名 pending。这一轮里唯一一条"可能更快但基本无感"的：节点数是同时被锁的闭合圈条数量级。
+       改名也顺带消掉静态扫描把局部 queue 当成 queue 模块的误判。
+
+17.5 第二轮判了不办 / 要点头才动
+    不办（各写一句理由，审核员追问时照这个答）：
+      - 模块级全局状态（规范 15/313/550 确实点名"cache 实例散落为模块级全局 → 用
+        PropertyGroup"）：_BOX_CACHE 装的是 gpu.types.Batch、session._ACTIVE 装的是 detached
+        bmesh，两者都进不了 ID 属性；搬成 PropertyGroup 要铺满 6 个模块且行为零变化。
+      - bl_description 在 class body 里就 pgettext（interactive.py:161、538）：这个字段只能是
+        静态字符串，Blender 自己的算子也不跟着语言热切；要做到得挂偏好回调重注册两个类。
+      - 阈值硬编码：规范里"硬编码"三条（586/810/817）全是**名称**硬编码（数据块名、bl_ext），
+        没有任何一条要求数值可配置。加偏好设置面板是新功能，不是整改。
+      - report 级别（interactive.py:195 用 ERROR）：规范 358-361/583 讲的是 redo panel 调参时
+        WARNING 连弹所以降 INFO，没管模态入口的拒绝；且 195 只在 HUD 告示挂不上时兜底。
+      - manifest 的 maintainer 缺 <email>（规范 679/638 写的格式是 "姓名 <邮箱>"）：用户
+        2026-09-29 明确不加，他此前上架的扩展 maintainer 都没带邮箱也照样过。`blender
+        --command extension validate` 只要求该字段非空，实测 "Success parsing TOML"，本地
+        这关不卡。审核员若追问照这句答。
+    要点头才动：
+      - DIAGNOSE_LADDER / DIAGNOSE_UV（21 处引用、约 450 行）：§13 已定"发版时一次性拆"，块内
+        还夹着三个没有门控的打印函数，要先单独挪出去。顺带更正第一轮那句"**甚至用它改生产
+        分支**"——说过头了：uv_layer(594) 只喂 "uvs" 字段、rows 只在开关下打印，vote(624)/
+        probes(636) 传进 _match_face/_sample_chain 后只写不读，关掉不改任何生产结果。
+      - regions.py 补 is_valid：数字上确实 0 处（attributes.py 3、surface.py 4、planner.py 0），
+        但没有实测崩溃点之前不机械补——得先确认哪些函数跨 mutation 持有元素。
+      - icons/loop_resample.png 白底：改图不改码，深色菜单里是一块白方框。属美术活。
+      - 性能四处（planner.py:435-495、surface.py:886-955 每面扫全部源面记录、geometry.py:283-327）：
+        按 §12"先打点再动"，要单独一轮埋灯取前值，不和本轮混在一起。
 
 --------------------------------------------------------------------------------
 ================================================================================

@@ -27,6 +27,7 @@ MESSAGES = [
     # Reports.
     "Reverted to {counts} segment(s).",
     "Reverted to {counts} segment(s) and the original curve.",
+    "Left the curve as it was.",
     "Kept {counts} segment(s) on the locked path(s).",
     "Kept {counts} segment(s) and the adjusted curve on the locked path(s).",
     "Resampled {paths} path(s): {changes}; rebuilt {strips} strip(s) with {faces} face(s)",

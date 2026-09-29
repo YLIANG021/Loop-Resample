@@ -9,11 +9,17 @@ Every string is written in English in the source, and that English sentence is i
 key.  A missing translation is not an error, it is the English text, so adding a string
 without translating it degrades to a language the user can read rather than to a blank chip.
 ``en_US.MESSAGES`` is the list every other file is written against, and each locale answers
-all of it: forty-seven strings in,
-forty-seven out.
+all of it: forty-eight strings in, forty-eight out.
 """
 
 import bpy
+
+# The tables are registered under the extension's own package, not under this sub-package,
+# because that is the name Blender hands a table to.  Read through the parent package rather
+# than cut the end off ``__name__``, so this stays right if the module tree gains a level; the
+# import is safe even though the top-level module is mid-execution when this one gets pulled in
+# (through core.session), because ``__package__`` is set before a module body runs.
+from .. import __package__ as _ROOT_PACKAGE
 
 from . import (
     de_DE,
@@ -118,8 +124,8 @@ def pgettext(message):
 
 
 def register():
-    bpy.app.translations.register(__package__, TRANSLATIONS)
+    bpy.app.translations.register(_ROOT_PACKAGE, TRANSLATIONS)
 
 
 def unregister():
-    bpy.app.translations.unregister(__package__)
+    bpy.app.translations.unregister(_ROOT_PACKAGE)
