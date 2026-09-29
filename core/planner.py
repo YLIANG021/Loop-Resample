@@ -59,7 +59,7 @@ def _rail_shift(kind):
 # The ladder block in ``diagnostics``: how a shape axis moved a strip's connectivity.
 # Off costs nothing but the branch, and nothing below reads it to decide anything.
 # Set True, with ``diagnostics.DIAGNOSTICS``, to bring the lines back.
-DIAGNOSE_LADDER = False
+DIAGNOSE_LADDER = True
 
 
 def _triangle_distribution_cost(

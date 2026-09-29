@@ -82,7 +82,7 @@ _CHAIN_CUT = "cut_ends"
 # transfer itself never reads, so its out-parameters are read by nothing that decides a
 # UV -- flipping this cannot change a value, only what the console hears.  Set True, with
 # ``diagnostics.DIAGNOSTICS``, to bring the lines back.
-DIAGNOSE_UV = False
+DIAGNOSE_UV = True
 
 
 def _corner_layers(bm):
@@ -594,7 +594,10 @@ def apply_region_faces(
         )
     uv_layer = bm.loops.layers.uv.active if DIAGNOSE_UV else None
     if DIAGNOSE_UV and records and "diag_id" in records[0]:
-        print_uv_records(region, records, rails, ("uv", uv_layer.name))
+        # A mesh with no active UV layer still has corner values to dump; only the UV
+        # column of the line has nothing to name.
+        uv_key = ("uv", uv_layer.name) if uv_layer is not None else None
+        print_uv_records(region, records, rails, uv_key)
     rows = []
 
     for face in rebuilt_faces:

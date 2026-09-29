@@ -21,7 +21,7 @@ import traceback
 
 from .utils import _point
 
-DIAGNOSTICS = False
+DIAGNOSTICS = True
 
 _SCAN_TOTALS = {}
 _STEP = {"base": {}, "scope": {}, "at": "-", "detail": {}}
