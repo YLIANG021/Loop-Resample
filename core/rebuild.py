@@ -6,7 +6,7 @@ import bmesh
 from mathutils.geometry import tessellate_polygon
 
 from ..i18n import pgettext
-from .diagnostics import accumulate_scan
+from .diagnostics import accumulate_scan, enabled
 from .geometry import (
     _plan_rungs,
     cached_reference_normals,
@@ -64,14 +64,15 @@ def rebuild_detached_path(bm, path, samples):
         key=lambda item: item[0],
     )
     if attached:
-        print(
-            "[Loop Resample][diagnostic] detach-refused "
-            f"closed={int(is_closed)} rail_vertices={len(source_vertices)} "
-            f"rail_edges={len(source_edges)} still_attached={len(attached)} "
-            "edges=["
-            + ", ".join(f"{edge}:{list(faces)}" for edge, faces in attached[:12])
-            + "]"
-        )
+        if enabled():
+            print(
+                "[Loop Resample][diagnostic] detach-refused "
+                f"closed={int(is_closed)} rail_vertices={len(source_vertices)} "
+                f"rail_edges={len(source_edges)} still_attached={len(attached)} "
+                "edges=["
+                + ", ".join(f"{edge}:{list(faces)}" for edge, faces in attached[:12])
+                + "]"
+            )
         leftover = {
             face for edge in source_edge_set for face in edge.link_faces
         }

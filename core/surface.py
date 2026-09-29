@@ -78,9 +78,10 @@ _CHAIN_POINTS = "points"
 _CHAIN_KNOT_US = "us"
 _CHAIN_CUT = "cut_ends"
 
-# The [uvdiag] block it gates is tuning instrumentation and is removed in one go at the
-# end; its out-parameters are read by nothing that decides a UV, so False here cannot
-# change a value -- it only silences the lines.  Set True to bring them back.
+# The [uvdiag] block in ``diagnostics``: it collects the votes and per-face probes the
+# transfer itself never reads, so its out-parameters are read by nothing that decides a
+# UV -- flipping this cannot change a value, only what the console hears.  Set True, with
+# ``diagnostics.DIAGNOSTICS``, to bring the lines back.
 DIAGNOSE_UV = False
 
 
@@ -903,7 +904,7 @@ def _match_face(records, start, end, closed, probe=None, outer=None):
     the nearest centre, the rule a degenerate inner span always needed; then the source
     face index, which settles the last exact tie the same way every time.
 
-    ``probe`` is the temporary diagnostic's dict: it learns whether the vote was won
+    ``probe`` is the UV diagnostic's dict: it learns whether the vote was won
     outright, how many source faces tied for it, and which rule settled it.
     """
     started = time.perf_counter()
@@ -1165,7 +1166,7 @@ def _uv_distance(first, second):
 def _sample_chain(chain, u, periodic, probe=None, rail_us=()):
     """Interpolate one island's rail polyline at u, as {layer name: Vector}.
 
-    ``probe`` is the temporary diagnostic's list: one entry per sample recording
+    ``probe`` is the UV diagnostic's list: one entry per sample recording
     the u asked for, the u window the chain actually covers, and whether the
     answer had to be clamped to an end knot.  ``rail_us`` are the other corners
     of the face being read, on this rail: a cut column has two copies and they

@@ -15,6 +15,7 @@ from .curves import (
     sample_by_arclength,
     sample_catmull_rom_curve,
 )
+from .diagnostics import enabled
 from .paths import selected_paths, synchronize_closed_path_phases
 from .regions import (
     capture_adjacent_strips,
@@ -464,12 +465,13 @@ def begin(context):
         if after:
             trims = {}
     for index, (head, tail) in sorted(trims.items()):
-        vertices = paths[index][0]
-        print(
-            "[Loop Resample][diagnostic] rail-trim "
-            f"path={index} kept={len(vertices) - head - tail}/{len(vertices)} "
-            f"dropped_head={head} dropped_tail={tail}"
-        )
+        if enabled():
+            vertices = paths[index][0]
+            print(
+                "[Loop Resample][diagnostic] rail-trim "
+                f"path={index} kept={len(vertices) - head - tail}/{len(vertices)} "
+                f"dropped_head={head} dropped_tail={tail}"
+            )
     paths = _apply_trims(paths, trims)
     session = ResampleSession(obj, live_bm.copy(), paths, trims)
     _release()

@@ -56,8 +56,9 @@ def _rail_shift(kind):
     return outer_step - inner_step
 
 
-# Temporary: how a shape axis moved a strip's connectivity.  Off costs nothing but the
-# branch; nothing below reads it to decide anything.  Set True to bring the lines back.
+# The ladder block in ``diagnostics``: how a shape axis moved a strip's connectivity.
+# Off costs nothing but the branch, and nothing below reads it to decide anything.
+# Set True, with ``diagnostics.DIAGNOSTICS``, to bring the lines back.
 DIAGNOSE_LADDER = False
 
 

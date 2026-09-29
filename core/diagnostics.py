@@ -1,11 +1,33 @@
-"""Console timing and failure diagnostics for Loop Resample."""
+"""Console timing and failure diagnostics for Loop Resample.
+
+``DIAGNOSTICS`` is the master switch for every line in this file and for the handful of
+lines printed elsewhere, which ask through :func:`enabled`.  One resample step would
+otherwise write twenty-odd lines to the system console, and every one of them reports
+work the add-on already answers somewhere the user can see -- the HUD, the operator's
+return value -- so a released run leaves it False.
+
+Two blocks sit under a second switch of their own and speak only when both are on:
+``planner.DIAGNOSE_LADDER`` for the ladder search, ``surface.DIAGNOSE_UV`` for the UV
+transfer.  Off means off in both directions: no line and no work for a line.  The
+post-mortem context (``start_step``, ``start_scope``, ``mark``) and the scan totals
+(``accumulate_scan``) are gated here too, and their call sites ask ``enabled`` first so
+the field dicts are never built -- the only measurement left running is the ``+= 1``
+counters inside the sweep loops, which would cost more to gate than to keep.
+"""
 
 import traceback
 
 from .utils import _point
 
+DIAGNOSTICS = False
+
 _SCAN_TOTALS = {}
 _STEP = {"base": {}, "scope": {}, "at": "-", "detail": {}}
+
+
+def enabled():
+    """Whether a diagnostic line may be written; the prints outside this file ask."""
+    return DIAGNOSTICS
 
 
 def diagnostic_vertex(vertex):
@@ -19,6 +41,8 @@ def diagnostic_vertex(vertex):
 
 
 def print_timing(label, elapsed, **details):
+    if not DIAGNOSTICS:
+        return
     suffix = " ".join(f"{key}={value}" for key, value in details.items())
     print(
         f"[Loop Resample][timing] {label} {elapsed * 1000.0:.3f}ms"
@@ -32,7 +56,13 @@ def accumulate_scan(label, elapsed, work):
     ``work`` counts the inner iterations actually performed, so a faster scan is
     visible as a drop in ``work`` while ``ns_per_work`` stays flat -- that pairing
     is what separates an algorithmic win from a machine that happened to be idle.
+
+    Off costs the one test here: the counters a caller hands in are woven into the
+    sweep loops and cannot be gated without putting a branch inside them, so this is
+    where the bookkeeping stops.
     """
+    if not DIAGNOSTICS:
+        return
     totals = _SCAN_TOTALS.get(label)
     if totals is None:
         _SCAN_TOTALS[label] = [elapsed, work, 1]
@@ -44,11 +74,15 @@ def accumulate_scan(label, elapsed, work):
 
 def reset_scans():
     """Drop the totals, so a failed step cannot bleed into the next report."""
+    if not DIAGNOSTICS:
+        return
     _SCAN_TOTALS.clear()
 
 
 def print_scans():
     """One line per scan site; ``ms=0`` marks a work-counted site without a timer."""
+    if not DIAGNOSTICS:
+        return
     for label in sorted(_SCAN_TOTALS):
         elapsed, work, calls = _SCAN_TOTALS[label]
         line = (
@@ -67,7 +101,12 @@ def start_step(**details):
     and what leaves the system console with nothing but a bare ``operator-failed`` timing:
     the raise itself, and every number the planner was handed, are unrecoverable after it.
     A step therefore carries its own context and prints it the moment it fails.
+
+    Callers that have to build these fields rather than hand one over ask ``enabled``
+    first: a switch that only silenced the printing would still be paying for the packing.
     """
+    if not DIAGNOSTICS:
+        return
     _STEP["base"] = details
     _STEP["scope"] = {}
     _STEP["at"] = "start"
@@ -80,6 +119,8 @@ def start_scope(**details):
     ``at`` becomes ``enter`` rather than keeping the previous scope's last stage, so work
     that dies before its first stage is not blamed on the stage before it.
     """
+    if not DIAGNOSTICS:
+        return
     _STEP["scope"] = details
     _STEP["detail"] = {}
     _STEP["at"] = "enter"
@@ -87,12 +128,16 @@ def start_scope(**details):
 
 def mark(label, **details):
     """Note the stage a step just entered; only the last one before a raise is printed."""
+    if not DIAGNOSTICS:
+        return
     _STEP["at"] = label
     _STEP["detail"] = details
 
 
 def print_failure(elapsed):
     """The stage a step died in, the data that stage was given, and the traceback."""
+    if not DIAGNOSTICS:
+        return
     stage = " ".join(
         f"{key}={value}"
         for key, value in {**_STEP["scope"], **_STEP["detail"]}.items()
@@ -115,6 +160,8 @@ def print_seam_crossings(anchors_per_path, counts):
     non-empty ``seam-rungs`` line means the crossing landed on the outer rail of a
     strip whose inner rail is not a resampled path -- which is the normal case.
     """
+    if not DIAGNOSTICS:
+        return
     print(
         "[Loop Resample][diagnostic] seam-crossings "
         + " ".join(
@@ -135,6 +182,8 @@ def print_landing_fallback(region, rail, source_index):
     vertex: a step that held every pin says nothing here, so a quiet log means the seam
     aimed at vertices the sampler actually created.
     """
+    if not DIAGNOSTICS:
+        return
     print(
         "[Loop Resample][diagnostic] landing-fallback "
         f"region={region.get('region_index')} path={region.get('path_index')} "
@@ -148,6 +197,8 @@ def print_seam_rungs(region, rungs):
     A pair with a second number after it slid: the ladder offered no rung on the column
     the source crossing sat on, so the red line took the nearest one it did.
     """
+    if not DIAGNOSTICS:
+        return
     taken = []
     for rung in rungs:
         inner, outer = rung["node"]
@@ -172,7 +223,7 @@ def print_seam_jogs(joins):
     is a defect nobody can tell the difference between a refused pin, a slid rung and a
     rail that read the crossing at two different vertices.
     """
-    if not joins:
+    if not DIAGNOSTICS or not joins:
         return
     print(
         "[Loop Resample][diagnostic] seam-jogs "
@@ -191,6 +242,8 @@ def print_seam_jogs(joins):
 
 def print_seam_crossing_skipped(region, reason, detail):
     """Report a seam crossing that could not become a rung of the ladder."""
+    if not DIAGNOSTICS:
+        return
     print(
         "[Loop Resample][diagnostic] seam-skip "
         f"region={region.get('region_index')} path={region.get('path_index')} "
@@ -207,19 +260,22 @@ def print_seam_excursion(region, detail):
     still could not reach.  Silent for every strip that borrowed nothing, which is every
     strip that lost no crossing.
     """
+    if not DIAGNOSTICS:
+        return
     print(
         "[Loop Resample][diagnostic] seam-excursion "
         f"region={region.get('region_index')} path={region.get('path_index')} {detail}"
     )
 
 
-# --- temporary ladder diagnostic ----------------------------------------------
-# Added to find which step moved a strip's connectivity while only a shape axis was
-# being scrolled.  ``ladder``'s ``gap`` is the margin the search won by, so it says
-# whether one rail vertex sliding was ever likely to flip the strip; ``ladder-final``
-# shows what actually became faces and what each of its columns' rungs measures,
-# because the column pair whose rung lengths cross is the flip itself.
-# Gated by ``planner.DIAGNOSE_LADDER`` and removed in one go with the UV block below.
+# --- ladder diagnostics -------------------------------------------------------
+# What moved a strip's connectivity while only a shape axis was being scrolled.
+# ``ladder``'s ``gap`` is the margin the search won by, so it says whether one rail
+# vertex sliding was ever likely to flip the strip; ``ladder-final`` shows what actually
+# became faces and what each of its columns' rungs measures, because the column pair
+# whose rung lengths cross is the flip itself.
+# Needs ``DIAGNOSTICS`` together with ``planner.DIAGNOSE_LADDER`` -- the call sites check
+# the second, these printers check the first.
 
 _LADDER_KIND_LETTER = {
     "QUAD": "Q",
@@ -246,6 +302,8 @@ def print_outer_rungs(region, rungs, rank, tied, decision, is_closed):
     one by ``shift``.  ``tied=1`` means the source band's own connectivity settled it; more
     means distance still had to.
     """
+    if not DIAGNOSTICS:
+        return
     shown = ", ".join(f"{inner}->{outer}" for inner, outer in rungs)
     print(
         "[Loop Resample][diagnostic] align "
@@ -262,6 +320,8 @@ def print_outer_align(region, candidates, chosen_index, rotate, is_closed):
     so a step whose ``rotate`` moved has shifted every rung by that many columns -- a
     whole band's worth of connectivity change from one wheel tick.
     """
+    if not DIAGNOSTICS:
+        return
     print(
         "[Loop Resample][diagnostic] align "
         f"region={region.get('region_index')} closed={int(is_closed)} "
@@ -279,6 +339,8 @@ def print_outer_replay(region, decision):
     the two orientations were never re-measured, so a ``rotate`` that moved cannot be
     blamed on this step.
     """
+    if not DIAGNOSTICS:
+        return
     print(
         "[Loop Resample][diagnostic] align "
         f"region={region.get('region_index')} replay=chosen{decision[0]} "
@@ -297,6 +359,8 @@ def print_ladder_dp(region, inner_steps, outer_steps, allowed, ranked, waypoints
 
     ``pins`` are the nodes a UV seam crossing forces the ladder to stand on.
     """
+    if not DIAGNOSTICS:
+        return
     best_cost, best_transitions = ranked[0]
     line = (
         "[Loop Resample][diagnostic] ladder "
@@ -332,6 +396,8 @@ def print_ladder_plan(region, plan, source, swapped):
     own: a column asking for five spokes while its neighbours ask for one is the fan, and
     where it sits along the run is the twist.
     """
+    if not DIAGNOSTICS:
+        return
     inner = plan.inner_vertices
     outer = plan.outer_vertices
     closed = bool(region.get("closed"))
@@ -373,6 +439,8 @@ def print_ladder_plan(region, plan, source, swapped):
 
 
 def print_crossing(first_label, first_segment, second_label, second_segment, epsilon_squared):
+    if not DIAGNOSTICS:
+        return
     print(
         "[Loop Resample][diagnostic] crossing "
         f"first={first_label} "
@@ -386,6 +454,8 @@ def print_crossing(first_label, first_segment, second_label, second_segment, eps
 
 
 def print_degenerate_face(label, face_index, face):
+    if not DIAGNOSTICS:
+        return
     print(
         f"[Loop Resample][diagnostic] {label} "
         f"face={face_index} size={len(face)} vertices=["
@@ -395,6 +465,8 @@ def print_degenerate_face(label, face_index, face):
 
 
 def print_normal_mismatch(face_index, face, alignment):
+    if not DIAGNOSTICS:
+        return
     print(
         "[Loop Resample][diagnostic] normal-mismatch "
         f"face={face_index} size={len(face)} alignment={alignment:.9g} vertices=["
@@ -403,11 +475,13 @@ def print_normal_mismatch(face_index, face, alignment):
     )
 
 
-# --- temporary UV island diagnostic -------------------------------------------
-# Added to pin down why a rebuilt face can take its corner values from the wrong
-# island.  Everything from this marker to the end of the file stays for now and is
-# removed in one go when the add-on is finished; it is gated by
-# ``surface.DIAGNOSE_UV``.
+# --- UV island diagnostics ----------------------------------------------------
+# Why a rebuilt face took its corner values from the wrong island: every line below
+# reads the transfer's own votes back out, which is the only way to see a chord forming
+# before it reaches the UV editor.
+# Needs ``DIAGNOSTICS`` together with ``surface.DIAGNOSE_UV`` -- the call sites check the
+# second, these printers check the first.  That switch also decides how much of the
+# transfer is measured at all, so it is the one to flip when the lines are wanted.
 
 
 def _region_tag(region):
@@ -423,6 +497,8 @@ def print_uv_region(region, rails, crossings, parameters=()):
     a face whose u falls outside its chosen chain is clamped to that chain's end
     and visibly hangs off the island instead of landing in it.
     """
+    if not DIAGNOSTICS:
+        return
     print(
         f"[Loop Resample][uvdiag] {_region_tag(region)} "
         f"source_faces={len(region.get('faces') or ())} "
@@ -453,6 +529,8 @@ def print_uv_region(region, rails, crossings, parameters=()):
 
 def print_uv_note(region, detail):
     """A one-line UV fact that has no face to attach to."""
+    if not DIAGNOSTICS:
+        return
     print(f"[Loop Resample][uvdiag] {_region_tag(region)} {detail}")
 
 
@@ -468,6 +546,8 @@ def print_uv_records(region, records, rails, uv_key):
     ``outer_vote`` winner is not the ``src#`` it was given is being read from two islands'
     worth of corners at once, and that is the chord.
     """
+    if not DIAGNOSTICS:
+        return
     for rail, chains in enumerate(rails or ()):
         for index, chain in enumerate(chains):
             print(
@@ -526,6 +606,8 @@ def print_uv_faces(region, rows, total):
     face not settled by ``inner`` is one whose inner rail could not place it on its own,
     which is where the outer coverage and the centre distance take over.
     """
+    if not DIAGNOSTICS:
+        return
     flagged = [
         row
         for row in rows

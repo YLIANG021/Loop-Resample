@@ -26,10 +26,10 @@ _ENTRY_ICON = "MOUSE_MMB"
 def draw_edit_mesh_context_menu(self, context):
     """The way in to the wheel, at the top of the mesh edit-mode right-click menu.
 
-    One item rather than a submenu: a submenu is what LoopTools needs because it has a
-    dozen operators behind it, and this add-on has one.  The trailing separator is what
-    keeps the native list below it readable, and it is why the item sits above the divider
-    instead of joining the tail.
+    One item rather than a submenu: a submenu earns its extra click only when there are a
+    dozen operators to pick between, and this add-on has one.  The trailing separator is
+    what keeps the native list below it readable, and it is why the item sits above the
+    divider instead of joining the tail.
 
     The item names the forwarder rather than the modal itself, because a menu cannot start
     a modal operator -- see :class:`MESH_OT_loop_resample_interactive_entry`.

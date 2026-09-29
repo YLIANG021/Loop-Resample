@@ -32,6 +32,7 @@ from .core import (
 )
 from .core.diagnostics import (
     accumulate_scan,
+    enabled,
     mark,
     print_failure,
     print_seam_crossings,
@@ -155,7 +156,8 @@ def apply_counts(context, session, counts, shape=None):
     """
     started = time.perf_counter()
     mesh = context.active_object.data
-    start_step(**_step_request(session, counts, shape))
+    if enabled():
+        start_step(**_step_request(session, counts, shape))
     # All planning happens on a detached copy of the locked source, so a
     # failure leaves the live mesh exactly as it was.
     working_bm = session.open_bmesh()
@@ -235,33 +237,35 @@ def _resample(session, bm, counts, shape=None):
     path_states = capture["path_states"]
     path_points = capture["path_points"]
     path_anchors = capture["path_anchors"]
-    print_timing(
-        "capture-strips",
-        time.perf_counter() - step_started,
-        cached=cached,
-        paths=len(paths),
-        regions=len(regions),
-        synchronized=len(synchronized_paths),
-        edge_records=sum(
-            len(region["edge_attributes"]["records"]) for region in regions
-        ),
-        face_records=sum(
-            len(region["source_faces"]["records"]) for region in regions
-        ),
-    )
+    if enabled():
+        print_timing(
+            "capture-strips",
+            time.perf_counter() - step_started,
+            cached=cached,
+            paths=len(paths),
+            regions=len(regions),
+            synchronized=len(synchronized_paths),
+            edge_records=sum(
+                len(region["edge_attributes"]["records"]) for region in regions
+            ),
+            face_records=sum(
+                len(region["source_faces"]["records"]) for region in regions
+            ),
+        )
 
     print_seam_crossings(path_anchors, counts)
-    start_step(
-        **_step_request(session, counts, shape),
-        paths=len(paths),
-        path_vertices=",".join(str(len(path[0])) for path in paths),
-        regions=len(regions),
-        region_kinds="/".join(
-            f"{region.get('region_index')}:{region['kind']}" for region in regions
-        ),
-        cached=cached,
-    )
-    if shape is not None:
+    if enabled():
+        start_step(
+            **_step_request(session, counts, shape),
+            paths=len(paths),
+            path_vertices=",".join(str(len(path[0])) for path in paths),
+            regions=len(regions),
+            region_kinds="/".join(
+                f"{region.get('region_index')}:{region['kind']}" for region in regions
+            ),
+            cached=cached,
+        )
+    if shape is not None and enabled():
         print(
             "[Loop Resample][diagnostic] shape "
             "tSmooth={:.2f} paths={}".format(
@@ -283,14 +287,16 @@ def _resample(session, bm, counts, shape=None):
     # off at the end used to cost a pass over every element in the mesh.
     deselect_started = time.perf_counter()
     session.clear_source_selection(bm)
-    accumulate_scan(
-        "deselect-all",
-        time.perf_counter() - deselect_started,
-        sum(len(part) for part in session.selected),
-    )
+    if enabled():
+        accumulate_scan(
+            "deselect-all",
+            time.perf_counter() - deselect_started,
+            sum(len(part) for part in session.selected),
+        )
     mark("detach")
     detach_adjacent_strips(bm, regions)
-    mark("rebuild-paths", samples=",".join(str(len(s)) for s in snapshots))
+    if enabled():
+        mark("rebuild-paths", samples=",".join(str(len(s)) for s in snapshots))
     updated_paths = [
         rebuild_detached_path(bm, path, samples)
         for path, samples in zip(paths, snapshots)
@@ -328,7 +334,8 @@ def _resample(session, bm, counts, shape=None):
             if has_ladder and not region.get("phase_locked")
             else None
         )
-        start_scope(**_region_scope(region, kind, inner_vertices, outer_vertices))
+        if enabled():
+            start_scope(**_region_scope(region, kind, inner_vertices, outer_vertices))
         frozen = frozen_ladder(
             ladders,
             region,
@@ -410,7 +417,8 @@ def _resample(session, bm, counts, shape=None):
         inner_parameters = entry["inner_parameters"]
         outer_parameters = entry["outer_parameters"]
         plan = entry["plan"]
-        start_scope(**_region_scope(region, kind, inner_vertices, outer_vertices))
+        if enabled():
+            start_scope(**_region_scope(region, kind, inner_vertices, outer_vertices))
         mark("rebuild")
         region_started = time.perf_counter()
         if kind == "FAN":
@@ -477,19 +485,21 @@ def _resample(session, bm, counts, shape=None):
     # up by adding seam flags to path edges the step above already resampled.
     paint_path_seam_jogs(bm, updated_paths, seam_landings)
     apply_path_point_attributes(updated_paths, path_parameters, path_points, bm)
-    accumulate_scan(
-        "apply-path-attributes",
-        time.perf_counter() - phase_started,
-        sum(len(path) for path, _, _ in updated_paths),
-    )
+    if enabled():
+        accumulate_scan(
+            "apply-path-attributes",
+            time.perf_counter() - phase_started,
+            sum(len(path) for path, _, _ in updated_paths),
+        )
     mark("cleanup")
     phase_started = time.perf_counter()
     cleanup_detached_edges(bm, regions)
-    accumulate_scan(
-        "cleanup-edges",
-        time.perf_counter() - phase_started,
-        sum(len(region.get("delete_edges", ())) for region in regions),
-    )
+    if enabled():
+        accumulate_scan(
+            "cleanup-edges",
+            time.perf_counter() - phase_started,
+            sum(len(region.get("delete_edges", ())) for region in regions),
+        )
 
     mark("finalize")
     selected_edges = {

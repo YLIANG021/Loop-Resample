@@ -2,6 +2,7 @@
 
 from collections import Counter
 
+from .diagnostics import enabled
 from .paths import ordered_selected_path
 from .utils import _point
 
@@ -34,7 +35,7 @@ def print_capture_reject(
     path_index, reason, component, path_edge_set, quiet=False, **detail
 ):
     """Why one side of a rail was left out of the capture."""
-    if quiet:
+    if quiet or not enabled():
         return
     print(
         "[Loop Resample][diagnostic] capture-reject "
@@ -427,7 +428,7 @@ def capture_adjacent_strips(bm, paths, quiet=False):
         first_path = paths[first_index]
         second_path = paths[second_index]
         if first_path[2] != second_path[2]:
-            if not quiet:
+            if not quiet and enabled():
                 print(
                     "[Loop Resample][diagnostic] capture-reject "
                     f"path={first_index} reason=pair-openness "
@@ -515,7 +516,7 @@ def capture_adjacent_strips(bm, paths, quiet=False):
             for face in region["faces"]
         }
         remaining_faces = linked_faces - captured_faces
-        if remaining_faces and not quiet:
+        if remaining_faces and not quiet and enabled():
             print(
                 "[Loop Resample][diagnostic] capture-incomplete "
                 f"path={path_index} selected_edges={len(path_edges)} "

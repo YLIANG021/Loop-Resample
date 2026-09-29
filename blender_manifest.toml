@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "loop_resample"
-version = "0.1.1"
+version = "1.0.0"
 name = "Loop Resample"
 tagline = "Reshape any loop or chain, any segment count, attributes survive"
 maintainer = "YLIANG"
@@ -17,9 +17,33 @@ license = [
 ]
 
 [build]
+# Keep this list in step with Addon_pack.vbs, which is what actually builds the release:
+# a CLI build from the working tree has to come out with the same files in it.
 paths_exclude_pattern = [
   "__pycache__/",
+  "*.pyc",
   ".git/",
+  ".idea/",
+  ".vscode/",
+  ".mypy_cache/",
+  ".pytest_cache/",
+  ".ruff_cache/",
+  "build/",
+  "dist/",
   "tests/",
+  ".gitignore",
+  ".DS_Store",
+  "Thumbs.db",
   "*.zip",
+  "*.log",
+  "*.tmp",
+  "*.bak",
+  "*.blend1",
+  "*.blend2",
+  "*.txt",
+  "*.md",
+  "*.vbs",
+  "*.bat",
+  "*.cmd",
+  "*.ps1",
 ]

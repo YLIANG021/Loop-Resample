@@ -9,6 +9,7 @@ from .ui import (
     entry_icon,
     hide_notice,
 )
+from .ui.interactive import _start_wheel_modal
 
 
 _CLASSES = (
@@ -42,6 +43,12 @@ def unregister():
     # function object register() prepended and remove() always matches.  That identity is
     # what keeps the menu item from stacking up a copy on every reload.
     bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(draw_edit_mesh_context_menu)
+    # The menu entry defers the wheel by one frame through this timer, and a click can only
+    # arm it while the entry is on the menu -- so this follows the removal above, and by then
+    # nothing can rearm it.  A disable that left it standing would hand Blender a callback
+    # whose module is gone, which is the same hole ``hide_notice()`` closes one door over.
+    if bpy.app.timers.is_registered(_start_wheel_modal):
+        bpy.app.timers.unregister(_start_wheel_modal)
     # A refusal notice outlives nothing: its handlers belong to this module instance, and a
     # viewport that keeps drawing them after disable draws a function whose module is gone.
     hide_notice()

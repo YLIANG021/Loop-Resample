@@ -5,6 +5,7 @@ from math import acos
 
 from ..i18n import pgettext
 from ..shape.warp import measure_positions, measure_to_distance
+from .diagnostics import enabled
 from .types import BoundaryParameters, CatmullRomCurve
 from .utils import _point
 
@@ -266,7 +267,7 @@ def sample_catmull_rom_curve(
             )
         )
     )
-    if not valid_profile:
+    if not valid_profile and enabled():
         print(
             "[Loop Resample][timing] spacing-fallback "
             "mode=uniform reason=invalid-source-profile"
