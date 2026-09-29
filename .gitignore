@@ -11,6 +11,8 @@ Addon_pack.vbs
 *.md
 # 例外：交接说明是决策日志，跟着代码一起进仓库
 !开发交接说明.txt
+# 例外：README 是仓库门面，也要进仓库
+!README.md
 
 # 常见缓存 / 临时目录
 .cache/
