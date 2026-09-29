@@ -17,6 +17,11 @@ _CLASSES = (
     MESH_OT_loop_resample_interactive_entry,
 )
 
+# What register() actually put in, so unregister() never asks Blender to take out a class
+# that is not there -- a register() that died partway, or a second unregister(), would
+# otherwise surface as a RuntimeError whose wording this file would have to recognise.
+_REGISTERED = []
+
 
 def register():
     import bpy
@@ -27,6 +32,7 @@ def register():
     i18n.register()
     for cls in _CLASSES:
         bpy.utils.register_class(cls)
+        _REGISTERED.append(cls)
     # Before the menu is hung up, so the first draw of the entry either has its picture or
     # has already decided it has not.
     entry_icon.register()
@@ -54,10 +60,7 @@ def unregister():
     hide_notice()
     entry_icon.unregister()
     session.clear()
-    for cls in reversed(_CLASSES):
-        try:
-            bpy.utils.unregister_class(cls)
-        except RuntimeError as error:
-            if "missing bl_rna" not in str(error):
-                raise
+    for cls in reversed(_REGISTERED):
+        bpy.utils.unregister_class(cls)
+    _REGISTERED.clear()
     i18n.unregister()
