@@ -1,6 +1,6 @@
 """Curve fitting, parameterization, and source-spacing sampling."""
 
-from bisect import bisect_left, bisect_right
+from bisect import bisect_right
 from math import acos
 
 from ..i18n import pgettext
@@ -155,66 +155,153 @@ def _segment_lengths(distances):
     )
 
 
-def _occupy_anchor_slots(slot_measures, anchor_measures, total, is_closed):
-    """Hand every anchor one of the slots the global distribution already produced.
+def _allocate_stretch_gaps(stretch_spans, total_gaps):
+    """At least one gap per stretch, the rest by largest remainder.
 
-    ``slot_measures`` is the increasing measure the caller spaced its samples by, in
-    whatever unit that caller works in, and ``anchor_measures`` is where each source
-    point to pin sits in the same unit.  Each anchor takes the nearest still-free slot
-    and both orders stay monotone, which is what keeps the pin from crossing over
-    itself; every other slot keeps the coordinate the plain distribution gave it, so
-    the whole difference a pin makes is the one point it stands on.  That is also why
-    the spacing and smoothing axes still move the rest of the path: an anchor is a name
-    for a vertex, not a wall the distribution has to restart against.
+    This is the allocator the interval sampler used to run, read as a count of gaps
+    rather than of samples: the number of steps a stretch divides into follows its own
+    span, never the accident of where the neighbouring anchors happened to stand.
+    """
+    if total_gaps < len(stretch_spans):
+        return None
+    gaps = [1] * len(stretch_spans)
+    remaining = total_gaps - len(stretch_spans)
+    if remaining == 0:
+        return tuple(gaps)
+    total_span = sum(stretch_spans)
+    if total_span <= 1e-12:
+        return None
+    exact = [remaining * span / total_span for span in stretch_spans]
+    whole = [int(value) for value in exact]
+    for index, amount in enumerate(whole):
+        gaps[index] += amount
+    unallocated = remaining - sum(whole)
+    ranked = sorted(
+        range(len(stretch_spans)),
+        key=lambda index: (
+            exact[index] - whole[index],
+            stretch_spans[index],
+            -index,
+        ),
+        reverse=True,
+    )
+    for index in ranked[:unallocated]:
+        gaps[index] += 1
+    return tuple(gaps)
 
-    A closed path is read from its first anchor around the loop, so a seam sitting just
-    *before* the start of the index frame takes the slot beside it instead of the one
-    all the way across.  An open path's two ends are not for rent: they hold the path's
-    own vertices whatever the anchors ask for, which is the guarantee the allocator
-    this replaced got by adding the ends to the anchor list itself.
 
-    Returns None when there are fewer slots than anchors, leaving the caller on its
+def _anchor_slot_partition(count, anchor_measures, total, is_closed):
+    """The slot each anchor stands on, with the stretches between them sized to fit.
+
+    A pin's promise is only that some slot holds the anchor's own vertex; which slot
+    is otherwise free to choose, and the choice decides how many slots each
+    anchor-to-anchor stretch gets to divide.  Those counts follow the stretches' own
+    spans -- largest remainder, at least one step per stretch -- so a short stretch is
+    never handed a long stretch's worth of slots by the accident of a nearest-slot
+    grab.  On a closed path the first anchor takes the slot nearest its own position
+    so a pinned step stays aligned with the plain distribution beside it, and the
+    rest follow around the loop; on an open one the two ends bound the first and last
+    stretches wherever the anchors did not sit on them.
+
+    Returns None when the count cannot hold every anchor, leaving the caller on its
     plain distribution rather than pinning a subset of the promises.
     """
     needed = len(anchor_measures)
     if not needed:
         return None
     if is_closed:
-        origin = anchor_measures[0]
-        order = sorted(
-            range(len(slot_measures)),
-            key=lambda index: (slot_measures[index] - origin) % total,
-        )
-        positions = [(slot_measures[index] - origin) % total for index in order]
-        wanted = [(measure - origin) % total for measure in anchor_measures]
-    else:
-        order = list(range(len(slot_measures)))
-        if anchor_measures[0] > 0.0:
-            order.pop(0)
-        if anchor_measures[-1] < total:
-            order.pop()
-        positions = [slot_measures[index] for index in order]
-        wanted = list(anchor_measures)
-
-    count = len(positions)
-    if needed > count:
+        spans = [
+            (anchor_measures[(index + 1) % needed] - anchor_measures[index]) % total
+            or total
+            for index in range(needed)
+        ]
+        gaps = _allocate_stretch_gaps(spans, count)
+        if gaps is None:
+            return None
+        first = round(anchor_measures[0] / total * count) % count
+        slots = []
+        walk = first
+        for gap in gaps:
+            slots.append(walk % count)
+            walk += gap
+        return tuple(slots)
+    boundaries = []
+    if anchor_measures[0] > 0.0:
+        boundaries.append((0.0, False))
+    boundaries.extend((measure, True) for measure in anchor_measures)
+    if anchor_measures[-1] < total:
+        boundaries.append((total, False))
+    spans = [
+        boundaries[index + 1][0] - boundaries[index][0]
+        for index in range(len(boundaries) - 1)
+    ]
+    gaps = _allocate_stretch_gaps(spans, count - 1)
+    if gaps is None:
         return None
-
     slots = []
-    cursor = 0
-    for index, target in enumerate(wanted):
-        # Slots still unclaimed at either end set the window this one may reach.
-        high = count - needed + index
-        near = bisect_left(positions, target)
-        choice = None
-        for candidate in (near - 1, near):
-            slot = min(max(candidate, cursor), high)
-            distance = abs(positions[slot] - target)
-            if choice is None or distance < choice[0]:
-                choice = (distance, slot)
-        slots.append(order[choice[1]])
-        cursor = choice[1] + 1
+    if boundaries[0][1]:
+        slots.append(0)
+    walk = 0
+    for (_, is_anchor), gap in zip(boundaries[1:], gaps):
+        walk += gap
+        if is_anchor:
+            slots.append(walk)
     return tuple(slots)
+
+
+def _spread_free_slots(count, anchor_slots, anchor_measures, total, is_closed):
+    """Even frame positions for every slot no anchor stands on.
+
+    An anchor displaces the slot it rents, which hands one neighbour a short step and
+    the other a long one -- the local bunching a pin left behind.  The free slots
+    between two anchors therefore divide the stretch between them evenly, in the same
+    frame the plain distribution was even in and bounded by the anchors' own positions
+    there.  On a closed path the last stretch wraps around to the first anchor, and a
+    lone anchor bounds a stretch all the way around; on an open one the two ends bound
+    the first and last stretches wherever the anchors did not take the end slots
+    themselves.
+
+    Yields ``(slot, measure)``; the caller reads the sample at the measure in its own
+    frame.  ``anchor_slots`` arrives in measure order -- the order
+    :func:`._anchor_slot_partition` returned it in -- and no two anchors share a slot.
+    """
+    pairs = list(zip(anchor_slots, anchor_measures))
+    if is_closed:
+        stretches = []
+        for index in range(len(pairs)):
+            start_slot, start_measure = pairs[index]
+            end_slot, end_measure = pairs[(index + 1) % len(pairs)]
+            span = (end_measure - start_measure) % total or total
+            stretches.append((start_slot, end_slot, start_measure, span))
+    else:
+        bounds = list(pairs)
+        if bounds[0][0] != 0:
+            bounds.insert(0, (0, 0.0))
+        if bounds[-1][0] != count - 1:
+            bounds.append((count - 1, total))
+        stretches = [
+            (
+                bounds[index][0],
+                bounds[index + 1][0],
+                bounds[index][1],
+                bounds[index + 1][1] - bounds[index][1],
+            )
+            for index in range(len(bounds) - 1)
+        ]
+    for start_slot, end_slot, start_measure, span in stretches:
+        free = (
+            (end_slot - start_slot - 1) % count
+            if is_closed
+            else end_slot - start_slot - 1
+        )
+        if free <= 0 or span <= 0.0:
+            continue
+        for step in range(1, free + 1):
+            measure = start_measure + span * step / (free + 1)
+            yield (
+                (start_slot + step) % count if is_closed else start_slot + step,
+                measure % total if is_closed else measure,
+            )
 
 
 def sample_catmull_rom_curve(
@@ -227,14 +314,18 @@ def sample_catmull_rom_curve(
 
     ``anchors`` are control-point indices that must keep a sample exactly on them: a UV
     seam crossing the strip is pinned this way so no rebuilt face ever straddles it.
-    Each one takes the nearest slot out of the distribution below and displaces it, so
-    the rest of the path stays wherever the axes put it and only the pinned point is
-    held back.  A step back to the source count is left unpinned because that step
-    already lands on every source vertex.
+    The stretches between anchors divide the count by their own spans -- at least one
+    step each, the rest by largest remainder -- and the slots inside a stretch space
+    themselves evenly between its two anchors, so a pin holds its vertex without
+    renting a short step to either neighbour.  A step back to the source count is left
+    unpinned because that step already lands on every source vertex.
 
     ``even`` is one strength of the distribution axis, from equal index steps toward
-    equal arc length.  Zero hands back the arithmetic below untouched, which is the
-    whole reason reverting a session lands on the mesh it started from.
+    equal arc length.  Zero hands back the index-frame arithmetic below untouched on
+    an unpinned path, which is the whole reason reverting a session lands on the mesh
+    it started from.  A pinned path is spaced evenly on the measure instead: the
+    source-density profile is a promise to the source vertices, and the pin has
+    already moved the slot that would have kept it.
 
     ``(samples, landing)`` comes back, and ``landing`` names the returned slot each pinned
     source point stands on.  Only :mod:`.seams` reads it, and only to say out loud which of
@@ -285,11 +376,14 @@ def sample_catmull_rom_curve(
         if valid_profile
         else None
     ) or table
+    # With the measure table standing in for the arc itself, the branch below reads
+    # back what it was handed: a pinned path is spaced evenly on the measure, an
+    # unpinned one keeps the index-frame arithmetic bit-for-bit at ``even == 0``.
+    follow_source = valid_profile and positions is table and not pin
     samples = []
-    slot_distances = []
     for index in range(target_count):
         if valid_profile:
-            if positions is table:
+            if follow_source:
                 source_position = index * source_segments / divisor
                 source_segment = min(int(source_position), source_segments - 1)
                 local_factor = source_position - source_segment
@@ -310,7 +404,6 @@ def sample_catmull_rom_curve(
         else:
             distance = curve.total_length * index / divisor
 
-        slot_distances.append(distance)
         samples.append(_sample_at_distance(curve, distance))
     if not curve.is_closed:
         samples[0] = curve.control_points[0].copy()
@@ -328,15 +421,29 @@ def sample_catmull_rom_curve(
             {index for index in anchors if 0 <= index <= len(points) - 1},
             key=lambda index: table[index],
         )
-        slots = _occupy_anchor_slots(
-            slot_distances,
-            [table[index] for index in ordered],
-            curve.total_length,
+        slots = _anchor_slot_partition(
+            target_count,
+            [positions[index] for index in ordered],
+            positions[-1],
             curve.is_closed,
         )
         if slots is not None:
             for slot, index in zip(slots, ordered):
                 samples[slot] = points[index].copy()
+            if valid_profile:
+                # The anchors bound the stretches their neighbours divide evenly,
+                # read back onto the arc through the same measure the base used.
+                for slot, measure in _spread_free_slots(
+                    target_count,
+                    slots,
+                    [positions[index] for index in ordered],
+                    positions[-1],
+                    curve.is_closed,
+                ):
+                    samples[slot] = _sample_at_distance(
+                        curve,
+                        measure_to_distance(table, positions, measure),
+                    )
         landing = dict(zip(ordered, slots)) if slots is not None else {}
     return samples, landing
 
@@ -456,10 +563,10 @@ def sample_by_arclength(
 ):
     """Sample a polyline without moving detected corners off the source path.
 
-    Detected turns and the seam crossings of ``forced_anchors`` each take the nearest
-    slot of the even distribution below, so a corner keeps its own vertex while the
-    points between corners keep the spacing this step asked for rather than an
-    interval of their own.
+    Detected turns and the seam crossings of ``forced_anchors`` each hold their own
+    vertex, and the stretches between them divide the count by their own spans with
+    the slots inside a stretch spaced evenly between its two anchors, so a corner
+    keeps its own vertex without renting a short step to either neighbour.
 
     ``(samples, landing)`` comes back with the same meaning the curve sampler gives it, and
     this fallback has no identity case: its slots are even in the *weighted* parameter, so
@@ -489,8 +596,8 @@ def sample_by_arclength(
     samples = [
         _sample_parameterized(boundary, parameter) for parameter in slot_parameters
     ]
-    slots = _occupy_anchor_slots(
-        slot_parameters,
+    slots = _anchor_slot_partition(
+        target_count,
         [boundary.parameters[index] for index in anchors],
         1.0,
         is_closed,
@@ -498,4 +605,12 @@ def sample_by_arclength(
     if slots is not None:
         for slot, index in zip(slots, anchors):
             samples[slot] = _point(boundary.vertices[index])
+        for slot, measure in _spread_free_slots(
+            target_count,
+            slots,
+            [boundary.parameters[index] for index in anchors],
+            1.0,
+            is_closed,
+        ):
+            samples[slot] = _sample_parameterized(boundary, measure)
     return samples, dict(zip(anchors, slots)) if slots is not None else {}
