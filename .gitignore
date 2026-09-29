@@ -6,6 +6,10 @@ __pycache__/
 # 打包脚本
 Addon_pack.vbs
 
+# 打包产物：Addon_pack.vbs 和 blender -c extension build 都把 zip 写在这个目录里，
+# 漏掉这条，一次 git add -A 就把一百多 KB 的二进制提进历史
+*.zip
+
 # 说明文档（txt / md）
 *.txt
 *.md
