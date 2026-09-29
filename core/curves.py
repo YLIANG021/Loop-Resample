@@ -158,9 +158,8 @@ def _segment_lengths(distances):
 def _allocate_stretch_gaps(stretch_spans, total_gaps):
     """At least one gap per stretch, the rest by largest remainder.
 
-    This is the allocator the interval sampler used to run, read as a count of gaps
-    rather than of samples: the number of steps a stretch divides into follows its own
-    span, never the accident of where the neighbouring anchors happened to stand.
+    The allocator the interval sampler used to run, read as gaps rather than samples: a
+    stretch's step count follows its own span, never where the neighbouring anchors stood.
     """
     if total_gaps < len(stretch_spans):
         return None
@@ -193,18 +192,14 @@ def _allocate_stretch_gaps(stretch_spans, total_gaps):
 def _anchor_slot_partition(count, anchor_measures, total, is_closed):
     """The slot each anchor stands on, with the stretches between them sized to fit.
 
-    A pin's promise is only that some slot holds the anchor's own vertex; which slot
-    is otherwise free to choose, and the choice decides how many slots each
-    anchor-to-anchor stretch gets to divide.  Those counts follow the stretches' own
-    spans -- largest remainder, at least one step per stretch -- so a short stretch is
-    never handed a long stretch's worth of slots by the accident of a nearest-slot
-    grab.  On a closed path the first anchor takes the slot nearest its own position
-    so a pinned step stays aligned with the plain distribution beside it, and the
-    rest follow around the loop; on an open one the two ends bound the first and last
-    stretches wherever the anchors did not sit on them.
+    Which slot holds an anchor is free to choose, and the choice decides how many slots each
+    anchor-to-anchor stretch gets to divide; those counts come from ``_allocate_stretch_gaps``.
+    On a closed path the first anchor takes the slot nearest its own position, keeping a pinned
+    step aligned with the plain distribution beside it, and the rest follow around the loop; on
+    an open one the two ends bound the first and last stretches wherever the anchors did not sit
+    on them.
 
-    Returns None when the count cannot hold every anchor, leaving the caller on its
-    plain distribution rather than pinning a subset of the promises.
+    Returns None rather than pinning a subset when the count cannot hold every anchor.
     """
     needed = len(anchor_measures)
     if not needed:
@@ -252,18 +247,15 @@ def _anchor_slot_partition(count, anchor_measures, total, is_closed):
 def _spread_free_slots(count, anchor_slots, anchor_measures, total, is_closed):
     """Even frame positions for every slot no anchor stands on.
 
-    An anchor displaces the slot it rents, which hands one neighbour a short step and
-    the other a long one -- the local bunching a pin left behind.  The free slots
-    between two anchors therefore divide the stretch between them evenly, in the same
-    frame the plain distribution was even in and bounded by the anchors' own positions
-    there.  On a closed path the last stretch wraps around to the first anchor, and a
-    lone anchor bounds a stretch all the way around; on an open one the two ends bound
-    the first and last stretches wherever the anchors did not take the end slots
-    themselves.
+    An anchor displaces the slot it rents, handing one neighbour a short step and the other a
+    long one, so the free slots between two anchors divide that stretch evenly, in the frame
+    the plain distribution was even in and bounded by the anchors' positions there.  On a
+    closed path the last stretch wraps around to the first anchor and a lone anchor bounds a
+    stretch all the way around; on an open one the two ends bound the first and last stretches.
 
-    Yields ``(slot, measure)``; the caller reads the sample at the measure in its own
-    frame.  ``anchor_slots`` arrives in measure order -- the order
-    :func:`._anchor_slot_partition` returned it in -- and no two anchors share a slot.
+    Yields ``(slot, measure)``; the caller reads the sample at that measure.  ``anchor_slots``
+    arrives in measure order, as ``_anchor_slot_partition`` returned it, and no two anchors
+    share a slot.
     """
     pairs = list(zip(anchor_slots, anchor_measures))
     if is_closed:
@@ -312,29 +304,22 @@ def sample_catmull_rom_curve(
 ):
     """Sample a smooth source while preserving its original segment-density profile.
 
-    ``anchors`` are control-point indices that must keep a sample exactly on them: a UV
-    seam crossing the strip is pinned this way so no rebuilt face ever straddles it.
-    The stretches between anchors divide the count by their own spans -- at least one
-    step each, the rest by largest remainder -- and the slots inside a stretch space
-    themselves evenly between its two anchors, so a pin holds its vertex without
-    renting a short step to either neighbour.  A step back to the source count is left
-    unpinned because that step already lands on every source vertex.
+    ``anchors`` are control-point indices that must keep a sample exactly on them: a UV seam
+    crossing the strip is pinned this way so no rebuilt face ever straddles it.  Slot choice
+    goes to ``_anchor_slot_partition`` and ``_spread_free_slots``.  A step back to the source
+    count is left unpinned because it already lands on every source vertex.
 
-    ``even`` is one strength of the distribution axis, from equal index steps toward
-    equal arc length.  Zero hands back the index-frame arithmetic below untouched on
-    an unpinned path, which is the whole reason reverting a session lands on the mesh
-    it started from.  A pinned path is spaced evenly on the measure instead: the
-    source-density profile is a promise to the source vertices, and the pin has
-    already moved the slot that would have kept it.
+    ``even`` is one strength of the distribution axis, from equal index steps toward equal arc
+    length.  Zero hands back the index-frame arithmetic below untouched on an unpinned path.  A
+    pinned path spaces evenly on the measure instead: the pin has already moved the slot that
+    would have kept the profile's promise to the source vertices.
 
-    ``(samples, landing)`` comes back, and ``landing`` names the returned slot each pinned
-    source point stands on.  Only :mod:`.seams` reads it, and only to say out loud which of
-    its crossings the slots could not hold: a refused pin leaves a rung aiming at the
-    nearest sample, and nothing else about the step tells that apart from a pin that held.
-    ``None`` means the step was the identity one, so slot ``k`` still holds source point
-    ``k``; an empty mapping means nothing is pinned at all -- either the rail had fewer
-    rentable slots than there were vertices to hold, which leaves every sample on the plain
-    distribution, or the path was never asked to hold any.
+    ``landing`` maps each pinned source point to the slot holding it.  Only ``.seams`` reads
+    it, to report which crossings the slots could not hold, since a refused pin is otherwise
+    indistinguishable from one that held.  ``None`` means the identity step, so slot ``k``
+    still holds source point ``k``.  An empty mapping means nothing is pinned: either the rail
+    had too few rentable slots, so every sample stays on the plain distribution, or no anchor
+    was asked for.
     """
     minimum = 3 if curve.is_closed else 2
     if target_count < minimum:
@@ -376,9 +361,8 @@ def sample_catmull_rom_curve(
         if valid_profile
         else None
     ) or table
-    # With the measure table standing in for the arc itself, the branch below reads
-    # back what it was handed: a pinned path is spaced evenly on the measure, an
-    # unpinned one keeps the index-frame arithmetic bit-for-bit at ``even == 0``.
+    # ``positions`` may be the measure table standing in for the arc, and the branch below
+    # reads back what it was handed, so ``even == 0`` keeps the index-frame arithmetic exact.
     follow_source = valid_profile and positions is table and not pin
     samples = []
     for index in range(target_count):
@@ -393,11 +377,10 @@ def sample_catmull_rom_curve(
                     end_distance - start_distance
                 )
             else:
-                # The measure is a re-scaling of the source's own index frame, so the
-                # sample position is found in the measure and read back as a fraction
-                # of whichever segment it landed in.  Weighting a segment by its length
-                # instead of by one is the whole difference between spacing that
-                # follows the arc and spacing that follows the source vertices.
+                # The measure re-scales the source's own index frame: the position is
+                # found in it and read back as a fraction of the segment it landed in.
+                # Weighting a segment by its length instead of by one is what separates
+                # arc spacing from spacing that follows the source vertices.
                 distance = measure_to_distance(
                     table, positions, index * positions[-1] / divisor
                 )
@@ -431,8 +414,8 @@ def sample_catmull_rom_curve(
             for slot, index in zip(slots, ordered):
                 samples[slot] = points[index].copy()
             if valid_profile:
-                # The anchors bound the stretches their neighbours divide evenly,
-                # read back onto the arc through the same measure the base used.
+                # Read the free slots back onto the arc through the same measure the
+                # unpinned branch used.
                 for slot, measure in _spread_free_slots(
                     target_count,
                     slots,
@@ -563,14 +546,10 @@ def sample_by_arclength(
 ):
     """Sample a polyline without moving detected corners off the source path.
 
-    Detected turns and the seam crossings of ``forced_anchors`` each hold their own
-    vertex, and the stretches between them divide the count by their own spans with
-    the slots inside a stretch spaced evenly between its two anchors, so a corner
-    keeps its own vertex without renting a short step to either neighbour.
-
-    ``(samples, landing)`` comes back with the same meaning the curve sampler gives it, and
-    this fallback has no identity case: its slots are even in the *weighted* parameter, so
-    only the table says where a held corner ended up.
+    Detected turns and the seam crossings of ``forced_anchors`` each hold their own vertex, and
+    the stretches between them are sized by span.  ``(samples, landing)`` carries the meaning
+    the curve sampler gives it, but this fallback has no identity case: its slots are even in
+    the *weighted* parameter, so only the table says where a held corner ended up.
     """
     minimum = 3 if is_closed else 2
     if target_count < minimum:

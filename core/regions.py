@@ -19,9 +19,8 @@ def _listed(values, limit=12):
 def _rail_histogram(component, path_edge_set):
     """How many of the path's rail edges each face of a component sits on.
 
-    ``1x8`` is a clean strip, one face per rail edge.  Anything holding two means
-    that side is coarser than the rail, which is why a component like it cannot span
-    the whole path and gets rejected.
+    ``1x8`` is a clean strip, one face per rail edge.  A face holding two means
+    that side is coarser than the rail, so the component gets rejected.
     """
     histogram = Counter(
         sum(edge in path_edge_set for edge in face.edges) for face in component
@@ -48,9 +47,8 @@ def print_capture_reject(
 def _covered_run(edges, component_edges):
     """How many of ``edges`` to drop at each end so the rest form one contiguous run.
 
-    ``None`` means the component touches none of them, or touches two runs with a gap in
-    between.  A band that stops in the middle of its rail is not a band that ends there,
-    and cutting to the outer run would silently swallow surface the walk never reached.
+    ``None`` means the component touches none of them, or touches two runs with a gap
+    in between; cutting to the outer run would swallow surface the walk never reached.
     """
     hits = [index for index, edge in enumerate(edges) if edge in component_edges]
     if not hits:
@@ -63,16 +61,13 @@ def _covered_run(edges, component_edges):
 def _trim_proposal(paths, pair_indices, component_edges):
     """Where two rails would have to stop for the one band between them to fit.
 
-    A band can stop short of a chain's end -- that is what two chains of different length
-    look like where one of them runs on.  Nothing else about such a pair is unusual: the
-    faces are a clean ladder over the span they do cover, so cutting both chains to that
-    span hands the rest of the pipeline a selection it already knows how to rebuild.  The
-    cut is made once, at session start, before any curve is fitted or any index frozen, so
-    no downstream code has to learn that the user selected one edge more.
-
-    What is given up is the tail itself: it stays exactly where the source left it, so a
-    chain that runs on past the band keeps its last segment straight instead of following
-    the resampled curve.
+    A band can stop short of a chain's end when two chains of different length meet
+    and one runs on.  Over the span they cover the faces are a clean ladder, so
+    cutting both chains to that span gives the pipeline a selection it knows how to
+    rebuild.  The cut happens once, at session start, before any curve is fitted or
+    index frozen, so no downstream code has to learn the user selected one edge
+    more.  The tail stays as the source left it: a chain running on past the band
+    keeps its last segment straight instead of following the resampled curve.
     """
     proposal = []
     for index in pair_indices:
@@ -100,9 +95,9 @@ def region_rails(region, paths):
 def region_frames(region, paths):
     """Frozen normalized frames for a region's two rails.
 
-    A step moves the rails' first and last vertices and rebuilds everything in
-    between, so each rail's source geometry is recorded once here and every
-    capture measures positions against that record instead of the live mesh.
+    A step moves the rails' end vertices and rebuilds everything between, so the
+    source geometry is recorded once here and every capture measures against that
+    record, not the live mesh.
     """
     inner_vertices, outer_vertices = region_rails(region, paths)
     closed = bool(paths[region["path_index"]][2])
@@ -124,18 +119,15 @@ def _rail_frame(vertices, closed):
 def region_source_rungs(region, paths):
     """The ``(inner, outer)`` column pairs the source band already joins with an edge.
 
-    Which way the two rails run against each other, and where the ring's one cut sits,
-    is the question :func:`.planner.align_outer_boundary` answers, and answering it from
-    distances is degenerate on a band that is nearly symmetric: both walk directions and
-    several cut columns score within a few percent, so the winner moves with the sample
-    count and the ring gets wired left outer to right inner.
-
-    The band the user drew answers it exactly.  An edge of a region face with one end on
-    each rail *is* a rung of the source pairing, so the set of them is a description of
-    the pairing rather than an opinion about it.  Indices are used because they are what
-    survives the session's frozen capture -- they name the source rail's own vertices, and
-    a step hands the aligner a rail already resampled to another count, which is
-    :func:`.planner._rungs_on_rail`'s job to reconcile.
+    planner.align_outer_boundary must decide which way the two rails run against each
+    other and where the ring's one cut sits.  From distances that is degenerate on a
+    nearly symmetric band: both walk directions and several cut columns score within a
+    few percent, so the winner moves with the sample count and the ring gets wired
+    left outer to right inner.  An edge of a region face with one end on each rail
+    *is* a rung of the source pairing, so the set of them answers the question
+    exactly.  Indices are used because they survive the session's frozen capture and
+    name the source rail's own vertices; a step hands the aligner a rail already
+    resampled to another count, which planner._rungs_on_rail reconciles.
     """
     inner_vertices, outer_vertices = region_rails(region, paths)
     if not inner_vertices or not outer_vertices:
@@ -203,18 +195,17 @@ def _capture_ngon_cap(path_index, path, used_faces):
 def capture_adjacent_strips(bm, paths, quiet=False):
     """Capture a selected rail network as disjoint adjacent surface strips.
 
-    All selected rails are barriers during capture.  A component that touches
-    two selected rails belongs to that pair.  A component that touches only one
-    selected rail is allowed to stop at the next unselected rail; that rail is
-    retained as ``outer_vertices`` and can therefore be shared by two rebuilt
-    strips, which is what keeps two paths from each claiming the same surface.
+    All selected rails are barriers during capture.  A component that touches two
+    selected rails belongs to that pair; one that touches a single selected rail may
+    stop at the next unselected rail, which is retained as ``outer_vertices`` and can
+    be shared by two rebuilt strips, keeping two paths from claiming the same
+    surface.
 
-    Returns the regions plus the rails that a band asked to be shortened --
-    ``{path_index: (head, tail)}``, counted in edges of the path as it was handed in.
-    Those regions are *not* captured here: the band is left out of this pass so the
-    caller can trim the rails and capture again against the shorter pair, which is the
-    only way the ladder's indices stay in one piece.  ``quiet`` holds the diagnostics
-    back for that first, throwaway pass.
+    Returns the regions plus the rails a band asked to be shortened,
+    ``{path_index: (head, tail)}`` counted in edges of the path as handed in.  Those
+    regions are left out of this pass so the caller can trim the rails and capture
+    again against the shorter pair, the only way the ladder's indices stay in one
+    piece.  ``quiet`` holds the diagnostics back for that first, throwaway pass.
     """
     all_path_vertices = {vertex for path in paths for vertex in path[0]}
     all_path_edges = {edge for path in paths for edge in path[1]}
@@ -225,14 +216,12 @@ def capture_adjacent_strips(bm, paths, quiet=False):
     }
     regions = []
     used_faces = set()
-    # Where a band asked each of its two rails to stop.  A rail two bands disagree about
-    # is dropped from the list rather than guessed at, and the step then refuses the way it
-    # always did.
+    # Where a band asked each of its two rails to stop.  A rail two bands disagree
+    # about is dropped rather than guessed at, and the step then refuses as always.
     trims = {}
     trim_conflicts = set()
 
-    # Closed n-gon caps are independent of the rail network and remain a
-    # special case.
+    # Closed n-gon caps are independent of the rail network.
     for path_index, path in enumerate(paths):
         ngon_regions = _capture_ngon_cap(path_index, path, used_faces)
         regions.extend(ngon_regions)
@@ -278,11 +267,10 @@ def capture_adjacent_strips(bm, paths, quiet=False):
         component_vertices = {vertex for face in component for vertex in face.verts}
         non_path_vertices = component_vertices - path_vertex_set
         # A fan's second rail is a single vertex, which the boundary walk below cannot
-        # express -- it would hand back no edges and refuse the whole component for it.
-        # That holds whether the selected chain runs all the way around the pole or stops
-        # short of it, so an open arc gets read here too: its two end spokes are shared
-        # with faces outside the region, and ``cleanup_detached_edges`` leaves those alone
-        # because they are still attached.
+        # express: it would hand back no edges and refuse the component.  So an open
+        # arc is read here too, whether the chain runs around the pole or stops short.
+        # Its end spokes are shared with faces outside the region, and
+        # ``cleanup_detached_edges`` leaves those alone because they are still attached.
         if len(non_path_vertices) == 1:
             pole_vertex = next(iter(non_path_vertices))
             is_triangle_fan = (
@@ -314,9 +302,8 @@ def capture_adjacent_strips(bm, paths, quiet=False):
                     "smooth": first_face.smooth,
                 }
 
-        # Only the outside boundary of this component can become a fixed rail.
-        # Edges containing another selected-path vertex are endpoint/cross-rail
-        # edges and must not be mistaken for the outer path.
+        # Only the component's outside boundary can become a fixed rail.  Edges
+        # touching another selected-path vertex are endpoint/cross-rail edges.
         boundary_edges = {
             edge
             for edge in component_edges
@@ -380,10 +367,9 @@ def capture_adjacent_strips(bm, paths, quiet=False):
             "smooth": first_face.smooth,
         }
 
-    # First capture components that touch exactly one selected rail.  Faces
-    # touching another selected rail are excluded from the walk, so a fixed
-    # rail between two selected rails naturally splits the surface into two
-    # independent strips instead of being claimed twice.
+    # First capture components touching exactly one selected rail.  Faces touching
+    # another selected rail are excluded from the walk, so the surface between two
+    # selected rails splits into two independent strips instead of being claimed twice.
     for path_index, path in enumerate(paths):
         path_vertices, path_edges, is_closed = path
         path_vertex_set = set(path_vertices)
@@ -411,9 +397,8 @@ def capture_adjacent_strips(bm, paths, quiet=False):
             regions.append(region)
             used_faces.update(component)
 
-    # Then capture faces whose vertices belong to exactly two selected rails.
-    # This handles directly adjacent selected rails and, for three or more
-    # rails, produces one disjoint region per neighboring pair.
+    # Then capture faces whose vertices belong to exactly two selected rails: directly
+    # adjacent rails, and for three or more, one disjoint region per neighboring pair.
     pair_faces = {}
     for face in bm.faces:
         if face in used_faces or any(vertex not in all_path_vertices for vertex in face.verts):
@@ -526,7 +511,7 @@ def capture_adjacent_strips(bm, paths, quiet=False):
                 "reason=unsupported-component-boundary"
             )
             # The operator refuses the whole step once any face is still attached to
-            # the rail, so the faces worth blaming are exactly these.
+            # the rail, so these are the faces worth blaming.
             for face in sorted(remaining_faces, key=lambda item: item.index)[:12]:
                 print(
                     "[Loop Resample][diagnostic] capture-uncaptured "

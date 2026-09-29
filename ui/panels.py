@@ -1,41 +1,35 @@
 """The edit-mode right-click entry for Loop Resample.
 
-This is the only door: the whole flow is that one item.  It used to take two clicks -- one
-to lock the mesh, one to start the scroll -- and a row of steppers that are now the wheel's
-job; the lock happens inside the operator the item runs, so there is nothing to press in
-between.
+One item starts the whole flow.  It used to take two clicks, one to lock the mesh and one to start
+the scroll, plus a row of steppers that are now the wheel's job; the lock happens inside the
+operator the item runs.
 
-The sidebar panel that used to carry the same button is gone.  The selection is already
-under the cursor when the right-click happens, so a second entry point across the window
-bought nothing except two contexts to keep in sync.
+The sidebar panel that carried the same button is gone.  The selection is already under the cursor
+when the right-click happens, so a second entry point bought nothing except two contexts to keep
+in sync.
 """
 
 from . import entry_icon
 from .interactive import MESH_OT_loop_resample_interactive_entry
 
-# The item is named after the operator it forwards to, and both names stay English in every
-# locale: the tool's own name is not something a translation should rename under the cursor.
+# The item takes its name from the operator it forwards to, and both stay English in every locale:
+# a translation should not rename the tool under the user's cursor.
 #
-# The fallback when this Blender will not build our own mark.  ``MOUSE_MMB`` and not the
-# nicer ``MOUSE_MMB_SCROLL``: 4.2 has no scroll glyph in its icon enum at all, and asking for
-# it there does not lose the icon, it throws on every draw of the menu the item lives in.
-# Verified against the installed 4.2 and 5.2 enums.
+# Fallback when this Blender will not build our own mark.  ``MOUSE_MMB`` and not
+# ``MOUSE_MMB_SCROLL``: 4.2 has no scroll glyph in its icon enum, and asking for it there throws
+# on every draw of the menu.  Checked against the installed 4.2 and 5.2 enums.
 _ENTRY_ICON = "MOUSE_MMB"
 
 
 def draw_edit_mesh_context_menu(self, context):
-    """The way in to the wheel, at the top of the mesh edit-mode right-click menu.
+    """The item at the top of the mesh edit-mode right-click menu.
 
-    One item rather than a submenu: a submenu earns its extra click only when there are a
-    dozen operators to pick between, and this add-on has one.  The trailing separator is
-    what keeps the native list below it readable, and it is why the item sits above the
-    divider instead of joining the tail.
+    One item rather than a submenu: this add-on has one operator.  It sits above the native
+    divider, and the trailing separator keeps the native list below it readable.
 
-    The item names the forwarder rather than the modal itself, because a menu cannot start
-    a modal operator -- see :class:`MESH_OT_loop_resample_interactive_entry`.
-
-    A custom mark goes through ``icon_value`` (an int) rather than ``icon`` (an enum of
-    names Blender owns), so the two cannot be passed together.
+    It names the forwarder rather than the modal, because a menu cannot start a modal operator
+    (see ``MESH_OT_loop_resample_interactive_entry``).  ``icon_value`` and ``icon`` cannot be
+    passed together.
     """
     if not MESH_OT_loop_resample_interactive_entry.poll(context):
         return

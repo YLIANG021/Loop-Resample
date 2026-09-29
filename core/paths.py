@@ -8,14 +8,13 @@ from ..i18n import pgettext
 def _closed_loop_anchor(loop_vertices):
     """Closed-loop start: a vertex a seam runs through, else the lowest index.
 
-    The start vertex is the one resampling pins in place and the phase every
-    other sample is measured from, so anchoring it on a seam keeps that seam
-    under a rebuilt vertex instead of letting it drift to the nearest rung.
-    Deterministic -- reads only frozen source flags and vertex indices -- so each
-    step re-derives the same anchor and stays aligned with the samples frozen at
-    session start.  A single loop honors this directly; when several loops
-    synchronize, synchronize_closed_path_phases re-anchors the root by lowest
-    index and the rest by mapping, so this only shifts loops that never sync.
+    Resampling pins the start vertex and measures every other sample's phase from
+    it, so anchoring it on a seam keeps that seam under a rebuilt vertex instead of
+    letting it drift to the nearest rung.  Deterministic (frozen source flags and
+    vertex indices only), so each step re-derives the same anchor, aligned with the
+    samples frozen at session start.  When several loops synchronize,
+    synchronize_closed_path_phases re-anchors the root by lowest index and the rest
+    by mapping, so this only shifts loops that never sync.
     """
     seam_vertices = [
         vertex

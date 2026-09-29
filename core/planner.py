@@ -34,13 +34,11 @@ RUNG_CONTINUITY_VECTOR_WEIGHT = 0.75
 TRIANGLE_DISTRIBUTION_WEIGHT = 0.9
 RUNG_LENGTH_WEIGHT = 1.2
 
-# How far outside the band its own rail lengths give it a strip may stand in order to reach
-# a seam crossing, in columns, and what one step standing there costs.  A crossing the band
-# cannot land on is only reachable by lending a column to one rail and handing one back to
-# the other later, which is a borrowed pair of faces -- so the search is widened by this
-# much, and only for a strip that lost a crossing to the band.  The crossing itself is a
-# hard filter rather than a price, so this fee buys nothing the seam asked for: it is what
-# stops a pair from riding along on a local quality gain.
+# How far outside the band its own rail lengths give it a strip may stand to reach a seam
+# crossing, in columns, and what one step standing there costs.  Only a strip that lost a
+# crossing is widened; see ``_seam_excursion_cost`` for the borrow.  The crossing is a
+# hard filter, so the fee buys no reachability; it keeps a borrowed pair from riding
+# along on a local quality gain.
 SEAM_EXCURSION_DEPTH = 1
 SEAM_EXCURSION_STEP_COST = 0.6
 
@@ -48,17 +46,17 @@ SEAM_EXCURSION_STEP_COST = 0.6
 def _rail_shift(kind):
     """Which way one step moves the ladder's ``d = outer - inner``, in columns.
 
-    The band's length difference is only ever closed by steps that shift ``d``, and the
-    search's pruning assumes they all shift it the same way, so that assumption is read
-    off here rather than written as a kind name.
+    Only steps that shift ``d`` close the band's length difference, and the search's
+    pruning assumes they all shift it the same way, so that assumption is read off here
+    rather than written as a kind name.
     """
     inner_step, outer_step = TRANSITION_ADVANCE[kind]
     return outer_step - inner_step
 
 
 # The ladder block in ``diagnostics``: how a shape axis moved a strip's connectivity.
-# Off costs nothing but the branch, and nothing below reads it to decide anything.
-# Set True, with ``diagnostics.DIAGNOSTICS``, to bring the lines back.
+# Nothing reads it to decide anything; set True, with ``diagnostics.DIAGNOSTICS``, to
+# bring the lines back.
 DIAGNOSE_LADDER = True
 
 
@@ -75,16 +73,14 @@ def _triangle_distribution_cost(
     """Prefer the strip's surplus steps at evenly spaced positions.
 
     A strip spends ``abs(inner_steps - outer_steps)`` steps that shift ``d`` whatever the
-    search does -- a spoke or a face spanning two columns of the denser rail both move it
-    one column over -- so the k-th one is pulled to k/(count+1) of the strip's length.
-    Counting over the whole strip rather than over a piece of it is what lets a triangle
-    sit on either side of the column a seam happened to take.
+    search does (a spoke or a face spanning two columns of the denser rail both move it
+    one column), so the k-th one is pulled to k/(count+1) of the strip's length.
+    Counting over the whole strip rather than a piece of it lets a triangle sit on either
+    side of the column a seam happened to take.
 
-    Only steps that close the length gap are in that count, so a step which opens one is
-    not spread against it.  That test is what keeps a pair borrowed for a seam crossing
-    from being flattened out along the strip as though the rail lengths had asked for it:
-    the borrowed steps stand outside the count, and :func:`._seam_excursion_cost` is what
-    charges them instead.
+    Only steps that close the length gap are counted, so a pair borrowed for a seam
+    crossing is not flattened out along the strip; ``_seam_excursion_cost`` charges it
+    instead.
     """
     shift = _rail_shift(kind)
     if not shift or triangle_count <= 0:
@@ -120,12 +116,8 @@ def _seam_excursion_cost(
     """What one step standing outside the strip's own band costs.
 
     The band is the run of ``d = outer - inner`` the rail lengths walk through on the way
-    from nothing borrowed to everything spent, so a step outside it has lent a column to one
-    rail and not yet handed one back -- it is in borrowed territory for as long as it stands
-    there, and every step counted here is one the strip would never have taken on its own.
-
-    ``depth`` is what a seam crossing may borrow, and a search with nothing to reach never
-    leaves the band, so this returns ``0.0`` for every strip that asks for no loan.
+    from nothing borrowed to everything spent; a step outside it has lent a column to one
+    rail and not yet handed one back.  ``depth`` is what a seam crossing may borrow.
     """
     if depth <= 0:
         return 0.0
@@ -158,8 +150,8 @@ def _rung_vector(boundary_geometry, inner_index, outer_index, cache=None):
     ]
     vector = outer - inner
     if cache is not None:
-        # Callers only ever read these -- subtraction and length leave the operands
-        # alone -- so one vector per node is safe to hand out repeatedly.
+        # Callers only ever read these (subtraction and length leave the operands alone),
+        # so one vector per node is safe to hand out repeatedly.
         cache[key] = vector
     return vector
 
@@ -216,10 +208,9 @@ def _rung_continuity_cost(
 def _pairing_cost(inner_vertices, outer_vertices, is_closed):
     """Squared distance from every inner vertex to the outer rail read at its arc length.
 
-    This is a qualitative measure and nothing more: a band that is nearly symmetric
-    scores within a few percent for both walk directions, so it cannot pick a pairing.
-    It is used to split a tie the source band's own rungs left standing, which is the
-    most it has ever been trusted with.
+    Qualitative and nothing more: a band that is nearly symmetric scores within a few
+    percent for both walk directions, so this cannot pick a pairing.  It is only trusted to
+    split a tie the source band's own rungs left standing.
     """
     inner = parameterize_boundary(inner_vertices, is_closed)
     outer = parameterize_boundary(outer_vertices, is_closed)
@@ -242,9 +233,8 @@ def _rotate_nearest(vertices, point):
 def _rail_fractions(points, is_closed):
     """Every vertex's place along its own rail, as a fraction of that rail's length.
 
-    An index says how many vertices into a rail something sits, which stops meaning
-    anything as soon as the rail is resampled; a fraction says how far around it sits,
-    and a resampled rail is the same curve, so the two agree where an index cannot.
+    An index stops meaning anything once a rail is resampled; a fraction survives,
+    because a resampled rail is the same curve.
     """
     count = len(points)
     spans = count if is_closed else count - 1
@@ -262,11 +252,7 @@ def _rail_fractions(points, is_closed):
 
 
 def _rail_columns(source_fractions, rail_fractions):
-    """Which vertex of the rail being built stands where each source vertex stood.
-
-    Both lists ascend from their rail's own first vertex, so one forward walk answers
-    every source vertex at once.
-    """
+    """Which vertex of the rail being built stands where each source vertex stood."""
     columns = []
     position = 0
     last = len(rail_fractions) - 1
@@ -284,20 +270,15 @@ def _rail_columns(source_fractions, rail_fractions):
 def _paired_columns(source_points, rail_vertices, is_closed, align_start=False):
     """One entry per source rail vertex: the column of the rail being built under it.
 
-    Empty when either rail cannot be measured, which is the caller's cue to say nothing
-    about the pairing rather than to name columns by a fraction it never read.
-
-    Both fraction walks start at their own rail's first vertex, which only pairs points
+    Empty when either rail cannot be measured; callers then say nothing about the pairing.
+    Both fraction walks start at their own rail's first vertex, so they only pair points
     that stand in the same place when the two starts do.  An open rail's start is the
     shared endpoint, but a closed rail being built starts wherever the sampler's anchor
-    put it -- the seam's pinned vertex, not the source rail's first -- so with
-    ``align_start`` the two starts are registered by position first: the built vertex
-    standing where the source's first vertex stood becomes the walk's origin, and the
-    columns still come out in the built rail's own numbering.  Callers whose later
-    transform already carries the start difference -- the outer rail's orientation and
-    rotation -- leave it off; the inner rail has no such transform, and without the
-    registration every column it names sits the anchor's shift away from the point it
-    means.
+    put it (the seam's pinned vertex); ``align_start`` registers the two starts by
+    position first, with columns still in the built rail's own numbering.  The outer
+    rail's later transform already carries the start difference and leaves it off; the
+    inner rail has none, and without the registration every column it names sits the
+    anchor's shift away from the point it means.
     """
     if not source_points or len(rail_vertices) < 2:
         return ()
@@ -327,13 +308,11 @@ def _paired_columns(source_points, rail_vertices, is_closed, align_start=False):
 def _rungs_on_rail(region, outer_vertices, is_closed):
     """The captured pairing counted the way the rail being built numbers itself.
 
-    ``source_rungs`` was read off the band as the user drew it, so its outer numbers name
-    the *source* rail's vertices, while the rail handed to the aligner has already been
-    resampled to the count asked for now.  Folding a source number into a shorter rail
-    does not name nothing, it names the wrong vertex: the rung one short of a 32-gon's
-    start is the rung one short of this rail's start, and taken as an index it lands a
-    third of the way around instead.  A rail is moved across by how far around it each
-    rung sits, which is why the two rails' lengths are measured here.
+    ``source_rungs``'s outer numbers name the *source* rail's vertices as the user drew
+    them, while the rail handed to the aligner has already been resampled to the count
+    asked for now.  Folding a source number into a shorter rail names the wrong vertex:
+    the rung one short of a 32-gon's start, taken as an index, lands a third of the way
+    around this rail instead.  A rung is moved across by how far around it sits.
     """
     rungs = (region or {}).get("source_rungs") or ()
     points = ((region or {}).get("frames") or {}).get("outer", {}).get("points") or ()
@@ -348,14 +327,11 @@ def _rungs_on_rail(region, outer_vertices, is_closed):
 def _rungs_on_inner_rail(region, inner_vertices, rungs, is_closed):
     """The captured pairing with its inner numbers carried onto the rail being built.
 
-    :func:`_rungs_on_rail` carries the outer numbers; the inner side still names the
-    source rail's vertices.  A closed inner rail is resampled starting at the seam's
-    anchor rather than at the source rail's first vertex, so its columns sit the
-    anchor's shift away from the source's numbers -- and a decision ranked against
-    those numbers registers the outer rail to a frame the ladder never walks, which
-    leaves the pairing's pattern that many columns off the place the source band drew
-    it.  Carrying the inner side across the same way is what lines the decision, the
-    pairing notes and the ladder up on one frame.
+    ``_rungs_on_rail`` carries the outer numbers; the inner side still names the source
+    rail's vertices.  A closed inner rail is resampled starting at the seam's anchor, so
+    its columns sit the anchor's shift away from the source's numbers (see
+    ``_paired_columns``), and a decision ranked against those numbers registers the
+    outer rail to a frame the ladder never walks.
     """
     points = ((region or {}).get("frames") or {}).get("inner", {}).get("points") or ()
     if not rungs or len(inner_vertices) < 2:
@@ -371,10 +347,9 @@ def _rungs_on_inner_rail(region, inner_vertices, rungs, is_closed):
 def _continued(place, anchor, span):
     """The copy of ``place`` that carries on from where the walk stood last column.
 
-    A closed band's ladder goes once around the ring, so its outer index runs past the
-    rail's own last vertex and picks up at the first again.  Folding that advance back
-    into ``0..span-1`` reads as a step backwards, and steps backwards are exactly what
-    the ranking counts, so a rung is compared with the rung before it instead.
+    A closed band's outer index runs past the rail's last vertex and picks up at the
+    first again.  Folded back into ``0..span-1`` that reads as a step backwards, which is
+    what the ranking counts, so a rung would be compared with the wrong neighbour.
     """
     return place + ((anchor - place + span // 2) // span) * span
 
@@ -382,14 +357,12 @@ def _continued(place, anchor, span):
 def _column_arc(places, span, is_closed):
     """One column's rungs as the short arc they sit on: where it starts, the rest's offsets.
 
-    Two rungs leave one vertex and land next to each other on the other rail, so they
-    belong a step apart -- except where the rail's own cut falls between them, which makes
-    the pair read as the long way around instead.  Taken that way the column looks as
-    though it spans the ring, and nothing advances across a whole ring, so the ranking
-    refuses a pairing the source band uses happily and buys the advance back by rotating
-    the rail off the vertex it starts at -- which is a whole row of faces sheared by one
-    column.  An open rail has no cut for anything to fall between, so its places stand
-    exactly as counted.
+    Two rungs that leave one vertex and land next to each other belong a step apart,
+    except where the rail's own cut falls between them and the pair reads as the long way
+    around.  Then the column looks as though it spans the ring, nothing advances across a
+    whole ring, and the ranking refuses a pairing the source band uses happily, buying
+    the advance back by rotating the rail off its start vertex: a whole row of faces
+    sheared by one column.  An open rail has no cut, so its places stand as counted.
     """
     ordered = sorted(places)
     if len(ordered) < 2 or not is_closed:
@@ -413,22 +386,18 @@ def _column_arc(places, span, is_closed):
 def _rung_ranking(rungs, outer_count, is_closed):
     """Every ``(orientation, rotate)`` ranked by how many source rungs it contradicts.
 
-    Under a decision the outer rail is walked as ``j -> (walked(j) - rotate) % M``, with
-    ``walked`` the identity for a forward walk and the mirror for a reversed one, and a
-    ladder that only ever advances realizes those rungs only as a sequence that never
-    steps back.  Counting the columns where it does is a structural verdict on the
-    decision rather than a distance opinion, and it is kept on an unwrapped ring: both the
-    rail's own cut and each column's own spread are read as arcs, so what the count can see
-    is a band turning around, not where the rail happens to start.
+    Under a decision the outer rail is walked as ``j -> (walked(j) - rotate) % M``,
+    ``walked`` the identity forward and the mirror reversed, and a ladder that only ever
+    advances realizes those rungs only as a sequence that never steps back.  The count is
+    taken on an unwrapped ring (``_column_arc``, ``_continued``), so it sees a band
+    turning around, not where the rail happens to start.
 
-    The count cannot see a shift that moves every rung along the ring by the same amount,
-    because such a shift leaves the sequence just as monotone, and that shift is the
-    pairing's phase.  ``head`` asks how far the first rung sits from the cut, which finds a
-    phase the source band really uses; ``shift`` then prefers the rail that stays where it
-    was numbered, so a band whose diagonals merely lean the other way is not answered by
-    sliding a whole row off the vertex above it.  What still ties after both is left to
-    :func:`_pairing_cost`, which is the measure that asks the two rails to stand opposite
-    each other.
+    A shift that moves every rung along the ring by the same amount leaves the sequence
+    just as monotone and is invisible to the count; that shift is the pairing's phase.
+    ``head`` asks how far the first rung sits from the cut, which finds a phase the
+    source band really uses; ``shift`` prefers the rail that stays where it was numbered,
+    so a band whose diagonals merely lean the other way is not answered by sliding a
+    whole row off the vertex above it.  What still ties goes to ``_pairing_cost``.
     """
     if not rungs or outer_count < 2:
         return []
@@ -459,12 +428,11 @@ def _rung_ranking(rungs, outer_count, is_closed):
             anchor = None
             for position, (base, offsets) in enumerate(arcs):
                 start = (base - rotate) % outer_count if is_closed else base
-                # The fold asks which way round the ring is nearer, and an open rail has no
-                # way round: an advance of more than half its length is just a long step, not
-                # a step back.  Folding it anyway books a conflict that no source rung drew,
-                # and conflicts outrank head and shift -- so a rail too short to hold an
-                # interior rung (one edge segment) is walked backwards to dodge it, shearing
-                # the whole band against the neighbour that stayed forward.
+                # Only a closed rail has a way round the ring: folding an open rail's
+                # advance of more than half its length books a step back no source rung
+                # drew, and conflicts outrank head and shift, so a rail too short to hold
+                # an interior rung is walked backwards to dodge it, shearing the whole
+                # band against the neighbour that stayed forward.
                 if anchor is not None and is_closed:
                     start = _continued(start, anchor, outer_count)
                 places = [start + offset for offset in offsets]
@@ -499,7 +467,7 @@ def _rung_decision(inner_vertices, outer_vertices, rungs, is_closed):
     """The pairing the band's own rungs ask for, or None where they ask for nothing.
 
     Returns ``(decision, rank, tied)``; ``tied`` is how many decisions share the winning
-    rank, which is how often the arc-length measure still got a vote.
+    rank, so the arc-length measure only votes on a tie.
     """
     ranking = _rung_ranking(rungs, len(outer_vertices), is_closed)
     if not ranking:
@@ -525,15 +493,13 @@ def align_outer_boundary(inner_vertices, outer_vertices, is_closed, region=None)
     """Choose one orientation and, for a loop, one rotation, and report which.
 
     The decision is the pair ``(orientation_index, rotate)`` rather than the reordered
-    vertices, because :func:`ladder_steps` freezes it alongside the ladder that was
-    solved on top of it: a saved sequence of transitions is a run of advances over
-    *this* order's indices, so replaying it only means anything once the order that
-    made it is replayed as well.
+    vertices, because ``ladder_steps`` freezes it alongside the ladder solved on top of
+    it, and a saved transition sequence only means anything against the order that made
+    it.
 
     The rung structure captured from the source band decides, because it is the pairing
-    the user drew rather than a reading of it; the arc-length measure only ranks the two
-    orientations for a region whose band offers no rungs, which is the case it was
-    originally asked to cover.
+    the user drew.  The arc-length measure only ranks the two orientations for a region
+    whose band offers no rungs.
     """
     outer = list(outer_vertices)
     rungs = _rungs_on_rail(region, outer, is_closed)
@@ -572,10 +538,9 @@ def align_outer_boundary(inner_vertices, outer_vertices, is_closed, region=None)
 def apply_outer_decision(outer_vertices, decision, is_closed):
     """Walk the outer rail the way a frozen decision chose to walk it.
 
-    The rotation is replayed as the index it picked, not re-derived from where the
-    rail sits now: re-deriving it would let one shape tick slide every rung of a band
-    along it at once, which is a far larger connectivity change than the search
-    refusing one rung.
+    The rotation is replayed as the index it picked, not re-derived from where the rail
+    sits now: re-deriving would let one shape tick slide every rung of a band along it at
+    once, a far larger connectivity change than the search refusing one rung.
     """
     orientation = (
         list(outer_vertices) if decision[0] == 0 else list(reversed(outer_vertices))
@@ -619,14 +584,12 @@ def _advance(kind, inner_index, outer_index):
 def _allowed_transitions(inner_steps, outer_steps, depth=0):
     """The kinds one band's ladder may spend, in the order the search tries them.
 
-    The dense rail's surplus is what decides the ordinary kinds, so a band whose inner rail
-    is the short loop is never offered a face that spends the outer rail's column.
+    The dense rail's surplus decides the ordinary kinds.
 
-    ``depth`` is what a seam crossing may borrow, in columns.  Standing outside the band the
-    rail lengths need takes ``d`` in a direction the strip's own surplus never moves it, so
-    the loan is only affordable with a kind in each direction -- and where the lengths do
-    have a say, the kind they asked for is still offered first, which leaves a strip that
-    borrows nothing on the tie-breaks it had.
+    ``depth`` is what a seam crossing may borrow, in columns.  The loan needs a kind in
+    each direction, because standing outside the band takes ``d`` where the strip's own
+    surplus never moves it; the kind the lengths asked for is still offered first, so a
+    strip that borrows nothing keeps the tie-breaks it had.
     """
     if inner_steps == outer_steps:
         own = ("QUAD",)
@@ -637,9 +600,8 @@ def _allowed_transitions(inner_steps, outer_steps, depth=0):
     if depth <= 0:
         return own
     if inner_steps == outer_steps:
-        # A loan has to be repaid, so a strip with no length gap borrows in both directions
-        # at once: one quad becomes a triangle each way, and the two together spend what the
-        # quad spent.
+        # A loan has to be repaid, so a strip with no length gap borrows in both
+        # directions at once: one quad becomes a triangle each way.
         return ("QUAD", "OUTER_TRI", "INNER_TRI")
     borrowed = "INNER_TRI" if "OUTER_TRI" in own else "OUTER_TRI"
     return own + (borrowed,)
@@ -648,33 +610,28 @@ def _allowed_transitions(inner_steps, outer_steps, depth=0):
 def _seam_waypoint_nodes(waypoints, allowed, inner_steps, outer_steps, depth=0):
     """The crossings' rung positions the search has to route through, in ladder order.
 
-    A ladder starts at ``d = outer - inner == 0`` and ends at the difference between the
-    two rail lengths, and the one triangle kind its rails permit moves ``d`` in a single
-    direction, so a crossing outside that band -- or a set of them that cannot be visited
-    in that one direction -- has no path at all.  The search would spend a whole sweep
-    proving it and then drop every pin in the region, so the unreachable crossings are
-    pruned here instead and fall back to the rung painter sliding them.  Of the rest the
-    longest runnable run wins, earliest first, which leaves an already-reachable set
-    untouched: only a step the search was going to lose can come back different.
+    A ladder walks ``d = outer - inner`` from 0 to the rail-length difference, and the
+    one triangle kind its rails permit moves ``d`` one way only, so a crossing outside
+    that band, or a set that cannot be visited in that direction, has no path at all.
+    The search would spend a whole sweep proving it and then drop every pin in the
+    region, so unreachable crossings are pruned here and fall back to the rung painter
+    sliding them.  Of the rest the longest runnable run wins, earliest first: an
+    already-reachable set comes back untouched, and only a step the search was going to
+    lose can differ.
 
-    ``depth`` widens the band by that many columns on each side, which is the same loan
-    :func:`._allowed_transitions` grants the search: a crossing one column outside the band
-    is reachable once the strip may stand there, and the ``chain`` rule stops applying as
-    soon as the vocabulary has a kind in each direction -- both of those read the band off
-    the numbers rather than the order, so a set the one-direction ladder had to split is
-    kept whole.
+    ``depth`` widens the band by that many columns on each side, the same loan
+    ``_allowed_transitions`` grants.  The ``chain`` rule stops applying as soon as the
+    vocabulary has a kind in each direction; both read the band off the numbers rather
+    than the order, so a set the one-direction ladder had to split is kept whole.
 
-    Returns ``(nodes, dropped)``, ``dropped`` carrying the rule that cut each position
-    off so a slid rung stays traceable.
+    Returns ``(nodes, dropped)``; ``_waypoint_reach_diagnostic`` names the drop rules.
     """
     final_offset = outer_steps - inner_steps
     low = min(0, final_offset) - depth
     high = max(0, final_offset) + depth
-    # An inner step is the only move that shrinks d, whether it spends one column of the
-    # inner rail or two.  A QUAD-only strip is pinned to d == 0 by the band above, so
-    # either direction reads the same there.  Where the vocabulary grants the strip a kind in
-    # each direction, d can be walked back and forth at will, so no crossing is refused on
-    # the order of the ones before it and the whole in-band set is kept.
+    # An inner step is the only move that shrinks d, whether it spends one or two columns
+    # of the inner rail.  A QUAD-only strip is pinned to d == 0 by the band above, so
+    # either direction reads the same there.
     shifts = {_rail_shift(kind) for kind in allowed if _rail_shift(kind)}
     if len(shifts) > 1:
         direction = 0
@@ -720,18 +677,17 @@ def _seam_waypoint_nodes(waypoints, allowed, inner_steps, outer_steps, depth=0):
 def _cached_waypoint_attempt(frozen, waypoints, inner_steps, outer_steps):
     """The promises a saved ladder was won on, handed back to the solve that replaces it.
 
-    ``waypoints`` are what the crossings ask for *after* the shape axis moved the rails, and
-    a moved rail can answer one of them with its neighbour: the pinned vertex still reads
-    back as its own source fraction, but the samples around it have been re-spaced, so the
-    nearest column to a crossing that sits between two vertices is a coin the moved rail
-    flips.  The entry's own nodes are the columns its wiring actually routed through, so
-    re-solving on them keeps the strip on the ladder it had instead of flipping it to
-    whichever one the re-spaced rail happens to point at now.
+    ``waypoints`` are what the crossings ask for *after* the shape axis moved the rails,
+    and a moved rail can answer one of them with its neighbour: the samples around the
+    pinned vertex have been re-spaced, so the nearest column to a crossing between two
+    vertices is a coin the moved rail flips.  The entry's own nodes are the columns its
+    wiring actually routed through, so re-solving on them keeps the strip on the ladder
+    it had.
 
-    ``dropped`` is still measured against the live crossings, under the new rule ``moved``:
-    a crossing the replayed wiring never promised is one the rung painter slides, and the
-    line has to say which.  Nothing is renegotiated here -- a strip that lost its freeze
-    gets one answer, the same one it gave when the ladder was won.
+    ``dropped`` is measured against the live crossings under the new rule ``moved``: a
+    crossing the replayed wiring never promised is one the rung painter slides.  Nothing
+    is renegotiated; a strip that lost its freeze gets the answer it gave when the ladder
+    was won.
     """
     depth = frozen["depth"]
     allowed = _allowed_transitions(inner_steps, outer_steps, depth)
@@ -753,12 +709,11 @@ def _surplus_names(allowed):
 def _waypoint_reach_diagnostic(nodes, dropped, allowed):
     """The pruned crossings with the rule that cut them off, for the seam-skip line.
 
-    ``band`` says the strip can never reach that ``d = outer - inner`` whatever the other
-    crossings ask for, ``chain`` that the position lost the monotone competition to the
-    ones kept, ``lattice`` that it is not a rung the ladder has at all, and ``moved`` that
-    the crossing only appeared after a frozen wiring had already been refused, so the
-    ladder being rebuilt now is not the one that promise was weighed against.  A pruned
-    crossing otherwise leaves only a slid rung behind, which names no reason.
+    ``band`` says the strip can never reach that ``d = outer - inner``, ``chain`` that the
+    position lost the monotone competition to the ones kept, ``lattice`` that it is not a
+    rung the ladder has at all, and ``moved`` that the crossing only appeared after a
+    frozen wiring was refused.  A pruned crossing otherwise leaves only a slid rung
+    behind, which names no reason.
     """
     dropped_text = " ".join(
         f"({inner_index}, {outer_index})={outer_index - inner_index}:{reason}"
@@ -777,11 +732,10 @@ def _waypoint_reach_diagnostic(nodes, dropped, allowed):
 def _waypoint_diagnostic(nodes, allowed, boundary_geometry):
     """Per-node ``d`` plus the rung-crossing verdict, for the seam-skip line.
 
-    :func:`._seam_waypoint_nodes` has already dropped every position no monotone ladder
-    under ``allowed`` can reach, so a surviving turn-back in ``d = outer - inner`` would
-    mean the two disagree; the expected reading is a flat ``d`` with one ``cross`` set,
-    which names the node whose own rung the boundary test kills.  Read once per failed
-    solve, never in the search loop, and it reuses positions the solve already cached.
+    ``_seam_waypoint_nodes`` already dropped every unreachable position, so a surviving
+    turn-back in ``d`` would mean the two disagree; the expected reading is a flat ``d``
+    with one ``cross`` set, naming the node whose own rung the boundary test kills.  Read
+    once per failed solve, never in the search loop.
     """
     offsets = ", ".join(str(outer - inner) for inner, outer in nodes)
     crossed = ", ".join(
@@ -798,8 +752,8 @@ def _on_seam_corridor(inner_index, outer_index, nodes):
     """Whether a node can still sit on a monotone path through every waypoint.
 
     A path only ever increases both indices, so a node has to be at or before one
-    waypoint and at or after the next.  Intersecting each waypoint's own half-plane
-    pair is exactly that, because the kept nodes are already monotone.
+    waypoint and at or after the next; the kept nodes are already monotone, so
+    intersecting each waypoint's half-plane pair is exactly that.
     """
     for waypoint_inner, waypoint_outer in nodes:
         if (
@@ -816,9 +770,9 @@ def _routes_around_waypoint(
 ):
     """Whether a step changes sides of a waypoint without landing on it.
 
-    The corridor alone is not enough: a quad from the column before a crossing to the
-    row after it is a perfectly legal monotone step that leaves the rung with no node
-    to paint on, which is the slide this is here to prevent.
+    The corridor alone is not enough: a quad from the column before a crossing to the row
+    after it is a legal monotone step that leaves the rung with no node to paint on, which
+    is the slide this prevents.
     """
     for waypoint_inner, waypoint_outer in nodes:
         if (
@@ -864,8 +818,7 @@ class _BoundaryGeometry:
         self.inner_points = inner_points
         self.outer_points = outer_points
         self.epsilon_squared = epsilon_squared
-        # Every rung test reads this same square root, and a rung position is tested once per
-        # plan, so taking it here rather than in the sweep keeps the exponent out of the loop.
+        # Every rung test reads this square root; taking it here keeps it out of the sweep.
         self.epsilon = epsilon_squared ** 0.5
         self.boundary_scale = boundary_scale
         self.minimum = minimum
@@ -905,10 +858,10 @@ def _prepare_boundary_geometry(inner, outer, is_closed):
         outer_segments += ((outer_points[-1], outer_points[0]),)
 
     segment_count = max(len(inner_segments), len(outer_segments), 1)
-    # A boundary is a curve inside a thin slab, so cells should grow with area and
-    # not with volume.  At n**(1/3) a single cell swallowed about ten segments and a
-    # query handed back ~33 candidates while only ~11 of them could touch the rung at
-    # all, so the sweep cost more than the index saved.
+    # A boundary is a curve inside a thin slab, so cells should grow with area, not
+    # volume.  At n**(1/3) a cell swallowed ~10 segments and a query returned ~33
+    # candidates where only ~11 could touch the rung: the sweep cost more than the index
+    # saved.
     cells_per_axis = min(32, max(4, int(round(segment_count ** (2.0 / 3.0)))))
     cell_size = max(extent.length / cells_per_axis, epsilon_squared ** 0.5 * 4.0)
     buckets = [{}, {}]
@@ -985,18 +938,15 @@ def _rung_cell_ranges(boundary_geometry, first, second):
 def _indexed_segments(boundary_geometry, cell_ranges):
     """Return each boundary's segment indices whose cells overlap a rung box.
 
-    One list of cells serves both rails: the box a rung sweeps is fixed by its two endpoints,
-    so walking the grid once per boundary rebuilt every cell tuple and re-asked every cell a
-    second time just to hear the other bucket's answer.  The list costs one allocation per rung
-    and replaces the second walk, which is what the sweep spends most of its time on.
+    One list of cells serves both rails: walking the grid once per boundary rebuilt every
+    cell tuple and re-asked every cell a second time, and that second walk is what the
+    sweep spends most of its time on.
 
-    The boxes repeat far more often than the positions do: a box is only three integer intervals,
-    and neighbouring rungs of similar length fall inside the same one, so 100x200 asks 5369
-    positions through 997 distinct boxes.  An answer depends on nothing but the box and the frozen
-    buckets, so it is remembered for the life of the plan and the later caller iterates the very
-    set the first one built.  Walking the occupied cells instead of the box was measured as the
-    other way to cut this, and it loses: a real rung's box averages 12-36 cells while the two
-    rails together occupy 59-154, so the box is already the smaller question.
+    Neighbouring rungs of similar length fall inside the same box, so 100x200 asks 5369
+    positions through 997 distinct boxes.  An answer depends on nothing but the box and
+    the frozen buckets, so it is remembered for the life of the plan.  Walking the
+    occupied cells instead was measured and loses: a real rung's box averages 12-36
+    cells, the two rails together occupy 59-154.
     """
     key = tuple(cell_ranges)
     cache = boundary_geometry.cell_candidate_cache
@@ -1046,10 +996,10 @@ def _rung_crosses_boundary(boundary_geometry, inner_index, outer_index):
 def _position_crosses_boundary(boundary_geometry, position):
     """Return (crossed, candidates examined, cells probed) for one index pair.
 
-    The hoisted pieces below are the same float operations the pair test
-    performs; they are moved out of the candidate loop because a position fixes
-    one segment and sweeps dozens of the others.  ``probes`` counts the cells a
-    rung's box covers, which is what the index would be asked were every box new.
+    The hoisted pieces below are the pair test's own float operations, moved out of the
+    candidate loop: a position fixes one segment and sweeps dozens of the others.
+    ``probes`` counts the cells a rung's box covers, which is what the index would be
+    asked were every box new.
     """
     epsilon_squared = boundary_geometry.epsilon_squared
     first = boundary_geometry.inner_points[position[0]]
@@ -1081,9 +1031,8 @@ def _position_crosses_boundary(boundary_geometry, position):
         for index in candidates[boundary_index]:
             examined += 1
             lower_x, upper_x, lower_y, upper_y, lower_z, upper_z = boxes[index]
-            # _boxes_overlap's own rejection, run first so a distant segment costs
-            # no Vector subtraction at all: when the boxes miss, the candidate can
-            # never be reported as crossing.
+            # _boxes_overlap's own rejection, run first so a distant segment costs no
+            # Vector subtraction: when the boxes miss, the candidate can never cross.
             if (
                 query_max_x < lower_x
                 or upper_x + epsilon < query_min_x
@@ -1096,10 +1045,9 @@ def _position_crosses_boundary(boundary_geometry, position):
             start, end = segments[index]
             start_x = start[0]
             end_x = end[0]
-            # A rung is expected to meet its own boundary at its endpoint.  A
-            # squared length is never smaller than its own squared x term, so
-            # these four x-component tests prove the original test false; where
-            # they pass, the original expression still decides.
+            # A rung is expected to meet its own boundary at its endpoint.  A squared
+            # length is never smaller than its own squared x term, so these four x tests
+            # prove the original false; where they pass, it decides.
             if (
                 abs(first_x - start_x) > epsilon
                 and abs(second_x - start_x) > epsilon
@@ -1141,8 +1089,8 @@ def _consecutive_rungs_cross(
     """Reject a step whose rung cuts through the previous rung.
 
     Index-monotone transitions can still cross in space when the two rails are
-    misaligned.  A crossed rung leaves a bowtie in the mesh, and the next run
-    can no longer read a clean outer boundary from it.
+    misaligned.  A crossed rung leaves a bowtie in the mesh, and the next run can no
+    longer read a clean outer boundary from it.
     """
     if first_inner == second_inner or first_outer == second_outer:
         return False
@@ -1219,8 +1167,8 @@ def _step_cost(
 ):
     """One step's price, memoized per ``(column pair, kind)``.
 
-    The local swap asks for the same step from both sides of the pair it is comparing, and
-    the face it would rebuild to price it is the same face either way, so the second visit
+    The local swap asks for the same step from both sides of the pair it compares, and
+    the face it would rebuild to price it is the same either way, so the second visit
     reads the first one's number off ``step_cache``.
     """
     if step_cache is None:
@@ -1385,11 +1333,10 @@ def _beautify_transitions(
     outer_steps = len(outer) if is_closed else len(outer) - 1
     triangle_count = abs(inner_steps - outer_steps)
     vector_cache = {}
-    # The swap prices the same step twice -- once with the pair in each order -- and a
-    # step's own geometry answers the same either way, so one cache spans the whole pass.
+    # The swap prices the same step twice, once with the pair in each order; see
+    # ``_step_cost`` for why one cache spans the whole pass.
     step_cache = {}
-    # The corners come off the coordinates the search already read, copied once per solve,
-    # instead of re-reading ``vertex.co`` for every priced face.
+    # Corners come off the coordinates the search already read, not ``vertex.co`` per face.
     inner_rail = boundary_geometry.inner_points
     outer_rail = boundary_geometry.outer_points
 
@@ -1504,34 +1451,29 @@ def _sweep_ladder(
 ):
     """One full sweep of the ladder's dynamic program: the states at the far corner.
 
-    A quad moves inner+outer by two and a triangle by one, so diagonal d is fed by
-    round d-2 (quads) then round d-1 (triangles) and a round must read every part in
-    that order.  One flat dict plus a diagonal filter made every round re-scan all
-    history -- ~800k dead iterations to reach ~24k live ones.
+    Diagonal d is fed by round d-2 (quads) then round d-1 (triangles), so a round must
+    read every part in that order.  One flat dict plus a diagonal filter made every round
+    re-scan all history: ~800k dead iterations to reach ~24k live ones.
 
-    Returns ``(states, parents, expanded)``: the far corner's states as
-    ``key -> cost``, one ``key -> (parent key, kind)`` link per state ever written,
-    and the number of states expanded.  A state carries no transition list of its
-    own -- copying the whole run onto every candidate cost more than the geometry it
-    was priced with -- so the winner's run is replayed off the parent links instead.
-    Every step advances at least one column, so a layer is final by the time it is
-    expanded and a link can never be rewritten from under a child that already read
-    it.
+    Returns ``(states, parents, expanded)``.  A state carries no transition list of its
+    own; copying the whole run onto every candidate cost more than the geometry it was
+    priced with, so the winner's run is replayed off the parent links.  Every step
+    advances at least one column, so a layer is final by the time it is expanded and a
+    link can never be rewritten from under a child that already read it.
     """
     triangle_count = abs(inner_steps - outer_steps)
-    # What is left of the rectangle once the round structure is fixed.  Only the steps
-    # that shift d one way close this strip's length gap, so d moves one way only and
-    # every prefix of a completable path has to stay between the start and the goal
-    # offsets.  A state outside that band is not merely lost on its own account: its
-    # parents are outside too, so no surviving state is reached through it and dropping
-    # it cannot reorder, reprice or retie anything.
+    # What is left of the rectangle once the round structure is fixed.  Only steps that
+    # shift d one way close this strip's length gap, so every prefix of a completable
+    # path has to stay between the start and goal offsets.  A state outside that band is
+    # not merely lost on its own account: its parents are outside too, so no surviving
+    # state is reached through it and dropping it cannot reorder, reprice or retie
+    # anything.
     #
-    # A seam crossing may now borrow a column, which is a step that moves d the other way,
-    # so the band is what decides the pruning and not the vocabulary: the natural band plus
-    # the borrowed margin on either side.  Tying this to the vocabulary instead would have
-    # the widened strip search the whole rectangle -- the band is what keeps the search a
-    # band -- and `depth` is 0 for every strip that lost no crossing, which is every strip
-    # that ever solved without a seam pinning it.
+    # A seam crossing may borrow a column, a step that moves d the other way, so the band
+    # decides the pruning rather than the vocabulary: the natural band plus the borrowed
+    # margin on either side.  Tying this to the vocabulary instead would have the widened
+    # strip search the whole rectangle, and `depth` is 0 for every strip that ever solved
+    # without a seam pinning it.
     final_offset = outer_steps - inner_steps
     low_offset = min(0, final_offset) - depth
     high_offset = max(0, final_offset) + depth
@@ -1540,19 +1482,16 @@ def _sweep_ladder(
     )
     layers = {0: {(0, 0, None): 0.0}}
     parents = {}
-    # One geometric price per (column pair, kind): the boundary checks, the face's own
-    # quality and the column bookkeeping below read nothing about how the path arrived
-    # here, so every predecessor of the same step reuses them.  Only the rung continuity
-    # stays priced per variant, because it reads the path.
-    # False marks a step no path may take at all.
+    # One geometric price per (column pair, kind): nothing but the rung continuity reads
+    # how the path arrived, so every predecessor of the same step reuses the rest.
+    # False marks a step no path may take.
     step_cache = {}
     # One rung vector per node, shared by the three reads one continuity price makes.
     vector_cache = {}
-    # The two rails as coordinates rather than as mesh vertices.  Everything a priced step
-    # does with a corner is subtract it and measure it, and :func:`_prepare_boundary_geometry`
-    # already copied both rails once for that -- so the candidate faces are built off the
-    # copy.  Going through the vertices instead read ``vertex.co`` once per corner per
-    # priced face, and each of those reads hands back a fresh Vector.
+    # The two rails as coordinates rather than as mesh vertices: everything a priced step
+    # does with a corner is subtract it and measure it, and _prepare_boundary_geometry
+    # already copied both rails once.  Reading ``vertex.co`` instead hands back a fresh
+    # Vector per corner per priced face.
     inner_rail = boundary_geometry.inner_points
     outer_rail = boundary_geometry.outer_points
     expanded = 0
@@ -1669,9 +1608,8 @@ def _sweep_ladder(
                 if previous is None or candidate_cost < previous:
                     layer[key] = candidate_cost
                     parents[key] = ((inner_index, outer_index, previous_kind), kind)
-        # Each step lands in the round its own width reaches.  A key names its kind, so
-        # the two rounds can never offer the same state and an update has nothing to
-        # overwrite.
+        # A key names its kind, so the two rounds can never offer the same state and an
+        # update cannot overwrite.
         for offset, layer in ((1, tri_layer), (2, quad_layer)):
             ahead = layers.get(total + offset)
             if ahead is None:
@@ -1706,17 +1644,15 @@ def _build_transitions(
 ):
     """Solve the whole ladder: cheapest monotone path between two ordered rails.
 
-    No step jumps a column -- a quad takes one of each rail and the surplus triangle one
-    of its own -- so on any band whichever vertex a crossing punctured is already
-    guaranteed to carry a rung once this returns -- see
-    :func:`.seams.region_seam_rungs`.  That guarantee is not enough either way: the rung
-    it finds can sit a column off the vertex the sampler pinned, and the face in between
-    then straddles two UV islands.  ``waypoints`` are the nodes :func:`.seams` says a seam
-    crossing needs, and the search may not route around them.
+    No step jumps a column, so on any band whichever vertex a crossing punctured already
+    carries a rung once this returns; see ``seams.region_seam_rungs``.  That guarantee
+    is not enough either way: the rung it finds can sit a column off the vertex the
+    sampler pinned, and the face in between then straddles two UV islands.  ``waypoints``
+    are the nodes ``seams`` says a seam crossing needs, and the search may not route
+    around them.
 
-    ``depth`` is how far outside the band the strip's own rail lengths give it may stand to
-    reach one of those nodes, and it reaches both the vocabulary and the local swap, which
-    has to price the borrowed stretch the same way the search did.
+    ``depth`` is how far outside the band the strip may stand to reach one of those nodes;
+    it reaches both the vocabulary and the local swap.
     """
     inner_steps = len(inner) if is_closed else len(inner) - 1
     outer_steps = len(outer) if is_closed else len(outer) - 1
@@ -1754,8 +1690,8 @@ def _build_transitions(
 def ladder_steps(region, inner_vertices, outer_vertices):
     """The size of the grid a region's ladder walks.
 
-    A saved transition sequence is a run of advances across exactly this grid, so the
-    pair is both what the search is solved against and what a replay has to match.
+    A saved transition sequence is a run of advances across exactly this grid; a replay
+    has to match it.
     """
     if region["closed"]:
         return len(inner_vertices), len(outer_vertices)
@@ -1765,15 +1701,12 @@ def ladder_steps(region, inner_vertices, outer_vertices):
 def frozen_ladder(ladders, region, inner_vertices, outer_vertices, refresh=False):
     """The wiring this step may replay, or None when the search has to run again.
 
-    Only a step that leaves the ladder's grid the same size has anything to say about a
-    saved sequence, which is precisely what the shape axes are: :mod:`.curves` keeps a
-    path's sample count alone unless the count wheel moved, so the rails advance over
-    the same number of columns and the saved run of transitions still names faces.  The
-    entry comes back whole -- the transitions, the order they count, the loan they were
-    priced under and the crossings they route through -- because a replay the geometry
-    refuses has to be rebuilt on the promises that wiring was won on.
+    Only a step that leaves the ladder's grid the same size can replay a saved sequence,
+    and the shape axes are such steps: ``curves`` keeps a path's sample count unless the
+    count wheel moved.  The entry comes back whole, because a replay the geometry refuses
+    has to be rebuilt on the promises that wiring was won on.
 
-    ``refresh`` is the step taken with no shape applied -- the session's baseline, run
+    ``refresh`` is the step taken with no shape applied: the session's baseline, run
     first and again on right-click cancel.  It re-solves even when the grid matches,
     because a cancel that replayed a wiring the user had since flipped would no longer
     land on the mesh the session started from.
@@ -1791,13 +1724,12 @@ def frozen_ladder(ladders, region, inner_vertices, outer_vertices, refresh=False
 def outer_boundary_order(inner_vertices, outer_vertices, region, decision=None):
     """The direction a region's outer rail is walked in, and the choice that made it.
 
-    Both rails have to be read in the same direction for a rung to join sensible
-    pairs, so the choice is made once here and every later step -- the seam's rung
-    lookup, the corner transfer, the ladder solve -- uses the same order.
+    Both rails have to be read in the same direction for a rung to join sensible pairs,
+    so the choice is made once here and every later step uses the same order.
 
-    A ``decision`` from :func:`align_outer_boundary` is replayed instead of a new one
-    being made, and comes back out again so the caller can freeze the two rails'
-    pairing as one unit with the ladder solved on it.
+    A ``decision`` from ``align_outer_boundary`` is replayed instead of a new one being
+    made, and comes back out so the caller can freeze the rails' pairing as one unit with
+    the ladder solved on it.
     """
     if region.get("phase_locked"):
         return list(outer_vertices), None
@@ -1859,7 +1791,7 @@ def _finish_ladder_plan(plan, inner, outer, region):
 
     A replayed sequence arrives here too, which is what makes freezing a wiring safe:
     every check is geometric, so a shape tick that pushed a frozen rung across the
-    boundary or into a degenerate face loses the replay rather than shipping the face.
+    boundary or into a degenerate face loses the replay rather than ships the face.
     """
     started = time.perf_counter()
     validate_ordered_strip_plan(plan, inner, outer, region)
@@ -1882,19 +1814,15 @@ def _search_ladder(
 ):
     """Solve the ladder: the search, then the local swap over what it chose.
 
-    Returns ``(transitions, score, complete, swapped)``.  ``complete`` is False for the
-    answer the strip is allowed to give in a degraded form: routing through every seam
-    waypoint refused, so the crossings fall back to positional matching.  A degraded
-    ladder is never frozen, because the seam's rung would then stay off the vertex the
-    sampler pinned for as long as the shape axes were scrolled.  ``swapped`` only says
-    whether the local swap rewrote what the search chose, which is a diagnostic question,
-    not one the rebuild asks itself.
+    Returns ``(transitions, score, complete, swapped)``.  ``complete`` is False when
+    routing through every seam waypoint was refused and the crossings fall back to
+    positional matching.  A degraded ladder is never frozen, because the seam's rung
+    would then stay off the vertex the sampler pinned for as long as the shape axes were
+    scrolled.  ``swapped`` is diagnostic only.
 
-    ``depth`` is the loan the crossings were granted, and it goes to the local swap along
-    with the search -- the swap has to price a borrowed stretch the way the sweep did or it
-    would move one for free.  The degraded answer gives the loan back: with no crossing left
-    to reach there is nothing a borrowed pair can be for, and that strip is solved exactly
-    the way a strip without any seam ever was.
+    ``depth`` is the loan the crossings were granted.  It goes to the local swap along
+    with the search, because the swap has to price a borrowed stretch the way the sweep
+    did or it would move one for free.  The degraded answer gives the loan back.
     """
     started = time.perf_counter()
     attempts = 1
@@ -1915,10 +1843,9 @@ def _search_ladder(
         score = transitions = None
         if seam_nodes:
             attempts += 1
-            # Routing through every crossing is something the strip can still refuse for
-            # good reason -- a rung there would cross the outer boundary.  Losing the
-            # whole step is worse than the painter sliding that one rung, so the crossing
-            # falls back to the pre-waypoint behaviour and says so.
+            # Routing through every crossing can still be refused for good reason: a
+            # rung there would cross the outer boundary.  Losing the whole step is worse
+            # than the painter sliding that one rung.
             print_seam_crossing_skipped(
                 region,
                 "waypoint",
@@ -1970,24 +1897,17 @@ def build_ordered_strip_plan(
 ):
     """Resample two ordered curves into one direct, monotone strip.
 
-    The solve sees geometry, with one authorized exception: ``waypoints`` are the ladder
-    nodes :func:`.seams.region_seam_waypoints` says a seam crossing needs, and the search
-    may not route around them.
-    ``outer_vertices`` arrives in the direction :func:`outer_boundary_order` chose, because
-    that is the order the seam looks its rung up in.
+    The solve sees geometry, with one authorized exception: ``waypoints``, the seam
+    crossing nodes the search may not route around (see ``_build_transitions``).
+    ``outer_vertices`` arrives in the direction ``outer_boundary_order`` chose.
 
-    ``frozen`` is the entry :func:`frozen_ladder` says this step may replay: the search
-    and the local swap are skipped outright and only the two rails' coordinates move,
-    which is what stops a shape axis from re-pairing a strip it was never asked to
-    touch.  ``ladders`` is where a solved ladder is written back under
-    ``region["region_index"]`` as one unit -- the transitions, the ``decision`` the outer
-    rail was walked by because the saved transitions are indices into that order, the
-    ``depth`` of loan they were priced under, and the ``waypoints`` they actually route
-    through.  A ladder that no longer fits its rails is re-solved and *does* overwrite the
-    entry, so a freeze that outlived its own geometry costs one flip and then settles
-    instead of costing one flip per tick -- and that one flip is taken on the saved
-    promises rather than on what the re-spaced rails answer now, which is what keeps the
-    flip from moving a crossing to a neighbouring column as well as moving the wiring.
+    ``frozen`` is the entry ``frozen_ladder`` says this step may replay: the search and
+    the local swap are skipped outright and only the rails' coordinates move, which stops
+    a shape axis from re-pairing a strip it was never asked to touch.  A ladder that no
+    longer fits its rails is re-solved and overwrites its ``ladders`` entry, so a freeze
+    that outlived its own geometry costs one flip and then settles instead of one flip
+    per tick.  That flip is taken on the saved promises, not on what the re-spaced rails
+    answer now (see ``_cached_waypoint_attempt``).
     """
     closed = region["closed"]
     if len(inner_vertices) < (3 if closed else 2):
@@ -2037,24 +1957,21 @@ def build_ordered_strip_plan(
             inner_steps,
             outer_steps,
         )
-        # A crossing the band refuses becomes a rung the painter slides, and a slid rung on
-        # one side of a path beside a pinned one on the other is one red line joining two of
-        # that path's own vertices -- which is the jog.  So the strip is offered the loan
+        # A crossing the band refuses becomes a rung the painter slides, and a slid rung
+        # on one side of a path beside a pinned one on the other is one red line joining
+        # two of that path's own vertices: the jog.  So the strip is offered the loan
         # before the search spends a sweep proving the narrow band cannot reach, and only
-        # when the wider band actually keeps a crossing the narrow one gave up: a loan that
-        # buys no node would cost this strip faces for nothing, and a strip with nothing
-        # dropped is never offered one at all.  Kept and bought are compared as node *sets*,
-        # not as lengths, because the wider band reorders which rungs the ladder may stand
-        # on and can reach a new crossing while losing one of this band's own -- and a rung
-        # the strip already pinned is worth more than one it is only being offered.
+        # when the wider band actually keeps a crossing the narrow one gave up: a loan
+        # that buys no node would cost faces for nothing.  Kept and bought are compared
+        # as node *sets*, not lengths, because the wider band can reach a new crossing
+        # while losing one of this band's own, and a rung already pinned is worth more
+        # than one only being offered.
         attempts = [(0, allowed, seam_nodes, dropped_nodes, "unreachable")]
         if reused and frozen["waypoints"]:
-            # The wiring this step was entitled to replay refused its geometry, but the
-            # crossings it was won on are the same crossings, and the moved rails do not get
-            # to renegotiate them.  So the saved node set is the one offered to the search
-            # and the narrow set stays behind it as the answer this strip gave before the
-            # seam asked for anything -- which also means a rebuilt ladder never spends a
-            # second sweep on a loan the freeze already decided.
+            # The replayed wiring refused its geometry, but the crossings it was won on
+            # stand: the saved node set is offered first, the narrow set stays behind it,
+            # and a rebuilt ladder never spends a second sweep on a loan the freeze
+            # already decided.
             attempts = [
                 (
                     *_cached_waypoint_attempt(
@@ -2088,8 +2005,7 @@ def build_ordered_strip_plan(
                 )
             else:
                 # The loan was weighed and put down, so the crossings still dropped did not
-                # go because no band could reach them.  Naming that is the difference
-                # between a band too narrow for the mesh and a strip that refused to pay.
+                # go because no band could reach them.
                 attempts[0] = (0, allowed, seam_nodes, dropped_nodes, "traded")
         for loan, loan_allowed, loan_nodes, loan_dropped, skip_reason in attempts:
             if loan:
@@ -2101,11 +2017,9 @@ def build_ordered_strip_plan(
                     ),
                 )
             elif loan_dropped:
-                # ``unreachable`` is the band's own refusal; ``moved`` is the frozen wiring
-                # declining to chase a crossing that only appeared when its rails were
-                # re-spaced; ``traded`` is a wider band that would have reached it at the
-                # price of one this band already had.  Three different things, and a log
-                # that names one of them wrongly names none of them.
+                # ``unreachable`` is the band's own refusal; ``moved`` is the frozen
+                # wiring's (see ``_cached_waypoint_attempt``); ``traded`` is a wider band
+                # that would have reached it at the price of one this band already had.
                 print_seam_crossing_skipped(
                     region,
                     skip_reason,
@@ -2131,10 +2045,10 @@ def build_ordered_strip_plan(
                 )
                 _finish_ladder_plan(plan, inner, outer, region)
             except ValueError:
-                # The band was wide enough for the crossing but the geometry was not, so the
-                # loan is handed back and the strip is solved the way it was before the seam
-                # asked for anything.  Only a borrowed ladder can fail this way; the narrow
-                # answer keeps its own exception, which is what the failure report reads.
+                # The band was wide enough for the crossing but the geometry was not, so
+                # the loan is handed back and the strip is solved as before.  Only a
+                # borrowed ladder can fail this way; the narrow answer keeps its own
+                # exception, which is what the failure report reads.
                 if not loan:
                     raise
                 print_seam_crossing_skipped(
@@ -2155,9 +2069,9 @@ def build_ordered_strip_plan(
                     "waypoints": loan_nodes,
                 }
             else:
-                # Only a complete ladder is ever kept, and a refusal to keep one has to
-                # reach the entry that is already there: leaving it would have every
-                # later shape tick try it, fail it and re-solve from scratch.
+                # A refusal to keep a ladder has to reach the entry already there:
+                # leaving it would have every later shape tick try it, fail it and
+                # re-solve from scratch.
                 ladders.pop(region["region_index"], None)
     if DIAGNOSE_LADDER:
         print_ladder_plan(region, plan, source, swapped)
@@ -2168,9 +2082,9 @@ def _finish_reuse(frozen, inner_boundary, outer_boundary, closed, inner, outer, 
     """Rebuild a saved ladder on rails that have moved, or refuse it.
 
     The transitions are the only thing carried over: their faces, nodes and parameters
-    are all recomputed here, so the rebuilt strip still describes the geometry it is
-    actually standing on.  The score is the one the saved sequence won on the geometry
-    it was solved for, which is the honest number to print beside ``reuse``.
+    are all recomputed here, so the rebuilt strip still describes the geometry it stands
+    on.  The score is the one the saved sequence won on the geometry it was solved for,
+    the honest number to print beside ``reuse``.
     """
     plan = _ladder_plan(
         inner_boundary,

@@ -3,9 +3,8 @@
 from dataclasses import dataclass
 
 
-# What one ladder step consumes of each rail, in columns.  The search advances its grid
-# by these, the validator totals up what a whole sequence consumed and the diagnostics
-# print one letter per kind, so all three read this instead of restating the arithmetic.
+# Columns one ladder step consumes of each rail.  The search, the validator and the
+# diagnostics all read this instead of restating the arithmetic.
 TRANSITION_ADVANCE = {
     "QUAD": (1, 1),
     "INNER_TRI": (1, 0),

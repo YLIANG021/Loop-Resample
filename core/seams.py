@@ -1,53 +1,31 @@
 """Seam crossings, pinned to the ladder column they arrived on.
 
-A crossing is a chain that cuts a band from one rail to the other.  Half of what makes one
-is ``edge.seam`` -- the red line the user actually sees -- and the other half is every edge
-whose two faces store different UVs, because that is where a UV island parts whether or not
-anyone marked it.  Both go into one pool: a cut nobody marked has to be stepped over exactly
-like a marked one, and :mod:`.surface` splits its island chains on the very same rounding
-(see :func:`.surface.island_boundary_edges`).  Reading the values instead of trusting the
-marks is what keeps a rebuilt face inside one island on a mesh whose seams were left
-unmarked -- or marked somewhere other than where the UVs change.
+A crossing is a chain that cuts a band from one rail to the other.  The pool is the seam
+marks the rebuild destroys plus every edge whose two faces store different UVs: an island
+parts there whether anyone marked it, and ``surface`` splits its island chains on the same
+rounding.  Corner colors stay out.  A color difference is a value the transfer keeps two
+copies of, not a boundary a rebuilt face would straddle, and cutting on it would spend a
+pinned vertex and sometimes a loaned column on a difference no island cares about.  Colors
+still split chains in ``surface``; they never steer a rung here.
 
-Colors are deliberately not in that pool.  A corner color that disagrees across an edge is a
-value the transfer keeps two copies of, not a boundary a rebuilt face would straddle, and
-cutting the band on it would spend a pinned vertex and sometimes a loaned column on a
-difference no island cares about.  It still splits a chain in :mod:`.surface`; it never
-steers a rung here.
+The band one resampled path owns is the path plus the strips on both sides, so a crossing
+leaves it through a rail vertex the source already has.  That vertex survives the rebuild
+and the sampler pins a sample on it, so ``region_seam_waypoints`` can hand its ladder node
+to the planner as a mandatory stop.  This is the one place an attribute steers the search,
+and it keeps a rebuilt face from straddling two UV islands: left to the search alone, rungs
+came out a whole column off the pinned vertex.  Rail parameters are measured by projecting
+each rebuilt vertex onto the source in segment-index space, so a pin on source vertex ``k``
+reads back as ``k / segments`` exactly, whichever way the rail is walked.  Pins the sampler
+refused are invisible to that search, so the waypoints pass also reports every crossing it
+had to aim at the nearest sample instead of the promised one.
 
-The band one resampled path owns is the path plus the strips on both sides of it, so a
-seam crossing that band leaves it through a rail vertex the source already has.  That
-vertex survives the rebuild and the sampler pins a sample exactly on it, so the rung can
-be required to stand on the same column: :func:`region_seam_waypoints` hands a crossing's
-ladder node to :mod:`.planner` as a mandatory stop.  This is the one place an attribute
-is allowed to steer the search, and it is what keeps a rebuilt face from straddling two
-UV islands -- leaving the column to the search alone put rungs a whole column off the
-pinned vertex.
-
-Finding that pinned vertex again is a search of the rebuilt rail for the crossing's source
-index fraction, and it is exact rather than approximate: a rail's parameters are measured by
-projecting each rebuilt vertex back onto the source in *segment-index* space, so the vertex
-the pin held on source vertex ``k`` reads back as ``k / segments`` -- the very number the
-crossing carries -- whichever way the rail array happens to be walked.  What that search
-cannot tell is that a pin was refused, so the sampler's own landing table rides along to say
-so: :func:`region_seam_waypoints` reports a crossing it had to aim at the nearest sample
-instead of the promised one.
-
-The two strips either side of a path can still take different columns when one crossing
-reaches the shared path at two vertices, and the red line finishes its crossing by
-running along the path -- whose edges are rebuilt anyway.  Both sides aim for the vertex
-the sampler pinned, so normally there is nothing to join.
-
-When there is, the join says why: each rung end carries the reason this strip came to stand
-where it does -- ``no-slot`` for a pin the sampler refused, ``rung-slid`` for a column the
-ladder never offered, ``pinned`` for the vertex the crossing itself named -- and a gap
-between two ends whose own causes are all ``pinned`` can only be the two rails reading one
-source position as two different vertices, which is what ``classification`` reports.
-
-What that joining does is stretch a mark the user already drew, so it stays that way: a
-crossing made of unmarked edges carries no seam flag, and :func:`region_seam_rungs` offers
-:func:`paint_path_seam_jogs` only the crossings that began as marks.  The corner values
-travel; the red lines stay exactly where the user put them.
+When one crossing reaches a shared path at two vertices, the strips either side can take
+different columns and the red line finishes along the path's own edges, which are rebuilt
+anyway.  Each rung end carries why its strip stands there (``no-slot``, ``rung-slid`` or
+``pinned``); a gap between two ``pinned`` ends can only be the two rails reading one source
+position as two vertices, reported as ``classification``.  Joining stretches a mark the
+user already drew, so only crossings that began as marks are joined: corner values travel
+everywhere, red lines stay where the user put them.
 """
 
 from .attributes import (
@@ -93,29 +71,21 @@ def _seam_chains(edges):
 def region_seam_crossings(region, paths, bm):
     """Every boundary chain that enters one rail of a region and leaves the other.
 
-    The chains are drawn from two sources at once: the seam marks the rebuild destroys,
-    and the edges whose two faces store different UVs.  Whichever way a cut was
-    found, one that crosses the band pins the same two rail vertices.
+    A chain whose rail ends are not exactly one inner and one outer vertex cannot become a
+    single rung and is left to positional matching.  Only a marked one is logged: an island
+    boundary that runs along the band is the ordinary shape of an unwrapped mesh, and a line
+    each would bury the ones that mean something.
 
-    A chain whose two rail ends are not exactly one inner and one outer vertex
-    cannot become a single rung, so it is left to positional matching rather than
-    bending the ladder for.  Only a marked one says so out loud: an island boundary that
-    runs along the band instead of across it is the ordinary shape of an unwrapped mesh,
-    and a line each would bury the ones that mean something.
+    A crossing's edges stay in the region's attribute records until ``region_seam_rungs``
+    gives it a rung.  Each crossing names the source edge indices it consumed so
+    ``capture_region_edge_attributes``, running after this against the same BMesh, can mark
+    the records those edges made.
 
-    The edges a crossing is made of stay in the region's ordinary attribute records: only a
-    crossing that actually gets a rung is taken out of them, which :func:`region_seam_rungs`
-    is what decides.  Each crossing names itself and the source edge indices it consumed, so
-    :func:`.attributes.capture_region_edge_attributes` -- which runs after this one, against
-    the same BMesh -- can mark the records those edges made.
-
-    A fan has no outer path to read a rail from, but it does name its pole, and a
-    cut that runs up a spoke leaves the band through exactly that vertex.  Read as a
-    one-vertex rail it is the crossing's outer end like any other, and the inner end
-    is what the sampler gets pinned: without it no rebuilt path vertex ever lands on
-    the cut, and the face spanning it is drawn as a chord across the whole fan.  Only
-    crossings reach this far -- a fan has no ladder, so the pole never enters a
-    waypoint, a rung or a rail frame.
+    A fan has no outer path, so its pole is read as a one-vertex outer rail: a cut up a
+    spoke leaves the band exactly there.  The inner end is what the sampler pins; without
+    it no rebuilt path vertex lands on the cut and the face spanning it becomes a chord
+    across the whole fan.  Only crossings reach this far.  A fan has no ladder, so the pole
+    never enters a waypoint, a rung or a rail frame.
     """
     inner_vertices, outer_vertices = region_rails(region, paths)
     if not outer_vertices and region.get("kind") == "FAN":
@@ -135,11 +105,9 @@ def region_seam_crossings(region, paths, bm):
     derived = set(island_boundary_edges(deleted, bm)) - marked
     pool = [edge for edge in deleted if edge in marked or edge in derived]
     if not pool:
-        # A cut that is neither marked nor disagrees across this band is invisible to the
-        # whole channel, and that is not something anyone can read out of a log that stays
-        # quiet.  The second number names the difference: seam edges this band owns but the
-        # rebuild keeps (its path edges, and any edge shared with a face outside the band)
-        # cross no band at all, so there is nothing here for a rung to stand on.
+        # Without a log line this skip is invisible.  ``seam-kept`` names the difference:
+        # seam edges the band owns but the rebuild keeps (path edges, and edges shared
+        # with a face outside the band) cross no band, so no rung could stand on them.
         kept = sorted(
             {
                 edge.index
@@ -168,8 +136,8 @@ def region_seam_crossings(region, paths, bm):
     crossings = []
     for crossing_id, chain in enumerate(_seam_chains(pool)):
         chain_vertices = {vertex for edge in chain for vertex in edge.verts}
-        # Whether this chain is part of a line the user drew, which is what decides both
-        # how loudly a failure speaks and whether a jog along the path gets marked.
+        # Part of a line the user drew?  Decides how loudly a failure speaks and whether
+        # a jog along the path gets marked.
         is_marked = any(getattr(edge, "seam", False) for edge in chain)
         inner_hits = sorted(
             index for vertex, index in inner_index.items() if vertex in chain_vertices
@@ -178,9 +146,8 @@ def region_seam_crossings(region, paths, bm):
             index for vertex, index in outer_index.items() if vertex in chain_vertices
         )
         if len(inner_hits) != 1 or len(outer_hits) != 1:
-            # An island boundary that runs along the band rather than across it reaches no
-            # rung, and on a mesh whose seams were never marked that is the ordinary shape
-            # of the pool -- so only a line someone drew is worth a line of output.
+            # A boundary running along the band rather than across it reaches no rung, and
+            # on a mesh whose seams were never marked that is the ordinary shape of the pool.
             if is_marked:
                 print_seam_crossing_skipped(
                     region,
@@ -192,7 +159,7 @@ def region_seam_crossings(region, paths, bm):
             {
                 "id": crossing_id,
                 # Valid only inside the capture that made it, where both sides of the
-                # lookup read the same BMesh; never resolved against a later step.
+                # lookup read the same BMesh; never resolve these against a later step.
                 "source_edges": tuple(edge.index for edge in chain),
                 "marked": is_marked,
                 "inner_index": inner_hits[0],
@@ -210,10 +177,10 @@ def region_seam_crossings(region, paths, bm):
 def _pinned(path_landings, path_index, source_index):
     """Whether the sampler held one source vertex on a slot of its own.
 
-    ``path_landings`` is what :meth:`.session.ResampleSession.samples` returns beside the
-    coordinates: per locked path, ``None`` when the step left the path standing on its own
-    source points, otherwise the source indices it did pin.  A rail that is not a locked
-    path is never resampled, so every one of its vertices is still itself.
+    ``path_landings`` comes from ``ResampleSession.samples``: per locked path, ``None``
+    when the step left the path standing on its own source points, otherwise the source
+    indices it did pin.  A rail that is not a locked path is never resampled, so every
+    one of its vertices is still itself.
     """
     if path_index is None:
         return True
@@ -232,18 +199,17 @@ def _nearest_index(parameters, target, closed):
 def region_seam_waypoints(region, path_landings, inner_parameters, outer_parameters):
     """The ladder node each seam crossing needs, decided before the ladder is solved.
 
-    A crossing enters the strip on one inner rail vertex and leaves on one outer one.  The
-    sampler pins the inner vertex onto its own source position; the outer rail is only
-    pinned too where it is a locked path of its own, and an unlocked one keeps every vertex
-    it started with, so both rebuilt indices are read back off the rails' parameters here.
-    Handing the pair to the search as a node its path must pass through is what keeps the
-    rung from sliding a column off the pinned vertex: a slid rung invents a face with
-    corners on two islands, and neither island holds a UV for the corner that ended up on
-    the far side, so it clamps and the face collapses onto the boundary.
+    The sampler pins the inner vertex onto its own source position; the outer rail is
+    pinned too only where it is a locked path of its own, and an unlocked one keeps every
+    vertex it started with, so both rebuilt indices are read back off the rails'
+    parameters here.  Handing the pair to the search as a node its path must pass through
+    keeps the rung from sliding a column off the pinned vertex: a slid rung invents a face
+    with corners on two islands, and neither island holds a UV for the corner on the far
+    side, so it clamps and the face collapses onto the boundary.
 
-    This is the one place a seam is allowed to reach into the solve, and it stays a
-    narrow exception to the rule that attributes do not steer geometry: it names the two
-    vertices the pinning already created and asks only that they be connected.
+    This is the one place a seam reaches into the solve, and it stays a narrow exception
+    to the rule that attributes do not steer geometry: it names the two vertices the
+    pinning already created and asks only that they be connected.
     """
     crossings = region.get("seam_crossings") or ()
     if not crossings or not inner_parameters or not outer_parameters:
@@ -269,23 +235,19 @@ def region_seam_waypoints(region, path_landings, inner_parameters, outer_paramet
 def region_seam_rungs(region, plan, inner_parameters, outer_parameters, path_landings):
     """Where each seam crossing attaches to the ladder the search already chose.
 
-    The crossing's outer vertex is the one that has to be exact, and asking for it
-    costs the search nothing: it survives the rebuild and every monotone ladder has a
-    node there.  Which inner column that node is on is the search's, so the crossing
-    aims for the rebuilt vertex the sampler pinned on its own source position and takes
-    the nearest one that is actually offered.
+    The outer vertex has to be exact, and asking for it costs nothing: it survives the
+    rebuild and every monotone ladder has a node there.  The inner column is the search's,
+    so the crossing aims for the rebuilt vertex the sampler pinned and takes the nearest
+    one actually offered.
 
     Returns ``(rungs, carried, ends)``: the nodes to paint with the flags of the chain
-    they replaced, the ids of the crossings that became a rung -- whose own source
-    edges positional matching must no longer place, since the rung already carries
-    them -- and the path vertices a *marked* crossing reached:
-    :func:`paint_path_seam_jogs` joins those when the strip on the far side of a path
-    chose a different one.
-
-    Each end carries how this strip came to stand on it, because that is the only witness
-    the join has to explain itself with later: ``no-slot`` when the sampler refused to pin
-    that source vertex at all, ``rung-slid`` when the ladder offered no column at the vertex
-    the crossing named, and ``pinned`` when the rung is exactly where the crossing asked.
+    they replaced; the ids of the crossings that became a rung, whose own source edges
+    positional matching must no longer place; and the path vertices a *marked* crossing
+    reached, which ``paint_path_seam_jogs`` joins when the strip on the far side of a path
+    chose a different one.  Each end carries its cause: ``no-slot`` when the sampler
+    refused to pin that source vertex at all, ``rung-slid`` when the ladder offered no
+    column at the vertex the crossing named, ``pinned`` when the rung is exactly where the
+    crossing asked.
     """
     crossings = region.get("seam_crossings") or ()
     if not crossings or not inner_parameters or not outer_parameters:
@@ -330,9 +292,9 @@ def region_seam_rungs(region, plan, inner_parameters, outer_parameters, path_lan
             rungs.append(rung)
         rung["weighted"].append((1.0, crossing["state"]))
         carried.append(crossing["id"])
-        # A crossing the UVs revealed rather than a mark carries no flag of its
-        # own to join up with, and finishing it by painting the path edges between the two
-        # ends would draw a red line the source never had.  Its rung still paints below.
+        # A crossing the UVs revealed rather than a mark carries no flag of its own to
+        # join up with, and painting the path edges between its ends would draw a red line
+        # the source never had.  Its rung still paints below.
         if crossing["marked"]:
             ends.append(
                 (
@@ -351,9 +313,8 @@ def region_seam_rungs(region, plan, inner_parameters, outer_parameters, path_lan
                 )
             )
             if outer_path_index is not None:
-                # The outer rail's column is the one the crossing names, so a rung here
-                # never slid; the only way this end can be anything but the pinned vertex
-                # is the sampler having refused to hold it.
+                # A rung on the outer rail never slid: the column is the one the crossing
+                # names, so the only cause left is the sampler refusing to hold it.
                 ends.append(
                     (
                         outer_path_index,
@@ -374,9 +335,9 @@ def region_seam_rungs(region, plan, inner_parameters, outer_parameters, path_lan
 def apply_region_seams(bm, plan, region, rungs):
     """Give every rung a crossing took the flags of the seam chain it replaced.
 
-    The edge is looked up by its two endpoints rather than rediscovered from the
-    rebuilt faces: the ladder node already says which pair of rail vertices this column
-    joins, so there is nothing left to match.
+    The edge is looked up by its two endpoints rather than rediscovered from the rebuilt
+    faces: the ladder node already says which pair of rail vertices this column joins, so
+    there is nothing left to match.
     """
     if not rungs:
         return
@@ -402,24 +363,22 @@ def paint_path_seam_jogs(bm, updated_paths, ends):
     """Join the two halves of a red line that reached one path at two vertices.
 
     ``ends`` holds ``(path index, source vertex index, rebuilt vertex, cause)`` for every
-    rung end of a marked crossing that sits on a resampled path.  The strips either side of
-    that path report the same source vertex, so a pair of different rebuilt vertices is one
-    line with a gap in it, and the gap runs along the path's own edges.  Only the seam flag
-    travels -- crease and bevel values on those edges belong to the path, not to the
-    crossing.
+    rung end of a marked crossing that sits on a resampled path.  Both strips report the
+    same source vertex, so a pair of different rebuilt vertices is one line with a gap in
+    it, and the gap runs along the path's own edges.  Only the seam flag travels: crease
+    and bevel values on those edges belong to the path, not to the crossing.
 
-    One line per joined record, ``{path_index, source_index, landed_vertices, steps,
-    reason}`` -- ``landed_vertices`` numbers the path's own slots the join ran between.
-    The reason is the point: a gap between two ends
-    of one crossing is a defect the user can only be told about if the log says which of
-    its three causes it is.  ``no-slot`` means the sampler refused to hold that source
-    vertex on either rail, so the two strips aimed at whatever vertex was nearest;
-    ``rung-slid`` means one strip's ladder had no rung at the vertex its crossing named,
-    which :mod:`.planner` already said out loud with a ``seam-skip`` line and this repeats
-    only as the consequence; ``classification`` means both strips stood on the vertex they
-    each asked for and still chose different ones, so the two readings of one position
-    disagreed.  A strip that never reached a rung at all reports ``no-column`` at itself and
-    contributes no end here, so that name stays a skip rather than becoming a jog.
+    One record per join, ``{path_index, source_index, landed_vertices, steps, reason}``,
+    where ``landed_vertices`` numbers the path's own slots the join ran between.  The
+    reason names which of three causes made the gap, and the user can only be told about
+    the defect if the log says which.  ``no-slot``: the sampler refused to hold that
+    source vertex on either rail, so both strips aimed at whatever vertex was nearest.
+    ``rung-slid``: one strip's ladder had no rung at the vertex its crossing named; the
+    planner already said so with a ``seam-skip`` line and this repeats it only as the
+    consequence.  ``classification``: both strips stood on the vertex they asked for and
+    still chose different ones.  A strip that never reached a rung at all reports
+    ``no-column`` at itself and contributes no end here, so that name stays a skip rather
+    than becoming a jog.
     """
     grouped = {}
     for path_index, source_index, vertex, cause in ends:

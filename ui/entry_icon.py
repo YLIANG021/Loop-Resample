@@ -1,16 +1,14 @@
 """The Loop Resample mark for the menu item, loaded from ``icons/loop_resample.png``.
 
-Blender answers two different questions with two different arguments, and only one of them
-takes a file.  ``icon=`` wants a name out of Blender's own enum -- which is exactly how the
-entry threw on every menu draw on 4.2, because ``MOUSE_MMB_SCROLL`` simply is not a name in
-that enum there.  A picture goes through ``bpy.utils.previews`` instead: the collection loads
-an image file and hands back an int for ``icon_value=``.  The type people search for,
-``bpy.types.PreviewImage``, is gone from both 4.2.1 and 5.2, but this module is not, and the
-installed binaries agree on it.
+Only one of Blender's two icon arguments takes a file.  ``icon=`` wants a name out of Blender's
+own enum, which is how the entry came to throw on every menu draw under 4.2:
+``MOUSE_MMB_SCROLL`` is not a name in that enum there.  A picture goes through
+``bpy.utils.previews``, which loads the file and hands back an int for ``icon_value=``.
+``bpy.types.PreviewImage`` is gone from both 4.2.1 and 5.2, but this module is not, and the
+installed binaries agree.
 
-The contract this module keeps is that a missing or unloadable picture yields ``0`` rather
-than an exception: an icon that cannot load should cost the item its picture and nothing else,
-because a throw from a draw callback takes the whole menu with it.
+A missing or unloadable picture yields ``0`` rather than an exception: a bad icon should cost the
+item its picture and nothing else, because a throw from a draw callback takes the whole menu.
 """
 
 import os
@@ -25,8 +23,6 @@ _collection = None
 
 
 def _icon_path():
-    """``icons/`` sits at the extension root, beside ``ui/`` where this module is.
-    """
     return os.path.normpath(
         os.path.join(os.path.dirname(__file__), os.pardir, _ICON_FILE)
     )
@@ -35,8 +31,8 @@ def _icon_path():
 def register():
     """Load the picture once, for the life of this module instance.
 
-    A collection per enable rather than per draw: each one holds GPU-side previews, so
-    building one where the menu is drawn would leak a texture every right-click.
+    One collection per enable rather than per draw: each holds GPU-side previews, so building one
+    where the menu is drawn would leak a texture every right-click.
     """
     global _collection
     unregister()

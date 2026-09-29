@@ -90,9 +90,8 @@ def path_projection(points, is_closed, target):
 def normalized_parameters(points, is_closed, vertices, segments):
     """Position of each vertex along a source path, normalized to 0..1.
 
-    Projecting onto the source polyline puts every vertex in the same frame the
-    source edges were measured in, independently of how many segments the
-    current step uses or how evenly they are spaced.
+    Projecting onto the source polyline puts every vertex in the frame the source edges were
+    measured in, whatever segment count or spacing the current step uses.
     """
     if segments <= 0.0:
         return [0.0] * len(vertices)
@@ -116,14 +115,10 @@ def _u_distance(first, second, closed):
 def merge_edge_states(weighted):
     """Combine source states that collapsed onto one target edge.
 
-    ``(weight, state)`` pairs are weighted by how much of the target each
-    source covers.  Discrete flags are unioned, ignoring weight: a flag has only
-    one bit to lose, and a seam dropped because it covered too little of the new
-    edge breaks the line into dots, while one kept on a hairline overlap merely
-    draws the line one edge longer.  Float layers keep weighting their overlap,
-    so a value uniform along the source survives untouched and only a boundary
-    between two values softens -- the user's "like blending a gradient".  A layer
-    absent from a state counts as zero over that state's whole weight.
+    ``(weight, state)`` pairs are weighted by how much of the target each source covers.
+    Discrete flags union regardless of weight, because a dropped seam breaks the line into dots
+    while one kept on a hairline overlap merely draws it an edge longer.  Float layers average
+    by overlap, so a uniform value survives and only a boundary softens.
     """
     total = sum(weight for weight, _ in weighted)
     if total <= 0.0:
@@ -163,10 +158,9 @@ def _edge_spans(parameters, closed):
 def resample_edge_states(parameters, states, closed):
     """Resample frozen source edge states onto a new edge count.
 
-    Source edge ``i`` of ``M`` owns ``[i/M, (i+1)/M]`` for both open and closed
-    paths, since an open path's last vertex sits at u=1.  Each new edge takes a
-    weighted merge of every source edge it overlaps, so shrinking blends rather
-    than discards and growing back out lands on the same values.
+    An open path's last vertex sits at u=1, so source edge ``i`` of ``M`` owns
+    ``[i/M, (i+1)/M]`` whether or not the path closes.  Merging by overlap means shrinking
+    blends rather than discards, and growing back out lands on the same values.
     """
     source_count = len(states)
     if source_count == 0 or len(parameters) < 2:
@@ -184,8 +178,8 @@ def resample_edge_states(parameters, states, closed):
             if overlap > 0.0:
                 weighted.append((overlap, state))
         if not weighted:
-            # A zero-length span means two vertices share a position; keep the
-            # count aligned by taking the source edge under the span start.
+            # Two vertices share a position; take the source edge under the span start to
+            # keep the count aligned.
             weighted = [
                 (
                     1.0,
@@ -209,13 +203,11 @@ def _destroyed_region_edges(region):
 def capture_region_edge_attributes(regions, paths, bm):
     """Record attributes of region edges that resampling destroys.
 
-    Each record stores where the edge sat along the region's inner boundary as a
-    normalized parameter, so it stays meaningful no matter how many segments a
-    later step uses.  Edges parallel to the path are skipped: they run along the
-    ladder and have no counterpart rung.  A record also names the seam crossing
-    that consumed its edge, if any, so :func:`apply_region_edge_attributes` can
-    stand that edge down without asking whether it was a seam -- a chain carrying a
-    crease is one line, not one line plus a crease to place somewhere else.
+    Each record stores the edge's position along the inner boundary as a normalized parameter,
+    so it survives a later segment count.  Edges parallel to the path are skipped: they run
+    along the ladder and have no counterpart rung.  A record also names the seam crossing that
+    consumed its edge, if any, so the applier can stand that edge down without asking whether
+    it was a seam.
     """
     float_layers = _float_edge_layers(bm)
     captured = []
@@ -284,14 +276,11 @@ def capture_region_edge_attributes(regions, paths, bm):
 def apply_region_edge_attributes(bm, region, inner_parameters, rungs, carried=()):
     """Restore the attributes of the cross-band edges the rebuild destroyed.
 
-    ``rungs`` lists the rebuilt ones as ``(inner index, edge endpoints)`` in ladder
-    order, so a record lands on the nearest one and the edge itself is looked up by
-    its two endpoints instead of being rediscovered from the rebuilt faces.
-    ``carried`` holds the id of every seam crossing that became a rung; every record
-    made from an edge that crossing consumed is dropped here, because the rung already
-    carries that whole chain's state and a second, positional copy of it would land on
-    whichever neighbour happened to be nearer.  A crossing that could not become a rung
-    is absent from ``carried`` and its edges are restored by position like any other.
+    ``rungs`` lists the rebuilt ones as ``(inner index, edge endpoints)`` in ladder order, so a
+    record lands on the nearest and the edge is found by its endpoints.  ``carried`` holds the
+    id of every crossing that became a rung, and the records those crossings consumed are
+    dropped: the rung already carries that chain's state, and a positional copy would land on
+    whichever neighbour was nearer.
     """
     captured = region.get("edge_attributes") or {}
     consumed = set(carried)
@@ -304,8 +293,8 @@ def apply_region_edge_attributes(bm, region, inner_parameters, rungs, carried=()
         return
     closed = bool(captured.get("closed"))
 
-    # Records outnumber rungs whenever the count drops, so gather every record
-    # per rung and merge; last-write-wins silently dropped the others.
+    # Records outnumber rungs whenever the count drops, so gather them per rung and merge;
+    # last-write-wins silently dropped the others.
     grouped = {}
     started = time.perf_counter()
     compared = 0
@@ -333,15 +322,13 @@ def apply_region_edge_attributes(bm, region, inner_parameters, rungs, carried=()
 def region_outer_parameters(region, outer_vertices, frame_points=None):
     """Place the outer rail in the frozen frame its seam crossings were measured in.
 
-    Both rails come back in the source's segment-index unit, so this is a change of
-    coordinates and not an approximation: a fixed rail maps onto itself exactly, and a
-    rail that is itself a resampled path puts the vertex the sampler pinned on source
-    vertex ``k`` at ``k / segments`` -- the number the crossing carries -- while the
-    samples between the pinned vertices land wherever the distribution left them.
+    Both rails come back in the source's segment-index unit, so a fixed rail maps onto itself
+    exactly and a resampled-path rail puts the vertex pinned on source vertex ``k`` at
+    ``k / segments``, the number the crossing carries.  Samples between pins land wherever the
+    distribution left them.
 
-    ``frame_points`` stands in for that rail's own frozen points where the step moved
-    them.  The index frame is the same length and the same order, so the pin still reads
-    back at ``k / segments``; only the positions the projection runs against move.
+    ``frame_points`` stands in for that rail's frozen points where the step moved them; the
+    frame keeps its length and order, so only the projected positions move.
     """
     frames = region.get("frames") or {}
     outer = frames.get("outer") or {}
@@ -415,10 +402,8 @@ def _blend_floats(left, right, factor):
 def _point_positions(parameters, source_count, closed):
     """Where each rebuilt vertex falls between two source vertices, as (left, right, factor).
 
-    Source vertex ``i`` sits at ``i / segments`` in the same frozen frame the
-    path parameters use.  Landing exactly on one reports factor 0 or 1, and the
-    blend helpers then copy it untouched -- that is what keeps a count stepped
-    down and back up bit-for-bit.
+    Landing exactly on a source vertex reports factor 0 or 1, and the blend helpers then copy
+    it untouched, which is what keeps a count stepped down and back up bit-for-bit.
     """
     if source_count == 0:
         return []
@@ -445,12 +430,9 @@ def _point_positions(parameters, source_count, closed):
 def _point_value_layers(bm):
     """Vertex-domain layers carried along a path, as ``(kind, name, layer)``.
 
-    Only layers already on the mesh are listed: ``deform.active`` reads the
-    vertex-group layer without creating one, and iterating a layer collection
-    never adds either, so a mesh with neither vertex groups nor point colors
-    yields nothing and every later step stays a no-op.  Vertex crease and bevel
-    weight are plain float layers, so they arrive here the same way a color does
-    and blend the same way -- no flag of their own to union.
+    Only layers already on the mesh: ``deform.active`` reads the vertex-group layer without
+    creating one, and iterating a collection never adds either, so a mesh with no groups and no
+    point colors yields nothing.  Vertex crease and bevel weight are plain float layers.
     """
     layers = []
     deform = bm.verts.layers.deform.active
@@ -470,8 +452,8 @@ def _point_value_layers(bm):
 def capture_path_point_attributes(paths, bm):
     """Freeze each source path vertex's weights and per-point values, or None.
 
-    Values stored per vertex rather than per corner cannot ride the rail chains
-    in :mod:`.surface`, so they travel with the weights here instead.
+    Per-vertex values cannot ride the rail chains in ``.surface``, so they travel with the
+    weights here.
     """
     layers = _point_value_layers(bm)
     if not layers:
@@ -494,10 +476,9 @@ def capture_path_point_attributes(paths, bm):
 def apply_path_point_attributes(updated_paths, path_parameters, captured, bm):
     """Restore resampled weights and per-point values onto the rebuilt path vertices.
 
-    Only path vertices are rewritten: a static outer rail keeps its vertices and
-    therefore their values, and a resampled outer rail is itself a path handled
-    here.  Layers are matched on kind and name together, since a vertex group and a
-    float attribute are free to share a name.
+    Only path vertices are rewritten: a static outer rail keeps its vertices and their values,
+    and a resampled outer rail is itself a path handled here.  Layers match on kind and name,
+    since a vertex group and a float attribute may share a name.
     """
     if not captured:
         return

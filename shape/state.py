@@ -1,37 +1,35 @@
 """Curve shape and distribution: the two one-way wheel axes beside the count wheel.
 
 Nothing here reads the mesh.  A step's points are a pure function of the frozen source
-plus two strengths, so the order the axes were scrolled in cannot move a single vertex,
-and a session reverted from its entry state lands back on the mesh it started from -- the
-same invariant the count wheel already keeps.
+plus two strengths: scroll order cannot move a vertex, and a session reverted from its
+entry state lands back on the mesh it started from, the invariant the count wheel
+already keeps.
 
-Which way a rebuilt strip's rungs are paired is the one thing a session carries as
-history, on purpose: a strip keeps the wiring the count wheel last solved for it, so an
-axis that only moves points never re-pairs the band under it.  Smoothing and then
-changing a count can therefore land on a different pairing than the other way round.
+Rung pairing is the one thing a session carries as history, on purpose: a strip keeps
+the wiring the count wheel last solved for it, so an axis that only moves points never
+re-pairs the band under it.  Smoothing and then changing a count can therefore land on
+a different pairing than the other way round.
 
-Each axis carries one function, and a tick carries it one step further whichever way
-the wheel turns: Shift smooths the locked curves with a Taubin low-pass, Ctrl evens the
-sampler's spacing out toward equal arc length.  There is no second property on either
-axis to point at, so a strength is a plain ``[0, 1]`` rather than a signed one, and
-putting an effect back is the right-click's job -- it reverts the whole session -- not
-the wheel's.
+Each axis carries one function and a tick always steps it further: Shift smooths the
+locked curves with a Taubin low-pass, Ctrl evens the sampler's spacing toward equal
+arc length.  Neither axis has a second property, so a strength is a plain ``[0, 1]``,
+not signed; putting an effect back is the right-click's job, which reverts the whole
+session.
 
-A frame carries two independent halves, and each is empty until its axis is moved, so
-a step with neither axis moved hands the frozen objects straight back:
+A frame carries two independent halves, each empty until its axis is moved, so a step
+with neither moved hands the frozen objects straight back:
 
 ``points`` / ``curves``
-    where a path's control points sit, and the curve fitted through them.  Polish runs
-    a Taubin low-pass over the source points.  A moved path needs its curve rebuilt,
-    because the sampler reads every position from the curve object rather than from a
-    caller's points, and a curve that cannot be fitted is never replaced by a fittable
-    one -- a moved path falling back to polyline sampling would change its spacing
+    where a path's control points sit, and the curve fitted through them.  A moved path
+    needs its curve rebuilt because the sampler reads positions from the curve object,
+    not a caller's points, and a curve that cannot be fitted is never replaced by a
+    fittable one: falling back to polyline sampling would change the path's spacing
     rules on the way.
 
 ``t_even``
     how the sampler splits a path between its source segments, re-weighted from equal
-    index steps toward equal arc length.  The table itself is built inside the sampler,
-    which is the only place that knows which of its two branches it is in.
+    index steps toward equal arc length.  The table is built inside the sampler, which
+    alone knows which of its two branches it is in.
 """
 
 from .smoothing import polish_points
@@ -50,9 +48,9 @@ LIMIT = 1.0
 def strengthen(strength):
     """One wheel tick along a one-way axis: one step further on, clamped at full.
 
-    Rounded because a strength is reached by accumulation and ``0.05`` is not
-    representable in binary: without it a wheel scrolled twenty times would sit at
-    ``1.0000000000000002`` and the clamp at ``LIMIT`` would never read as the end.
+    Rounded because ``0.05`` is not representable in binary: without it twenty ticks
+    would accumulate to ``1.0000000000000002`` and the clamp at ``LIMIT`` would never
+    read as the end.
     """
     return min(LIMIT, round(strength + STEP, 6))
 
@@ -69,15 +67,13 @@ class ShapeFrame:
     def frame_points(self, path_index):
         """The polyline this path's rebuilt vertices have to be projected onto.
 
-        Every attribute and seam lookup places a rebuilt vertex by projecting it onto a
-        frame whose captured knots sit at ``index / segments``, and that only works
-        because the sampler puts the vertex on the frame in the first place.  Move the
-        path off its frozen polyline and the projection has to be close enough instead
-        of being exact -- on a smoothed path it is not, and a seam lands a column off
-        the vertex its crossing runs through.  Projecting onto the path's own moved
-        frame asks only that the sample sit on its curve, which is true by construction,
-        and the frame has the same point count and the same indices, so the parameter
-        it returns is still the index frame the capture measured in.
+        Attribute and seam lookups place a rebuilt vertex by projecting it onto a frame
+        whose captured knots sit at ``index / segments``, which works only because the
+        sampler puts the vertex on that frame.  Projecting a smoothed path onto its
+        frozen polyline is not exact: a seam lands a column off the vertex its crossing
+        runs through.  The moved frame has the same point count and indices, and the
+        sample sits on its curve by construction, so the parameter returned is still in
+        the index frame the capture measured in.
         """
         moved = self.points[path_index]
         return None if moved is None else tuple(moved)
@@ -105,11 +101,11 @@ class ShapeController:
             if moved is not None and curve is not None:
                 refitted = _refit(moved, is_closed)
                 if refitted is None:
-                    # This step pushed the path somewhere its own curve cannot follow.
-                    # Leaving the points where they are is the only honest option: the
-                    # sampler reads positions off the curve while the attribute lookup
-                    # projects them onto the points, and moving one without the other
-                    # would put the rebuilt vertices off their own parameter frame.
+                    # The curve cannot follow the moved points, so the path stays
+                    # frozen: the sampler reads positions off the curve while the
+                    # attribute lookup projects onto the points, and moving one
+                    # without the other puts rebuilt vertices off their parameter
+                    # frame.
                     moved = None
                 else:
                     curve = refitted
@@ -132,8 +128,6 @@ def _shape_points(entry, is_closed, t_smooth):
     """``Taubin(entry)``, or None at zero strength.
 
     A ring is smoothed like any other path: a neighbour average has no use for ends.
-    That the one remaining axis needs no closed-path exception of its own is the whole
-    reason it is the only one left.
     """
     if t_smooth == 0.0:
         return None

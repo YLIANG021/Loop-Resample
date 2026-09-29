@@ -1,0 +1,4 @@
+# autocrlf hands this back with CRLF, and a shebang ending in \r asks the kernel for an
+# interpreter named "/bin/sh\r".  That is not a style difference, it is a script that
+# will not start.
+tools/_restrip.sh text eol=lf

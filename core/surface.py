@@ -1,41 +1,36 @@
 """Per-source-face shading and loop UV transfer.
 
-A rebuilt face is matched to the source face that occupied the same place along
-the region, then inherits that face's material and shading.  UVs travel on per-
-rail chains: one rail's source corners sorted by u, where corners disagreeing at
-the same u start a new chain.  A chain is therefore one island's continuous
-polyline along the rail, and sampling the chain of the matched source face keeps
-neighbouring rebuilt faces in agreement at every shared vertex while an island
-boundary still cuts them apart.  This splits on *every* stored value, which is a wider
-set of edges than the one :mod:`.seams` cuts the band on: a disagreement has to reach
-the geometry by way of a mark the user drew or a UV that parts, while a corner that
-differs only in color changes nothing about where vertices go and everything about what
-they inherit.  So this decides which island a corner reads from, and which copy of a
-painted color a face keeps; :func:`island_boundary_edges` decides, out of the UV layers
-alone, where a rebuilt vertex has to stand.  Corner vertex colors -- both the byte and
-the float layer Blender exposes -- travel the same chains and share the
-split-when-corners-disagree rule, so a color change is preserved even where it coincides
-with a UV seam; only UV layers are treated as periodic.
+A rebuilt face is matched to the source face that held the same place along the
+region and inherits its material and shading.  UVs travel on per-rail chains:
+one rail's source corners sorted by u, where corners disagreeing at the same u
+start a new chain.  A chain is one island's continuous polyline along the rail,
+so sampling the matched source face's chain keeps neighbouring rebuilt faces in
+agreement at shared vertices while an island boundary still cuts them apart.
+Chains split on every stored value, a wider edge set than seams cuts the band
+on: a disagreement reaches the geometry only through a mark the user drew or a
+UV that parts, while a corner differing only in color changes nothing about
+where vertices go and everything about what they inherit.  Corner colors, byte
+and float layers alike, travel the same chains and split the same way, so a
+color change survives where it coincides with a UV seam; only UV layers are
+treated as periodic.  Only two v values ever occur, 0 on the inner rail and 1
+on the outer, so sampling a face reduces to interpolating along its corner's
+rail.
 
-Only two v values ever occur -- 0 on the inner rail, 1 on the outer rail -- so
-sampling a face reduces to interpolating along the rail the corner belongs to.
+One case interpolation cannot answer: a rail vertex whose stored values
+disagree keeps two corners at one u, and closing the ring stitches both into
+the same chain, so the chain, a function of u, has to pick one.  It always
+picks the copy reached from below, right for the face ending there and a whole
+island away from the face starting there, which would read a chord across the
+map.  So a corner on such a vertex takes the value the matched source face
+stores there, the copy its own island keeps; see _tied_corner.  A tie only
+colors disagree on resolves by the same lookup and costs nothing but the read:
+both copies carry one UV, and the face gets its own color either way.
 
-One case interpolation cannot answer: a rail vertex the stored values disagree at keeps
-*two* corners at one u, and closing the ring stitches both into the same chain,
-so the chain is a function of u that has to pick one.  It always picks the one reached
-from below, which is right for the face ending there and a whole island away from the
-face starting there -- that face reads a chord across the map.  So a corner standing on
-such a vertex takes the value the matched source face stores there, which is the copy
-its own island has; see :func:`_tied_corner`.  A tie that only colors disagree is
-resolved by the same lookup, and costs nothing but the read: both copies carry one UV,
-and the face gets its own color either way.
-
-A boundary with no seam mark on it used to be unanswerable, because no rebuilt vertex
-stood there at all.  :func:`island_boundary_edges` now hands those to :mod:`.seams`,
-which puts a vertex on one just as it does on a marked one, and :func:`_tied_corner`
-then reads the copy the pinned vertex's own island stores.  What is left unsaid is a
-boundary no crossing reaches -- reported to the user, because the transfer can move a
-vertex onto a cut but only a cut that crosses the band tells it where to put one.
+A boundary with no seam mark used to be unanswerable: no rebuilt vertex stood
+there.  island_boundary_edges now hands those to seams, which pins a vertex on
+one as on a marked one.  A boundary no crossing reaches is reported to the
+user: the transfer can move a vertex onto a cut, but only a cut crossing the
+band says where to put one.
 """
 
 import time
@@ -55,41 +50,37 @@ from .regions import region_rails
 
 _UV_MERGE_DECIMALS = 6
 
-# How close to a source rail vertex a rebuilt corner has to be before it counts as
-# standing on that vertex.  A pinned corner is the same coordinate to within projection
-# noise; a corner the sampler moved is somewhere the source never was, and a wider net
-# here would hand it a stored value that belongs to its neighbour.
+# A pinned corner sits on its source rail vertex to within projection noise; a corner
+# the sampler moved is somewhere the source never was, and a wider net would hand it a
+# neighbour's stored value.
 _TIED_CORNER_TOLERANCE = 1e-6
 
-# Knots closer than this along a rail are the same position, so a query landing on them is
-# choosing between copies of one point rather than interpolating between two points.
+# Knots closer than this along a rail are one position, so a query landing on them
+# chooses between copies of a point rather than interpolating.
 _CUT_KNOT_TOLERANCE = 1e-9
 
-# Where the things a step asks for hundreds of times but never changes wait between
-# the asks: one source face's footprint split at the seam (along each rail), one
-# chain's knots with the wrap-around copy appended, and which two ends of the island a
-# chain's cut column separates.  All hang off dicts the capture built
-# once and writes never again, and ``_freeze_region`` hands ``source_faces`` to the next
-# step as it stands, so the same objects -- and what is cached on them -- ride out the
-# whole session.
+# Caches on dicts the capture builds once and never writes again: a source face's
+# footprint split at the seam per rail, a chain's knots with the wrap-around copy
+# appended, the two island ends a chain's cut column separates.  ``_freeze_region`` hands
+# ``source_faces`` to the next step as it stands, so the same objects and their caches
+# ride out the session.
 _RECORD_ARCS = "arcs"
 _RECORD_OUTER_ARCS = "outer_arcs"
 _CHAIN_POINTS = "points"
 _CHAIN_KNOT_US = "us"
 _CHAIN_CUT = "cut_ends"
 
-# The [uvdiag] block in ``diagnostics``: it collects the votes and per-face probes the
-# transfer itself never reads, so its out-parameters are read by nothing that decides a
-# UV -- flipping this cannot change a value, only what the console hears.  Set True, with
-# ``diagnostics.DIAGNOSTICS``, to bring the lines back.
+# The [uvdiag] block in ``diagnostics`` collects the votes and per-face probes that
+# nothing deciding a UV reads, so flipping this cannot change a value, only what the
+# console hears.  Set True, with ``diagnostics.DIAGNOSTICS``, to bring the lines back.
 DIAGNOSE_UV = True
 
 
 def _corner_layers(bm):
-    """Every per-corner value this pipeline carries, keyed by ``(kind, name)``.
+    """Every per-corner value the pipeline carries, keyed by ``(kind, name)``.
 
-    A corner color is a 4-component Vector in BMesh and is assigned directly to
-    the layer, unlike a UV, which is a struct with a ``.uv`` field.
+    A corner color is a 4-component Vector assigned directly to the layer; a UV
+    is a struct with a ``.uv`` field.
     """
     layers = {}
     for layer in bm.loops.layers.uv:
@@ -104,13 +95,12 @@ def _corner_layers(bm):
 
 
 def _uv_corner_layers(bm):
-    """The corner values that decide where the band is cut open, which are its UVs.
+    """The UV subset of ``_corner_layers``: only UVs decide where the band is cut open.
 
-    :func:`_corner_layers` hands back these plus the color layers, and the transfer
-    needs the whole set, because a painted corner that disagrees with its neighbour is
-    still a value a rebuilt face has to inherit from one copy or the other.  Whether a
-    disagreement is worth a *vertex* is a different question, and only two answers count:
-    a mark the user drew, and a UV that parts.  A color alone says nothing about islands.
+    The transfer needs the whole set, because a painted corner that disagrees
+    with its neighbour is still a value a rebuilt face has to inherit from one
+    copy or the other.  Whether a disagreement is worth a *vertex* has only two
+    answers: a mark the user drew, and a UV that parts.
     """
     return {
         key: layer for key, layer in _corner_layers(bm).items() if key[0] == "uv"
@@ -118,12 +108,12 @@ def _uv_corner_layers(bm):
 
 
 def corner_signature(values):
-    """The per-corner values of one loop, cut to the step every comparison rounds to.
+    """The per-corner values of one loop, rounded to the step every comparison uses.
 
-    Both halves of the island test read this: :class:`._RailBuilder` keys a rail corner
-    by the whole set, and :func:`island_boundary_edges` compares the two faces of an edge
-    by its UV entries only.  One definition of the rounding is what makes "these corners
-    differ" mean the same thing in each.
+    ``_RailBuilder`` keys a rail corner by the whole set and
+    ``island_boundary_edges`` compares an edge's two faces by its UV entries
+    only; one definition of the rounding is what makes "these corners differ"
+    mean the same thing in both.
     """
     return tuple(
         (
@@ -135,11 +125,7 @@ def corner_signature(values):
 
 
 def _loop_values(loop, layers):
-    """Every corner value one loop stores, in the shape :func:`corner_signature` wants.
-
-    A corner color is a Vector BMesh hands back directly; a UV is a struct with a
-    ``.uv`` field.
-    """
+    """Every corner value one loop stores, in the shape ``corner_signature`` wants."""
     values = {}
     for key, (kind, layer) in layers.items():
         values[key] = loop[layer].uv if kind == "uv" else loop[layer]
@@ -149,22 +135,20 @@ def _loop_values(loop, layers):
 def island_boundary_edges(edges, bm):
     """Edges whose two faces store different UVs for the same vertex.
 
-    The red line is what a user thinks of as a seam, but what the transfer reads is the
-    stored corners, and the two disagree on any mesh whose seams were never marked --
-    or were marked somewhere else.  A rebuilt face is handed one source face's corner
-    values, so wherever the two faces over one edge disagree, a face that covers both
-    sides reads a chord across the map.  :mod:`.seams` therefore asks for these next to
-    the marked ones: same test, same rounding, so a boundary this cannot see is one the
-    chain splitting cannot see either.
+    The marked seam and the stored corners disagree on any mesh whose seams were
+    never marked or were marked somewhere else, and the transfer reads the
+    corners.  A rebuilt face is handed one source face's corner values, so a
+    face covering both sides of a disagreement reads a chord across the map;
+    ``seams`` therefore asks for these next to the marked ones, same test and
+    same rounding, so a boundary this cannot see the chain splitting cannot see
+    either.
 
-    The test is the UVs alone.  A corner color that disagrees across an edge splits a
-    chain, and the face on each side keeps its own color -- but no island parts there,
-    no face straddles a texture map, and the user never drew a line, so it buys a pinned
-    vertex and the extra face a loan for it costs.
+    UVs alone.  A color that disagrees across an edge splits a chain and each
+    side keeps its own color, but no island parts and the user drew no line, so
+    a pinned vertex there buys nothing and costs the extra faces around it.
 
-    An edge with a face on only one side, or on more than two, has no pair to compare
-    and is not a boundary.  With no UV layer at all nothing disagrees, which is the
-    common case: a mesh without a UV map gains no boundary here and no pinning.
+    With no UV layer nothing disagrees: a mesh without a UV map, the common
+    case, gains no boundary here and no pinning.
     """
     layers = _uv_corner_layers(bm)
     if not layers:
@@ -196,8 +180,8 @@ def island_boundary_edges(edges, bm):
 def capture_region_faces(bm, region, paths):
     """Record every source face as shading plus the region's two rail chains.
 
-    A face with no corner on the inner rail -- an outer row of a region deeper
-    than one quad -- is left out: the rebuild collapses such rows into a single
+    A face with no corner on the inner rail (an outer row of a region deeper
+    than one quad) is left out: the rebuild collapses such rows into a single
     ladder, so only the inner row has a counterpart to hand its corners to.
     """
     frames = region["frames"]
@@ -213,10 +197,9 @@ def capture_region_faces(bm, region, paths):
     pole_uv = None
     active_uv = bm.loops.layers.uv.active
     if is_fan and pole_vertex and active_uv is not None:
-        # Find the UV of the pole vertex from any source face that contains it.
-        # The pole sits at the center of all its triangles in UV space.  A mesh that has
-        # never been unwrapped has no active layer at all, and then there is no pole UV to
-        # carry -- the transfer below already reads that as "skip the UV corner".
+        # The pole sits at the center of all its triangles in UV space, so any source
+        # face containing it gives its UV.  A mesh never unwrapped has no active layer
+        # and no pole UV to carry; the transfer below reads that as "skip the UV corner".
         for face in region["faces"]:
             if not face.is_valid:
                 continue
@@ -269,10 +252,10 @@ def capture_region_faces(bm, region, paths):
             continue
         start, end = _u_span(inner_us, closed)
         center = _u_center(start, end, closed)
-        # Where this face sits along the rail the vote does not read, taken before the
-        # centre fills in the corners that stand on neither rail.  Kept because the inner
-        # rail is not always the one holding the answer: a face the inner vote cannot
-        # separate is placed by this instead -- see :func:`_match_face`.
+        # The face's place along the rail the vote does not read, taken before the centre
+        # fills in the corners on neither rail.  The inner rail does not always hold the
+        # answer: a face the inner vote cannot separate is placed by this instead; see
+        # _match_face.
         outer_us = [
             corner["u"]
             for corner in corners
@@ -301,7 +284,6 @@ def capture_region_faces(bm, region, paths):
                 if edge.verts[0] in by_vertex and edge.verts[1] in by_vertex
             ]
             chains[rail] = builders[rail].add(list(by_vertex.values()), pairs)
-        # Store pole UV in record for special handling during apply
         record_pole_uv = pole_uv
         records.append(
             {
@@ -327,8 +309,8 @@ def capture_region_faces(bm, region, paths):
         chain_list, index = builder.chains()
         rails.append(chain_list)
         indices.append(index)
-    # Only now that every face is in can a rail say which of its u values carry more
-    # than one corner, so the faces keep their raw corners until this point.
+    # Only once every face is in can a rail say which u values carry more than one
+    # corner, so the records keep their raw corners until here.
     doubled = [builder.doubled_parameters() for builder in builders]
     for order, record in enumerate(records):
         chains = {}
@@ -345,8 +327,8 @@ def capture_region_faces(bm, region, paths):
             if position[1] in doubled[position[0]]
         }
         if DIAGNOSE_UV:
-            # The position in the list the vote walks, which is the order that used to
-            # break a tie; the dump names candidates by it.
+            # The order the vote walks, which used to break ties; the dump names
+            # candidates by it.
             record["diag_id"] = order
     unmarked_cuts = _unmarked_boundaries(
         region,
@@ -367,8 +349,8 @@ def capture_region_faces(bm, region, paths):
         "records": records,
         "rails": rails,
         "periodic": _periodic_layers(bounds, closed),
-        # Where an island boundary leaves the band on no rebuilt vertex, which the
-        # transfer cannot repair and the user can; see :func:`_unmarked_boundaries`.
+        # Island boundaries leaving the band on no rebuilt vertex: the transfer cannot
+        # repair these, the user can; see _unmarked_boundaries.
         "unmarked_cuts": unmarked_cuts,
     }
 
@@ -378,18 +360,18 @@ def _unmarked_boundaries(
 ):
     """Rail vertices an island boundary splits that no crossing was built on.
 
-    A rebuilt vertex on the cut is what makes the corner answerable, and only a crossing
-    puts one there -- :mod:`.seams` now reads one off a mark or off a parted UV, so a cut
-    neither reaches is the one a face still has to cover both islands at once.  No choice
-    of corner values makes that face small, so it is drawn as a chord across the map, and
-    this is what the closing note counts.
+    Only a crossing puts a rebuilt vertex on the cut, and ``seams`` now reads
+    crossings off a mark or a parted UV, so a cut neither reaches leaves a face
+    covering both islands at once, drawn as a chord across the map that no
+    choice of corner values makes smaller.  The closing note counts those.
 
-    The set handed in is the UV one and not the wider :meth:`_RailBuilder.doubled_parameters`,
-    because the note's entire advice is "mark a seam here": a u that doubles only on a
-    painted color already transfers every corner its own face stores, has no boundary a
-    mark could line up, and would be reported as a defect the user has no way to fix.
-    Which boundaries are split still comes from the stored values, and only to decide
-    *what to say*: this reaches no waypoint, no anchor and no vertex position.
+    The set handed in is the UV one, not the wider ``doubled_parameters``,
+    because the note's advice is "mark a seam here".  A u doubling only on a
+    painted color already transfers every corner its own face stores, has no
+    boundary a mark could line up with, and would be reported as a defect the
+    user cannot fix.  Which boundaries split still comes from the stored values,
+    and only to decide what to say: this reaches no waypoint, no anchor and no
+    vertex position.
     """
     marked = {
         vertex
@@ -404,8 +386,8 @@ def _unmarked_boundaries(
             (inner_vertices, crossing["inner_index"]),
             (outer_vertices, crossing["outer_index"]),
         ):
-            # A fan's pole is a rail to :mod:`.seams` and not to this capture, which
-            # reads its corners off the two vertex rails only.
+            # A fan's pole is a rail to ``seams`` but not to this capture, which reads
+            # corners off the two vertex rails only.
             if index < len(vertices):
                 marked.add(vertices[index])
     cuts = []
@@ -432,9 +414,9 @@ class _RailBuilder:
     """One rail's source corners, merged into continuous per-island chains.
 
     Corners sharing a u and a UV value become one knot; every source face edge
-    along the rail stitches two knots together.  A corner whose UV disagrees with
-    its neighbour's therefore splits into two knots that nothing stitches, which is
-    what keeps islands apart.
+    along the rail stitches two knots together, so a corner whose UV disagrees
+    with its neighbour's splits into two knots nothing stitches, which is what
+    keeps islands apart.
     """
 
     def __init__(self, closed):
@@ -486,10 +468,10 @@ class _RailBuilder:
     def doubled_parameters(self):
         """The u values this rail holds more than one corner at.
 
-        That is where a stored value has to be chosen rather than interpolated: one mesh
-        vertex, two corners, and a chain -- which is a function of u -- can only answer
-        one of them.  Every source face that stands on such a vertex is asked which copy
-        is its own; see :func:`_tied_corner`.
+        There a stored value has to be chosen rather than interpolated: one
+        vertex, two corners, and a chain (a function of u) answers only one.
+        Every source face on such a vertex is asked which copy is its own; see
+        _tied_corner.
         """
         seen = set()
         doubled = set()
@@ -502,11 +484,11 @@ class _RailBuilder:
     def uv_doubled_parameters(self):
         """The u values this rail holds more than one *UV* at.
 
-        :meth:`doubled_parameters` is the wider set: two corners that differ only in
-        color are two knots, so they double a u here too, yet no island parts there and
-        no crossing was ever asked to pin one.  Only this narrower answer can back the
-        closing note's promise that a face at the position it names reads a chord across
-        the texture map.
+        ``doubled_parameters`` is wider: corners differing only in color are two
+        knots and double a u there, yet no island parts and no crossing was
+        asked to pin one.  Only this narrower answer backs the closing note's
+        claim that a face at the position it names reads a chord across the
+        texture map.
         """
         first = {}
         doubled = set()
@@ -546,7 +528,7 @@ class _RailBuilder:
 def _periodic_layers(bounds, closed):
     """Layers that fit inside one texture tile, so a wrap means exactly +/-1.
 
-    A layer spread over several tiles is an atlas offset; its period is unknown,
+    A layer spread over several tiles is an atlas offset; its period is unknown
     and guessing there would shift corners by a whole tile.
     """
     if not closed:
@@ -576,7 +558,7 @@ def apply_region_faces(
                 region,
                 f"no-source-records source_faces={len(region.get('faces') or ())}",
             )
-        # Rebuild already stamped the region defaults, and there is nothing to
+        # Rebuild already stamped the region defaults and there is nothing to
         # interpolate from.
         return
     closed = bool(captured.get("closed"))
@@ -595,7 +577,7 @@ def apply_region_faces(
     uv_layer = bm.loops.layers.uv.active if DIAGNOSE_UV else None
     if DIAGNOSE_UV and records and "diag_id" in records[0]:
         # A mesh with no active UV layer still has corner values to dump; only the UV
-        # column of the line has nothing to name.
+        # column has nothing to name.
         uv_key = ("uv", uv_layer.name) if uv_layer is not None else None
         print_uv_records(region, records, rails, uv_key)
     rows = []
@@ -639,7 +621,7 @@ def apply_region_faces(
         record_pole_uv = record.get("pole_uv")
         probes = [] if DIAGNOSE_UV else None
         for loop, rail, u, corner_index in corners:
-            # Skip pole vertices - handled separately below
+            # Pole vertices are handled below.
             if rail == -1:
                 continue
             chain_index = chains.get(rail)
@@ -675,7 +657,6 @@ def apply_region_faces(
                     loop[layer].uv = value
                 else:
                     loop[layer] = value
-        # Handle pole vertices for FAN regions
         if is_fan and record_pole_uv is not None:
             for loop in face.loops:
                 if loop.vert is pole_vertex:
@@ -742,8 +723,8 @@ def apply_region_faces(
 def _crosses_seam(start, end, crossings, closed):
     """Whether any captured seam crossing falls inside a face's matched footprint.
 
-    A crossing sits on a column boundary, so this flags the faces on both sides of
-    it -- the neighborhood where a wrong island can be sampled from.
+    A crossing sits on a column boundary, so this flags the faces on both sides
+    of it, the neighborhood where a wrong island can be sampled from.
     """
     return any(
         _arc_contains(start, end, crossing["inner_u"], closed)
@@ -762,12 +743,11 @@ def _arc_contains(start, end, value, closed):
 def _island_reaches(record, corner_us, rails):
     """Whether one source face's island can supply every corner a rebuilt face has.
 
-    A rebuilt face sits inside a single island, and a source face names that island
-    with one chain per rail -- the pair of them, never either one on its own.  When
-    either chain cannot reach the corners this face has on its rail, the face is not in
-    that island, and taking it anyway clamps a corner onto a knot that is not its own:
-    both rails losing the same way collapses the face to a line along the seam, and
-    only one of them losing stretches a wire across the UV map to the other island.
+    A rebuilt face sits inside a single island, named by the pair of chains, one
+    per rail, never either alone.  Taking a record whose chain cannot reach a
+    corner clamps that corner onto a knot that is not its own: both rails losing
+    the same way collapses the face to a line along the seam, one rail losing
+    stretches a wire across the UV map to the other island.
     """
     chains = record["chains"]
     for rail, us in enumerate(corner_us):
@@ -783,12 +763,12 @@ def _island_reaches(record, corner_us, rails):
 def _match_island(records, start, end, closed, corner_us, rails):
     """The source face on the island a rebuilt face actually sits in.
 
-    Only consulted once the overlap vote has been rejected.  A triangle step has a
-    single inner corner, so its inner span is a point that overlaps nothing and the
-    vote falls back to the outer coverage and the nearest centre -- which can still
-    land across the seam and hand back the neighbouring island's corner set.  Overlap
-    still ranks the candidates, so a face that does cover a source face keeps
-    following that one.
+    Only consulted once the overlap vote has been rejected.  A triangle step has
+    a single inner corner, so its inner span is a point that overlaps nothing
+    and the vote falls back to the outer coverage and the nearest centre, which
+    can still land across the seam and hand back the neighbouring island's
+    corner set.  Overlap still ranks, so a face that does cover a source face
+    keeps following that one.
     """
     span = _arc_pieces(start, end, closed)
     center = _u_center(start, end, closed)
@@ -811,10 +791,9 @@ def _chain_reaches(chain, u):
     if len(knots) == 1:
         return abs(u - low) <= 1e-9
     if chain["closed"]:
-        # The chain wraps through 0/1: its arc runs from its first knot to that knot
-        # plus one, and a u below the start is read one turn later, as _sample_chain
-        # does it.  Judging it against the last knot instead would call it reachable
-        # in the wrong direction.
+        # The chain wraps through 0/1: its arc runs from the first knot to that knot plus
+        # one, and a u below the start is read one turn later, as _sample_chain does it.
+        # Judging against the last knot would call it reachable in the wrong direction.
         high = low + 1.0
         if u < low:
             u += 1.0
@@ -824,14 +803,14 @@ def _chain_reaches(chain, u):
 def _diag_votes(records, spans, closed):
     """The best and second-best source face along each rail, ranked as the real vote ranks.
 
-    The vote reads the inner rail first and the outer one only when the inner cannot
-    separate the candidates, so ranking the same candidates by each rail on its own shows
-    the case that hides inside those lines: a rebuilt face whose two rails point at
-    different source faces is reading both sides of the island's cut at once, and that is
-    what draws a face as a chord across its own island.  When a rail's corners all stand at
-    one u -- the face a triangle step left behind -- no overlap is won at all and the
-    choice falls through to the outer coverage and the nearest centre, so ``centre`` ranks
-    those same candidates by that distance too.
+    The vote reads the inner rail first and the outer only when the inner cannot
+    separate the candidates, so per-rail rankings expose what those lines hide:
+    a rebuilt face whose two rails point at different source faces is reading
+    both sides of the island's cut at once, and that draws a face as a chord
+    across its own island.  When a rail's corners all stand at one u (the face a
+    triangle step left behind), no overlap is won and the choice falls through
+    to the outer coverage and the nearest centre, so ``centre`` ranks those same
+    candidates by that distance too.
     """
     if not records or "diag_id" not in records[0]:
         return None
@@ -857,14 +836,14 @@ def _diag_votes(records, spans, closed):
         entry = {
             "ranked": pairs[:2],
             "ties": sum(1 for _, overlap in pairs if overlap == pairs[0][1]),
-            # How much the winner won by.  Two candidates can print the same overlap and
-            # still be ranked, so this is what says whether the choice was a decision or a
-            # coin flip that the record order settled.
+            # How much the winner won by: two candidates can print the same overlap and
+            # still be ranked, so this says whether the choice was a decision or a coin
+            # flip the record order settled.
             "gap": pairs[0][1] - pairs[min(1, len(pairs) - 1)][1],
         }
         if rail == 0 and pairs[0][1] <= 0.0:
-            # Nothing was covered on this rail, so the vote went to the outer coverage and
-            # the centre distance; rank those same candidates by the distance it uses too.
+            # Nothing was covered on this rail, so the vote went to the outer coverage
+            # and the centre distance; rank those same candidates by it too.
             centre = sorted(
                 (
                     (
@@ -884,31 +863,34 @@ def _diag_votes(records, spans, closed):
 _MATCH_TIE_TOLERANCE = 1e-12
 """How close two inner overlaps have to be to count as the same answer.
 
-Evenly spaced rails make this common: a rebuilt face straddling two source columns
-covers each of them by the same width, and the two overlaps come out equal to within a
-float.  ``1e-12`` sits nine orders below the smallest real column on a 200-segment band
-and four above the noise those columns produce, so it calls a coin flip a coin flip
-without merging a decision.
+Evenly spaced rails make this common: a rebuilt face straddling two source
+columns covers each by the same width and the two overlaps come out equal to
+within a float.  1e-12 sits nine orders below the smallest real column on a
+200-segment band and four above the noise those columns produce, so it flags a
+coin flip without merging a decision.
 """
 
 
 def _match_face(records, start, end, closed, probe=None, outer=None):
     """The source face the rebuilt face mostly covers along the region.
 
-    Once counts change, a rebuilt face can straddle a material or shading boundary, and a
-    centre-only vote flips the whole face to whichever side the centre happens to land on;
-    the overlap majority follows the source face the new face actually covers most of.
+    Once counts change, a rebuilt face can straddle a material or shading
+    boundary; a centre-only vote flips the whole face to whichever side the
+    centre lands on, while the overlap majority follows the source face
+    actually covered most.
 
-    The inner overlap on its own is not always a decision, and when it is not the answer
-    used to come from whichever candidate the walk reached first -- an order that changes
-    between Blender sessions, and the wrong side of an island's cut.  So every source face
-    within :data:`_MATCH_TIE_TOLERANCE` of the best is kept and re-ranked: the outer rail's
-    coverage first, because that is the rail the corner values are read from as well; then
-    the nearest centre, the rule a degenerate inner span always needed; then the source
-    face index, which settles the last exact tie the same way every time.
+    The inner overlap alone is not always a decision.  When it is not, the
+    answer used to come from whichever candidate the walk reached first, an
+    order that changes between Blender sessions and can be the wrong side of an
+    island's cut.  So every source face within _MATCH_TIE_TOLERANCE of the best
+    is kept and re-ranked: outer coverage first (the rail corner values are read
+    from too), then nearest centre (the rule a degenerate inner span always
+    needed), then the source face index, which settles an exact tie the same way
+    every time.
 
-    ``probe`` is the UV diagnostic's dict: it learns whether the vote was won
-    outright, how many source faces tied for it, and which rule settled it.
+    ``probe`` is the UV diagnostic's dict, read by nothing else: it learns
+    whether the vote was won outright, how many source faces tied for it, and
+    which rule settled it.
     """
     started = time.perf_counter()
     span = _arc_pieces(start, end, closed)
@@ -970,10 +952,10 @@ def _arc_pieces(start, end, closed):
 def _record_arcs(record, closed):
     """A source face's footprint along the rail, split at the seam once per session.
 
-    Every rebuilt face asks every source face for this, so a band of 200 faces over 100
-    source faces asks 20,000 times for 100 answers.  ``closed`` comes off the same
-    capture the record does, which is the only reason one key is enough: a record cannot
-    be reached with a different ``closed`` than the one its footprint was split under.
+    Every rebuilt face asks every source face for this, thousands of times a
+    step for a few hundred answers.  ``closed`` comes off the same capture the
+    record does, so one key is enough: a record is never reached under a
+    different ``closed`` than its footprint was split with.
     """
     arcs = record.get(_RECORD_ARCS)
     if arcs is None:
@@ -1009,12 +991,11 @@ def _arc_overlap(first, second):
 def _tied_corner(record, rail, u, closed):
     """What the matched source face stores on this rail vertex, if it stores anything.
 
-    Only corners standing on a doubled u are answered here, and ``u`` comes off the
-    rebuilt rail, so it is matched by distance: inside the tolerance the two are the
-    same vertex, and outside it the corner sits where the source never was, where
-    interpolating is the only answer there is.  Asking the face this one was matched
-    to -- rather than the chain -- is what makes the answer come out as the copy this
-    face's own island keeps there.
+    Only corners on a doubled u are answered here, and ``u`` comes off the
+    rebuilt rail, so it is matched by distance: inside the tolerance the two are
+    the same vertex; outside it the corner sits where the source never was and
+    interpolating is the only answer.  Asking the matched face rather than the
+    chain is what returns the copy this face's own island keeps there.
     """
     tied = record["tied"]
     if not tied:
@@ -1033,15 +1014,16 @@ def _tied_corner(record, rail, u, closed):
 def _chain_cut(chain):
     """The two ends of the island a chain's cut column separates, worked out once.
 
-    Where the rail walk arrives at one uv and leaves from another, the chain holds that one
-    u twice -- and the walk can cross the seam anywhere along the rail, not just at the
-    chain's lowest u.  Sorting cannot say which copy starts the island and which ends it --
-    both sit at the same u -- so the island is asked: the copy lying nearer the knot the
-    chain moves on to starts it, the copy nearer the knot the chain comes back to ends it.
-    A cut column sits a whole island's width from its own far end, so neither is a close
-    call, and should a chain hold several such columns the one whose copies lie farthest
-    apart is the one that separates the island.  None means there is nothing to route: no
-    column is held twice, or a chain too short to have a side to come back to.
+    Where the rail walk arrives at one uv and leaves from another, the chain
+    holds that u twice, and the walk can cross the seam anywhere along the rail,
+    not only at the chain's lowest u.  Sorting cannot say which copy starts the
+    island and which ends it (both sit at the same u), so the island is asked:
+    the copy nearer the knot the chain moves on to starts it, the copy nearer
+    the knot the chain comes back to ends it.  Neither is a close call, a cut
+    column sitting a whole island's width from its own far end; of several such
+    columns in one chain, the pair farthest apart separates the island.  None
+    means nothing to route: no column held twice, or a chain too short to have a
+    side to come back to.
     """
     if _CHAIN_CUT not in chain:
         knots = chain["knots"]
@@ -1056,8 +1038,8 @@ def _chain_cut(chain):
         for index, column in enumerate(columns):
             if len(column) < 2 or len(knots) - len(column) < 2:
                 continue
-            # The walk leaves the cut for the next column up the rail and comes back to it
-            # from the column below -- and a cut with no column below is met one turn on,
+            # The walk leaves the cut for the next column up the rail and comes back to
+            # it from the column below; a cut with no column below is met one turn on,
             # from the chain's last knot.
             ahead = columns[(index + 1) % len(columns)][0]
             behind = columns[index - 1][-1]
@@ -1075,18 +1057,17 @@ def _chain_cut(chain):
 def _chain_points(chain):
     """A chain's knots, with the wrap-around copy a closed rail needs already on the end.
 
-    A chain that runs all the way around a closed rail continues from its last knot into
-    its first across u=1, and saying so costs a fresh list of every knot on the chain --
-    once per sampled corner, which is several hundred times a step for a list that was
-    settled when the capture finished.
+    A closed rail's chain continues from its last knot into its first across
+    u=1; building that per sample would cost a fresh list several hundred times
+    a step for one settled when the capture finished.
 
-    At the island's own cut the chain holds two copies of one u, and continuing from the
-    first would jump across the island to where the walk started.  So the chain is turned to
-    start at the cut instead: one copy stays at the front, every knot from the cut up the
-    rail keeps its u, every knot below the cut -- which the walk reaches only after coming
-    around the rail's origin -- takes a whole turn, and the far copy closes the list one turn
-    on.  That is the order the island is really walked in, and a cut at the lowest u is the
-    case where the batch below it is empty.
+    At the island's own cut the chain holds two copies of one u, and continuing
+    from the first would jump across the island to where the walk started.  So
+    the chain starts at the cut instead: one copy stays at the front, knots
+    above the cut keep their u, knots below it (reached only after the walk
+    comes around the rail's origin) take a whole turn, and the far copy closes
+    the list one turn on.  That is the order the island is really walked in; a
+    cut at the lowest u leaves the batch below it empty.
     """
     points = chain.get(_CHAIN_POINTS)
     if points is None:
@@ -1116,13 +1097,13 @@ def _chain_points(chain):
 
 
 def _chain_knot_us(chain):
-    """The knot positions of :func:`_chain_points`, ascending.
+    """The knot positions of ``_chain_points``, ascending.
 
-    Ascending is what lets one jump replace the walk from the front.  It holds because
-    ``_RailBuilder.chains`` sorted the knots and every u is a position along the rail: a
-    routed chain starts at the cut, keeps the u of everything above it and adds a whole turn
-    to everything below, and rail us never reach past one turn -- so the batch below the cut
-    lands between the last knot above it and the far copy closing the list.
+    Ascending is what lets one jump replace the walk from the front.  It holds
+    because ``_RailBuilder.chains`` sorted the knots and routing only adds a
+    whole turn to the batch below the cut; rail us never pass one turn, so that
+    batch lands between the last knot above the cut and the far copy closing the
+    list.
     """
     us = chain.get(_CHAIN_KNOT_US)
     if us is None:
@@ -1134,9 +1115,9 @@ def _chain_knot_us(chain):
 def _corner_side(rail_us, u, closed):
     """Which way a face's other corners on this rail lie from ``u``: +1 ahead, -1 behind.
 
-    A rebuilt face never covers half the loop, so its corners are either all one way from
-    the cut or all the other.  Mixed, or nothing to compare against, is answered 0 because
-    there is no side to read the cut from.
+    A rebuilt face never covers half the loop, so its corners are either all one
+    way from the cut or all the other.  Mixed, or nothing to compare against, is
+    answered 0: there is no side to read the cut from.
     """
     ahead = False
     behind = False
@@ -1169,11 +1150,11 @@ def _uv_distance(first, second):
 def _sample_chain(chain, u, periodic, probe=None, rail_us=()):
     """Interpolate one island's rail polyline at u, as {layer name: Vector}.
 
-    ``probe`` is the UV diagnostic's list: one entry per sample recording
-    the u asked for, the u window the chain actually covers, and whether the
-    answer had to be clamped to an end knot.  ``rail_us`` are the other corners
-    of the face being read, on this rail: a cut column has two copies and they
-    say which copy this face stands on.
+    ``probe`` is the UV diagnostic's list, read by nothing else: one entry per
+    sample giving the u asked for, the u window the chain covers, and whether
+    the answer had to be clamped to an end knot.  ``rail_us`` are the face's
+    other corners on this rail: a cut column has two copies and they say which
+    one this face stands on.
     """
     knots = chain["knots"]
     if len(knots) == 1:
@@ -1200,11 +1181,10 @@ def _sample_chain(chain, u, periodic, probe=None, rail_us=()):
         side = _corner_side(rail_us, u, chain["closed"])
         if side < 0:
             u += 1.0
-    # ``bisect_left`` counts the knots strictly below u, so one less is the knot the walk
-    # stopped on: the walk advanced exactly while u was past the *next* knot, which is the
-    # same as saying the knot at or below u is the last one it passed.  Both ends clamp --
-    # a u before the first knot has no segment ahead of it, and the walk could never reach
-    # past the last segment, which is the one a u beyond the end knot falls back on.
+    # ``bisect_left`` counts the knots strictly below u, so one less is the knot at or
+    # below u, the last one the walk passed.  Both ends clamp: a u before the first knot
+    # has no segment ahead of it, and a u past the end knot falls back on the last
+    # segment, the one the walk could never pass.
     index = bisect_left(_chain_knot_us(chain), u) - 1
     if index < 0:
         index = 0
@@ -1238,7 +1218,7 @@ def _lerp_value(first, second, factor, periodic):
 
     Colors (and multi-tile or open-chain UVs) lerp component-wise with no wrap.
     factor 0 returns ``first`` exactly via Vector.lerp, which is what a count
-    stepped down and back up relies on to land on the stored value bit-for-bit.
+    stepped down and back up relies on to land on the stored value bit for bit.
     """
     if factor >= 1.0:
         return second.copy()
@@ -1252,9 +1232,8 @@ def _lerp_uv(first, second, factor):
 
     A closed strip whose texture wraps stores something like 0.99 and 0.01 on
     the face crossing the seam, and a plain lerp sweeps back through 0.5.
-    Landing exactly on an endpoint still returns the stored value, so stepping a
-    count down and back up restores the source bit for bit.  ``_lerp_value``
-    already owns the non-wrapping case.
+    Landing exactly on an endpoint still returns the stored value.
+    ``_lerp_value`` owns the non-wrapping case.
     """
     if factor >= 1.0:
         return second.copy()

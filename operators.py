@@ -1,7 +1,6 @@
 """The edit-mode step engine of the Loop Resample adjust session.
 
-``ui/interactive.py``'s wheel operator is the only caller of every public name here; there is
-no operator class in this file any more.
+``ui/interactive.py``'s wheel operator is the only caller.
 """
 
 import time
@@ -45,26 +44,39 @@ from .core.diagnostics import (
 from .i18n import pgettext
 
 
-# The one sentence every refused step is wrapped in, and the one sentence the overlay strips
-# back off before drawing the reason.  Both halves read it through ``pgettext``, so the strip
-# still works once the message is in another language.
+# Wraps every refused step; the overlay strips it off before drawing the reason.  Both halves
+# read it through ``pgettext``, so the strip works in translation.
 FAILURE_PREFIX = "Loop Resample failed safely: "
 
-# Said once when a gesture ends, never once per step: an unmarked UV boundary is a fact
-# about the source mesh, and the wheel rebuilds that source dozens of times per gesture.
+# Said once when a gesture ends, never per step: an unmarked boundary is a fact about the
+# source mesh, and the wheel rebuilds that source dozens of times a gesture.
 UNMARKED_CUT_NOTE = (
     "No seam mark on {count} UV island boundary position(s), so one face there "
     "stretches across the UV map.  Mark Seam on those cuts to line them up."
 )
 
 
-def cut_notice(session):
-    """The sentence for UV island boundaries no seam mark runs through.
+def _failure_location(error):
+    """Where an exception died, as `` (file.py:line)``, or "" when there is no traceback.
 
-    ``.report`` takes one string, so this comes back with its own leading space rather
-    than as a second report -- two of those would compete for the same popup.  An empty
-    string is the common answer, and it leaves the caller's sentence exactly as long as
-    it was before this existed.
+    A refused step already carries its reason.  A crash gives back ``'NoneType' object has no
+    attribute 'co'``, and the notice is the only thing a user can screenshot, so the frame is
+    all there is to go on.
+    """
+    frame = error.__traceback__
+    while frame is not None and frame.tb_next is not None:
+        frame = frame.tb_next
+    if frame is None:
+        return ""
+    path = frame.tb_frame.f_code.co_filename.replace("\\", "/")
+    return f" ({path.rsplit('/', 1)[-1]}:{frame.tb_lineno})"
+
+
+def cut_notice(session):
+    """The sentence for UV island boundaries no seam mark runs through, or "".
+
+    ``.report`` takes one string, so this brings its own leading space rather than a second
+    report; two would compete for the same popup.
     """
     count = len(session.unmarked_cuts)
     if not count:
@@ -101,8 +113,8 @@ def _redraw(context):
 def _step_request(session, counts, shape):
     """What one step was asked for, as fields for the failure line.
 
-    Recorded before the capture as well as after it, so a raise that comes out of the
-    capture itself cannot be blamed on the region that was being rebuilt.
+    Recorded on both sides of the capture, so a raise out of the capture is not blamed on
+    the region being rebuilt.
     """
     return {
         "counts": ",".join(str(count) for count in counts),
@@ -117,9 +129,8 @@ def _step_request(session, counts, shape):
 def _region_scope(region, kind, inner_vertices, outer_vertices):
     """Which region a stage is working on, as fields for the failure line.
 
-    The step rebuilds every strip first and applies them after, so both passes need the
-    same identity and neither can inherit it from the other: a raise in the apply pass has
-    to name the region it was applying, not the one whose plan happened to be solved last.
+    The step rebuilds every strip before applying any, so a raise in the apply pass must name
+    the region it was applying, not the one whose plan was solved last.
     """
     return {
         "region": region.get("region_index"),
@@ -147,19 +158,16 @@ def _region_scope(region, kind, inner_vertices, outer_vertices):
 def apply_counts(context, session, counts, shape=None):
     """Resample every locked path to ``counts`` and write the result into the edit mesh.
 
-    Every step of a gesture comes through here.  ``(succeeded, message)`` comes back instead of
-    a report because the caller owns what the user hears: a scroll that fails at a count the
-    planner cannot solve must stay silent and leave the previous mesh standing.
-
-    ``shape`` is one step's moved control points and re-weighted measure, or None for a
-    step that only changed counts.
+    ``(succeeded, message)`` comes back rather than a report because the caller owns what the
+    user hears: a scroll that fails at a count the planner cannot solve stays silent and leaves
+    the previous mesh standing.  ``shape`` is one step's moved control points and re-weighted
+    measure, or None when only counts changed.
     """
     started = time.perf_counter()
     mesh = context.active_object.data
     if enabled():
         start_step(**_step_request(session, counts, shape))
-    # All planning happens on a detached copy of the locked source, so a
-    # failure leaves the live mesh exactly as it was.
+    # Planning happens on a detached copy of the locked source, so the live mesh is untouched.
     working_bm = session.open_bmesh()
     print_timing("open-bmesh", time.perf_counter() - started)
     try:
@@ -168,7 +176,7 @@ def apply_counts(context, session, counts, shape=None):
         working_bm.free()
         print_failure(time.perf_counter() - started)
         print_timing("operator-failed", time.perf_counter() - started)
-        return False, pgettext(FAILURE_PREFIX) + str(error)
+        return False, pgettext(FAILURE_PREFIX) + str(error) + _failure_location(error)
 
     try:
         _replace_edit_bmesh(mesh, bmesh.from_edit_mesh(mesh), working_bm)
@@ -185,15 +193,12 @@ def apply_counts(context, session, counts, shape=None):
 def restore_source(context, session, counts):
     """Put the locked source back over the edit mesh, exactly as it was found.
 
-    A cancel used to be one more step -- the entry counts with no shape -- and a step is a
-    re-solve, not a replay: measured on a ring whose bands are 8x8 and 8x12, every vertex
-    landed back on its source position and the counts matched, but 11 of the 20 rebuilt
-    faces had different corners.  The 8x12 band cannot be asked to come back at all,
-    because its source layout has faces the ladder is not allowed to write (one inner
-    corner against three outer ones), so no amount of tuning the search reaches it.
-
-    The pristine source is already held for every step, so cancel copies it back instead
-    of recomputing it.  ``counts`` is what the overlay should then read.
+    A cancel used to be a step at the entry counts with no shape, and a step re-solves rather
+    than replays: on a ring banded 8x8 and 8x12 every vertex landed back on its source position
+    and the counts matched, but 11 of the 20 rebuilt faces had different corners.  The 8x12 band
+    cannot come back at all, since its source has faces the ladder may not write (one inner
+    corner against three outer ones).  The pristine source is already held for every step, so
+    cancel copies it back; ``counts`` is what the overlay then reads.
     """
     started = time.perf_counter()
     mesh = context.active_object.data
@@ -219,12 +224,10 @@ def _resample(session, bm, counts, shape=None):
     paths = capture["paths"]
     synchronized_paths = capture["synchronized"]
     regions = capture["regions"]
-    # Where a UV island boundary leaves the band on no rebuilt vertex.  The transfer can
-    # hand a pinned vertex either copy of a split corner, but it cannot invent the vertex,
-    # and only a crossing puts one on the cut -- which a cut that never reaches the far
-    # rail does not get, marked or not.  So this comes back as a sentence at the end of the
-    # gesture, and it decides nothing about the mesh: the reading that does decide lives in
-    # :mod:`.seams`, and this counts what it was left out of.
+    # Where a UV island boundary leaves the band on no rebuilt vertex.  The transfer can hand a
+    # pinned vertex either copy of a split corner but cannot invent one, and only a crossing
+    # puts a vertex on the cut, so a cut that never reaches the far rail gets none, marked or
+    # not.  It decides nothing about the mesh; ``.seams`` holds the reading that does.
     session.unmarked_cuts = tuple(
         sorted(
             {
@@ -275,16 +278,14 @@ def _resample(session, bm, counts, shape=None):
             + " tEven={:.2f}".format(shape.t_even)
         )
     mark("samples")
-    # The landing table says which crossings the sampler could not pin.  The rung positions
-    # themselves still come out of the rails' parameters, which measure a rebuilt vertex in
-    # the source's own index frame -- but a refused pin leaves that search answering with
-    # the nearest sample, and only the table knows the difference.
+    # The landing table says which crossings the sampler could not pin.  Rung positions still
+    # come from the rails' parameters, but a refused pin leaves that search answering with the
+    # nearest sample; only the table knows.
     snapshots, path_landings = session.samples(counts, path_anchors, shape=shape)
 
-    # The copy arrived wearing the selection the session was locked with, and the capture
-    # was the last thing that read it.  Taking it off here, while its indices still name
-    # the elements they were taken from, costs as much as the user had selected; taking it
-    # off at the end used to cost a pass over every element in the mesh.
+    # The copy arrived wearing the lock-time selection and the capture was the last thing that
+    # read it.  Taking it off here, while its indices still name their elements, costs what the
+    # user had selected; at the end it cost a pass over every element in the mesh.
     deselect_started = time.perf_counter()
     session.clear_source_selection(bm)
     if enabled():
@@ -324,11 +325,9 @@ def _resample(session, bm, counts, shape=None):
             else region.get("outer_vertices")
         ) or ()
         has_ladder = kind not in {"FAN", "NGON_CAP"}
-        # A phase-locked region walks its outer rail in the source's own order, so
-        # there is no pairing choice to carry over and nothing a saved ladder could
-        # replay.  ``shape is None`` is the session's baseline step -- entered first
-        # and again on cancel -- and it always re-solves, which is what keeps a
-        # cancelled session landing on the mesh it started from.
+        # A phase-locked region walks its outer rail in the source's own order, so there is no
+        # pairing choice to carry over and nothing a saved ladder could replay.  A counts-only
+        # step (``shape is None``) always re-solves.
         ladders = (
             session.laddings
             if has_ladder and not region.get("phase_locked")
@@ -349,11 +348,10 @@ def _resample(session, bm, counts, shape=None):
             transitions="-" if frozen is None else len(frozen["transitions"]),
         )
         if has_ladder:
-            # A rung has to join the two rails walked in the same direction, so
-            # the choice is made once here and the seam's rung lookup, the corner
-            # transfer and the solve all read the outer rail in it.  A frozen ladder
-            # arrives with the order it was solved against, because its transitions
-            # index that order.
+            # A rung joins two rails walked the same way, so the order is chosen once here and
+            # the seam's rung lookup, the corner transfer and the solve all read the outer rail
+            # in it.  A frozen ladder brings the order it was solved against, since its
+            # transitions index that order.
             mark("outer-order")
             outer_vertices, decision = outer_boundary_order(
                 inner_vertices, outer_vertices, region, decision
@@ -377,10 +375,9 @@ def _resample(session, bm, counts, shape=None):
         )
         plan = None
         if has_ladder:
-            # The solve reads the two rails and nothing else: it takes no BMesh, so every
-            # strip can be settled before the first face of any of them exists, and a seam
-            # can be compared with the region on the far side of the same path before
-            # either side is applied.
+            # The solve reads the two rails and takes no BMesh, so every strip is settled
+            # before any face exists, and a seam can be compared with the region on the far
+            # side of the same path before either is applied.
             mark("plan")
             region_started = time.perf_counter()
             plan = build_ordered_strip_plan(

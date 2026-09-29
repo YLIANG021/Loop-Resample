@@ -37,9 +37,8 @@ def cleanup_detached_edges(bm, regions):
 def _shared_pole(faces):
     """The one vertex every face shares, when they are all triangles and one exists.
 
-    A chain that stops short of the ring around a pole leaves exactly this shape behind,
-    and the only thing a user can do about it is select the whole ring -- which is not
-    something the wording about strips of faces would ever suggest.
+    A chain that stops short of the ring around a pole leaves exactly this shape
+    behind; the only fix available to the user is selecting the whole ring.
     """
     if not faces or any(len(face.verts) != 3 for face in faces):
         return None
@@ -153,10 +152,10 @@ def _new_oriented_face(bm, face_vertices, region):
 def rebuild_triangle_fan(bm, boundary_vertices, pole_vertex, region, closed=True):
     """Rebuild a triangle-fan cap around its existing pole vertex.
 
-    A ring has one triangle per boundary vertex and the last one wraps onto the first.
-    An arc that stops short of the ring has one per *gap*, and its two end spokes were
-    never deleted -- they belong to the neighbours outside the selection -- so the first
-    and last new triangle just reuse them.
+    A ring has one triangle per boundary vertex, the last wrapping onto the first.
+    An arc that stops short has one per *gap*; its end spokes were never deleted
+    (they belong to the neighbours outside the selection), so the first and last new
+    triangle reuse them.
     """
     if not pole_vertex.is_valid or len(boundary_vertices) < (3 if closed else 2):
         raise ValueError(pgettext("The triangle-fan cap is no longer valid."))
@@ -215,8 +214,8 @@ def apply_ordered_strip_plan(bm, plan, region):
     """Create the faces from a previously validated strip plan."""
     new_faces = []
     sample_count = len(region.get("normal_samples", ()))
-    # Validation already found each face's source normal; asking again would repeat a
-    # search over every source face in the region for a list that has not moved since.
+    # Validation already found each face's source normal, and the mesh has not
+    # moved since.
     references = cached_reference_normals(plan, region)
     for face_index, face_vertices in enumerate(plan.faces):
         started = time.perf_counter()
@@ -246,8 +245,8 @@ def region_rungs(region, plan, inner_vertices):
     """Every rebuilt cross-band edge of a region, with the inner index it sits at.
 
     A strip's columns come from its solved ladder.  A fan has one spoke per boundary
-    vertex and no ladder to solve, so its column is its vertex index; an n-gon cap
-    destroys no interior edge and reports none.
+    vertex and no ladder, so its column is its vertex index; an n-gon cap destroys no
+    interior edge and reports none.
     """
     if plan is not None:
         inner_count = len(plan.inner_vertices)

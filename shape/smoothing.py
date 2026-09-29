@@ -1,10 +1,9 @@
 """Taubin low-pass: relax a path's control points without letting it shrink.
 
-A plain Laplacian pass drags every point toward the average of its neighbours, which
-smooths a path by shrinking it, and a resample that quietly shortens the user's loop
-reads as a bug rather than as smoothing.  Taubin's alternating over- and under-relaxing
-pass is the standard answer, and the pass count is the one number here with no exact
-right value -- which is exactly why polish is the one direction the smoothing axis has.
+A plain Laplacian pass smooths by shrinking, and a resample that quietly shortens the
+user's loop reads as a bug.  Taubin alternates over- and under-relaxing to avoid that.
+The pass count has no exact right value, which is why the smoothing axis runs one way
+only.
 """
 
 LAMBDA = 0.5
@@ -12,11 +11,9 @@ MU = -0.53
 ITERATIONS = 4
 
 # Two neighbours moving at each other by a quarter of the shorter of their own segments
-# still leaves half that segment, comfortably above the length the curve fit refuses.
-#
-# The cap is measured on the path polish starts from -- the frozen source, now that
-# smoothing is the only thing that moves a path -- so a full-strength pass still takes
-# a refitted curve.
+# still leaves half that segment, above the length the curve fit refuses.  The cap is
+# measured on the frozen source polish starts from (smoothing is the only thing that
+# moves a path), so a full-strength pass still takes a refitted curve.
 DISPLACEMENT_CAP = 0.25
 
 

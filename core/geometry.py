@@ -25,8 +25,8 @@ _REFERENCE_NORMALS = "reference_normals"
 def _boxes_overlap(first_start, first_end, second_start, second_end, epsilon):
     """Axis-aligned bounding box overlap for two segments.
 
-    ``epsilon`` is ``sqrt(epsilon_squared)`` so callers that test one fixed
-    segment against many can hoist the square root out of their loop.
+    ``epsilon`` is ``sqrt(epsilon_squared)`` so a caller testing one fixed segment
+    against many can hoist the square root out of the loop.
     """
     for axis in range(3):
         if max(first_start[axis], first_end[axis]) + epsilon < min(
@@ -73,9 +73,8 @@ def _crossing_after_box_overlap(
 ):
     """The crossing test for a pair whose bounding boxes already overlap.
 
-    A caller that fixes one segment and sweeps many others can pass the two
-    directions in instead of recomputing ``end - start`` per pair; the cached
-    value is exactly what that subtraction yields for the same vectors.
+    Directions may be precomputed, so a caller that fixes one segment and sweeps
+    many others does not redo ``end - start`` per pair.
     """
     if first_length_squared <= epsilon_squared or second_length_squared <= epsilon_squared:
         return True
@@ -220,9 +219,8 @@ def _diagnose_intersecting_edges(
 def validate_ordered_strip_plan(plan, inner_vertices, outer_vertices, region):
     """Reject only degenerate or structurally incomplete strip plans.
 
-    Each face is scored once, and the source normal that score was measured against is
-    kept: turning the face the right way round a moment later asks for exactly the same
-    normal, so it is handed over through the region instead of being searched for again.
+    Each face is scored once and its source normal is kept on the region: the
+    rebuild needs the same normal a moment later.
     """
     is_closed = region["closed"]
     inner_steps = len(inner_vertices) if is_closed else len(inner_vertices) - 1
@@ -285,12 +283,10 @@ def diagnose_ordered_strip_geometry(plan, inner_vertices, outer_vertices, region
 def _sample_table(region):
     """The region's source-face centres as plain doubles, unpacked once per step.
 
-    ``normal_samples`` pairs a centre Vector with a normal Vector, and the search below
-    walks every one of them once per rebuilt face.  At that rate the cost is not the
-    comparison but the wrapping: a component read and a difference Vector allocated per
-    pair.  Centres are therefore lifted into floats and the normals kept beside them.
-    The table hangs off the region, which is rebuilt every step, so it can never outlive
-    the mesh it was read from.
+    The search below walks every ``normal_samples`` pair once per rebuilt face, and
+    at that rate the cost is the wrapping: a component read and a difference Vector
+    per pair.  The table hangs off the region, which is rebuilt every step, so it can
+    never outlive the mesh it was read from.
     """
     table = region.get("sample_table")
     if table is None:
@@ -305,11 +301,9 @@ def _sample_table(region):
 def _nearest_sample_normal(centre, table):
     """The normal whose sample centre sits nearest ``centre``, or None when there are none.
 
-    ``min(samples, key=...)`` written out longhand.  It has to be the same arithmetic to
-    the last bit -- three subtractions and a left-to-right sum of three squares in double,
-    and a strict ``<`` so an exact tie is still won by the earliest sample, which is what
-    ``min`` does.  ``inf`` seeds the search because every finite distance beats it, so the
-    first sample is the first winner.
+    ``min(samples, key=...)`` written out longhand, matching its arithmetic to the
+    last bit: the same left-to-right sum in double, and a strict ``<`` so an exact
+    tie goes to the earliest sample, as ``min`` does.
     """
     centre_x, centre_y, centre_z = centre
     best = None
@@ -328,8 +322,8 @@ def _nearest_sample_normal(centre, table):
 def _face_centre(coordinates):
     """A face's corner mean as three doubles.
 
-    The Vector accumulation it replaces -- copy the first corner, add the rest, divide by
-    the count -- componentwise in double, in the same order.
+    Matches the Vector accumulation it replaces componentwise in double, in the
+    same order.
     """
     first = coordinates[0]
     centre_x = first.x
@@ -361,11 +355,11 @@ def reference_normal(face_vertices, region):
 def cached_reference_normals(plan, region):
     """The normals a validated plan's faces were scored against, or None.
 
-    Validation picks one source normal per face and the rebuild that applies the plan asks
-    for the same list a moment later, with nothing between the two that could move a
-    vertex.  The entry holds the plan itself and is answered by identity, so a plan that
-    was never validated -- or one that arrived after a refused replay -- simply misses and
-    searches again rather than reading somebody else's normals.
+    Validation picks one source normal per face and the rebuild asks for the same
+    list a moment later, with nothing between the two that could move a vertex.  The
+    entry holds the plan and is answered by identity, so a plan that was never
+    validated (or arrived after a refused replay) misses and searches again rather
+    than reading another plan's normals.
     """
     cached = region.get(_REFERENCE_NORMALS)
     if cached is not None and cached[0] is plan:
@@ -411,11 +405,11 @@ def _signed_alignment(normal_vector, reference):
 def _score_face(face_vertices, region):
     """One candidate face as ``(cost, source normal, signed alignment)``.
 
-    The last two are the by-products the validation and the rebuild both want, and they
-    come out of the same corner list and the same face normal the cost is built from --
-    which is the only reason the search for a source normal happens once per face instead
-    of three times.  All three are None for a degenerate face, and the last two are None
-    whenever the region carries no samples to match against.
+    Validation and rebuild both want the last two, and they come out of the same
+    corner list and face normal the cost is built from, so the source normal is
+    searched once per face instead of three times.  All three are None for a
+    degenerate face, and the last two are None whenever the region carries no
+    samples to match against.
     """
     coordinates = [_point_view(vertex) for vertex in face_vertices]
     point_count = len(coordinates)
@@ -463,8 +457,8 @@ def _score_face(face_vertices, region):
 def face_quality_cost(face_vertices, region):
     """Score one candidate face, or None when it is degenerate.
 
-    ``region=None`` drops the normal-alignment term.  The transition search has
-    no reference surface to match against, and passing an empty sample tuple
-    only reached the same ``None`` through a dict build and three calls.
+    ``region=None`` drops the normal-alignment term: the transition search has no
+    reference surface to match against, and an empty sample tuple only reached the
+    same ``None`` through a dict build and three calls.
     """
     return _score_face(face_vertices, region)[0]

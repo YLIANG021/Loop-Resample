@@ -17,46 +17,44 @@ _CLASSES = (
     MESH_OT_loop_resample_interactive_entry,
 )
 
-# What register() actually put in, so unregister() never asks Blender to take out a class
-# that is not there -- a register() that died partway, or a second unregister(), would
-# otherwise surface as a RuntimeError whose wording this file would have to recognise.
+# Only what register() actually put in: a register() that died partway, or a second
+# unregister(), would otherwise make Blender raise a RuntimeError over a missing class.
 _REGISTERED = []
 
 
 def register():
     import bpy
 
-    # Our own lookups read the tables directly, so this is not what makes a string come out
-    # translated; it is what lets Blender hand the tables to other add-ons and drop them
-    # again on disable.  First, so anything registered below finds it already in.
+    # First, so anything registered below finds the tables in.  Our own lookups read
+    # them directly; this lets Blender share them with other add-ons and drop them on
+    # disable.
     i18n.register()
     for cls in _CLASSES:
         bpy.utils.register_class(cls)
         _REGISTERED.append(cls)
-    # Before the menu is hung up, so the first draw of the entry either has its picture or
-    # has already decided it has not.
+    # Before the menu is hung up, so the entry's first draw either has its picture or
+    # has decided it has not.
     entry_icon.register()
-    # Prepended, not appended: the native edit-mesh menu is long, and an entry that lands
-    # at the bottom of it has to be looked for.  This also puts us above or below whatever
-    # else prepended here, which depends on add-on load order rather than on anything here.
+    # Prepended, not appended: the native menu is long and a bottom entry has to be
+    # looked for.  Position among other prependers follows add-on load order.
     bpy.types.VIEW3D_MT_edit_mesh_context_menu.prepend(draw_edit_mesh_context_menu)
 
 
 def unregister():
     import bpy
 
-    # Unguarded on purpose: the submodules are imported normally now, so this is the same
-    # function object register() prepended and remove() always matches.  That identity is
-    # what keeps the menu item from stacking up a copy on every reload.
+    # Unguarded: the submodules are imported normally, so this is the same function
+    # object register() prepended, remove() always matches, and the menu item cannot
+    # stack up a copy on every reload.
     bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(draw_edit_mesh_context_menu)
-    # The menu entry defers the wheel by one frame through this timer, and a click can only
-    # arm it while the entry is on the menu -- so this follows the removal above, and by then
-    # nothing can rearm it.  A disable that left it standing would hand Blender a callback
-    # whose module is gone, which is the same hole ``hide_notice()`` closes one door over.
+    # The menu entry defers the wheel one frame through this timer, and a click can only
+    # arm it while the entry is on the menu, so after the removal above nothing can
+    # rearm it.  Left standing it would outlive its module, the same hole
+    # ``hide_notice()`` closes.
     if bpy.app.timers.is_registered(_start_wheel_modal):
         bpy.app.timers.unregister(_start_wheel_modal)
-    # A refusal notice outlives nothing: its handlers belong to this module instance, and a
-    # viewport that keeps drawing them after disable draws a function whose module is gone.
+    # Its handlers belong to this module instance: a viewport that kept drawing the
+    # refusal notice after disable would draw a function whose module is gone.
     hide_notice()
     entry_icon.unregister()
     session.clear()

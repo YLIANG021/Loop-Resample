@@ -1,34 +1,22 @@
 """The resample heads-up display: the counts on the paths, and the keys along the bottom.
 
-Two things anchor the numbers, and they pull in opposite directions.  The number has to
-sit where the user's selection is, which is a point in the 3D view, so the view matrices
-have to be walked by hand -- Blender exposes no world-to-pixel helper for a viewport that
-is not a camera.  Where it sits, though, comes from the curve the step was built on rather
-than from the rebuilt mesh: that mesh has a different vertex count every scroll, and a
-label measured off it would hop along with the points being added and removed, which reads
-as the mesh flickering while the scroll settles.  A path's own halfway point is one value
-that survives a rebuild, so the operator hands it over once per step.
+Two things anchor the numbers and they pull in opposite directions.  A count sits where the
+user's selection is, a point in the 3D view, so the view matrices are walked by hand: Blender
+exposes no world-to-pixel helper for a viewport that is not a camera.  Which point it sits on
+comes from the curve the step was built on, not the rebuilt mesh, whose vertex count changes every
+scroll and would make the label hop with it.  A path's halfway point survives a rebuild, so the
+operator hands one over per step.
 
-The number is segments, not points, because a resampled ring is described by how many
-pieces it was cut into -- that is the number on the wire, and the one the user counts.
-See ``segment_counts`` for why it is one less than the planner's point count.
+The number is segments, not points.  See ``segment_counts`` for why that is one less than the
+planner's count.
 
-The row of chips along the bottom is a readout, not a control.  Nothing here is clickable,
-because the wheel already is the control; what the row carries is which axis the wheel is
-pointed at, and how far along it the standing mesh sits at.  The second of those is a
-percentage rather than a pole word: a tick raises one function further instead of choosing
-between two, so the reading is a value the wheel actually chose.  The row takes a second job
-too: when the planner refuses a step, the reason lands in it as a warning chip, because a
-scroll that does nothing and says nothing reads as a dead wheel.
+The chip row is a readout, not a control: nothing in it is clickable.  It names the axis the wheel
+is pointed at, how far along it the standing mesh sits, and any refusal, as a warning chip.
 
-That lesson is why the second half of this file exists.  A refusal can also happen before a
-session starts -- the selection on screen is not one the tool can use -- and then there is no
-modal, no chip row and no operator left to report through, so the only thing the user gets is
-a header message that a single click wipes out.  So the notice lives here rather than on the
-operator: a warning chip of its own and a timer that takes it away again.  Nothing is painted
-on the mesh for it, because the sentence already says "this selection will not work", and
-marking up the model to point at *which bit* asks the user to read element numbers off a
-viewport -- a job no modeler takes up.
+A refusal can also come before a session starts, when the selection on screen is not one the tool
+can use: no modal, no chip row, no operator to report through, and a header message the next click
+wipes out.  That notice lives here instead, as its own warning chip plus a timer; see
+``show_notice``.
 """
 
 import blf
@@ -54,17 +42,14 @@ _FONT_ID = 0
 _FONT_PIXELS = 22
 # blf.shadow takes a level out of (0, 3, 5, 6) and raises on anything else.
 _SHADOW_LEVEL = 3
-# The counts sit on the mesh, so they are bright yellow with a dark halo behind them:
-# yellow alone washes out against a pale shading or a pale material, and a bright-on-bright
-# shadow would make them vanish altogether.
+# The counts sit on the mesh: bright yellow on a dark halo, because yellow alone washes out
+# against pale shading or a pale material and a bright-on-bright shadow would hide them.
 _NUMBER_COLOR = (1.0, 0.95, 0.1, 1.0)
 _SHADOW_COLOR = (0.05, 0.05, 0.05, 0.85)
 
-# The adjusted paths, traced over the mesh they are being rebuilt on.  Two colours
-# because two things are being said: the *edge* is what got resampled, so it is fluorescent
-# green and reads as a line, and the *point* on it is the number printed above it, so the
-# dot is the same bright yellow as that number and reads as a node.  Both come from one
-# POST_VIEW handler, the POLYLINE_UNIFORM_COLOR builtin, and a batch of world-space segments.
+# The adjusted paths, traced over the mesh they are rebuilt on.  Two colours, two things said:
+# the edge is what got resampled, so it is fluorescent green and reads as a line; the point on it
+# carries the number above it, so the dot is that same yellow.
 _HIGHLIGHT_COLOR = (0.2, 1.0, 0.2, 1.0)
 _HIGHLIGHT_POINT_COLOR = (1.0, 0.95, 0.1, 1.0)
 _HIGHLIGHT_WIDTH = 2.5
@@ -76,8 +61,8 @@ _HIGHLIGHT = {
     "geometry_key": None,
 }
 
-# A refusal that came before any session existed.  It is a sentence and nothing else: the
-# mesh was never touched, so there is nothing of ours to mark on it.
+# A refusal from before any session existed: a sentence and nothing marked on the mesh, which the
+# tool never touched.
 _NOTICE_SECONDS = 1.5
 _NOTICE = {
     "text": "",
@@ -87,50 +72,43 @@ _NOTICE = {
 
 _CHIP_FONT_PIXELS = 18
 _CHIP_BOTTOM_MARGIN = 80.0
-# The failure notice is the planner's own sentence, with the operator-wide "failed safely"
-# wrapper taken off: the overlay is the only screen the user is looking at, and the
-# wrapper just repeats that there is a notice.  A reason longer than a viewport is wide
-# gets its tail cut, because the cause is always in the front half of the sentence.
+# The failure notice is the planner's own sentence with the operator-wide "failed safely" wrapper
+# off: the overlay is the only screen the user is looking at, so the wrapper only repeats that
+# there is a notice.  A reason wider than the viewport loses its tail; the cause is always in the
+# front half of the sentence.
 _FAILURE_LIMIT = 96
-# A refusal that came before the session got as far as starting has nowhere to be squeezed,
-# so it is allowed the whole sentence and a smaller font instead of a cut ending.
+# A refusal from before the session started has nowhere to be squeezed, so it gets the whole
+# sentence and a smaller font instead of a cut ending.
 _NOTICE_LIMIT = 220
 # The chip row's spacing is a fixed 1.3 * 0.96 scale and the text is lifted off its padding by
-# hand, so the band is measured in its own pixels rather than in interface units.  The one
-# place it is deliberately heavier than the plates it surrounds is the outline, at two pixels
-# -- see _CHIP_BORDER.
+# hand, so the band is measured in its own pixels rather than in interface units.
 _CHIP_BUTTON_SCALE = 0.96
 _CHIP_UI_SCALE = 1.3 * _CHIP_BUTTON_SCALE
 _CHIP_PADDING_X = 9.0
 _CHIP_PADDING_Y = 5.0
 # Written as the pixel measure it has to produce, because that is what the armed chip is
-# measured against: a plate has to stay clear of its neighbour's first glyph, which is one
-# gap plus one of the neighbour's own paddings away, and the 1.248 scale on top of a raw 4.0
-# did not leave room for a chip grown to 115%.  Twelve bought that clearance and fifteen is
-# the same row with room to breathe; ten is tighter than either of those, since the armed
-# plate of the longest counts reading grows 19 pixels past its own edge and ten of gap plus a
-# neighbour's own 11 of padding is only 21.2 -- two pixels to spare, which a longer reading
-# than four paths would spend over.
+# measured against: a plate has to stay clear of its neighbour's first glyph, one gap plus one
+# of that neighbour's own paddings away.  A raw 4.0 under the 1.248 scale left no room for a
+# chip grown to 115%; twelve bought the clearance, fifteen is looser than needed.  Ten is tight:
+# the armed plate of the longest counts reading grows 19 pixels past its own edge, and ten of
+# gap plus a neighbour's 11 of padding is 21.2, two pixels to spare that a longer reading would
+# spend.
 _CHIP_GAP = 10.0 / _CHIP_UI_SCALE
 _CHIP_TEXT_LIFT = 3.0
 _CHIP_RADIUS = 8.0
-# The ring every plate is drawn with.  One pixel read as no ring at all: the outline is a grey
-# two steps above the fill it surrounds, and a one pixel band of that is thinner than the seam
-# between the plate and whatever it is laid over, so the row looked like borderless boxes
-# rather than as boxes with a quiet edge.
+# The ring every plate is drawn with.  One pixel read as no ring: the outline is a grey two steps
+# above the fill, and a one pixel band is thinner than the seam between the plate and what it is
+# laid over, so the row looked like borderless boxes rather than boxes with a quiet edge.
 _CHIP_BORDER = 2.0
-# The armed chip is also the bigger one.  Size says the thing the lit colour already said --
-# which axis the wheel is pointed at -- and says it at the instant the key goes down rather
-# than as a shade the eye has to compare against a neighbour.  Plate and glyphs grow together
-# about the chip's own centre, so the padding keeps its proportion whatever the multiplier;
-# what a multiplier buys is overlap: it spends pixels in proportion to the chip's own width,
-# so 7.5% on a long reading reaches a good deal further than 7.5% on a short label.  That is
-# the one reason the number is this modest -- it has to suit the widest thing the row can be
-# asked to show, several paths at several counts being a string of a dozen characters that
-# spends 19 of the 21.2 pixels the row's gap leaves before a neighbour's first glyph.  Note
-# that the multiplier only reaches the glyphs in whole points: 1.028 to 1.083 draws at 19
-# pixels, 1.084 to 1.138 at 20, 1.139 to 1.194 at 21, so between those numbers it is the plate
-# being sized, and crossing one of them moves the text a whole pixel either way.
+# The armed chip is also the bigger one.  Size says what the lit colour already said, which axis
+# the wheel is pointed at, but says it the instant the key goes down rather than as a shade the
+# eye has to compare against a neighbour.  Plate and glyphs grow together about the chip's own
+# centre, so the padding keeps its proportion whatever the multiplier.  A multiplier buys overlap
+# in proportion to the chip's width, so 7.5% reaches further on a long reading than a short label:
+# that is why it is this modest, since it has to suit the widest thing the row shows, a dozen
+# characters spending 19 of the 21.2 pixels the gap leaves.  It reaches the glyphs only in whole
+# points: 1.028 to 1.083 draws at 19 pixels, 1.084 to 1.138 at 20, 1.139 to 1.194 at 21, so
+# between those it is the plate being sized and crossing one moves the text a whole pixel.
 _CHIP_ARM_SCALE = 1.075
 _CHIP_STYLES = {
     "warning": (
@@ -138,8 +116,8 @@ _CHIP_STYLES = {
         (0.68, 0.22, 0.22, 0.95),
         (1.0, 0.82, 0.82, 1.0),
     ),
-    # The armed chip wears the entry mark's own yellow (#FFE400, icons/loop_resample.png),
-    # so the fill and ring are hue-shifted along with the glyphs rather than left on blue.
+    # The armed chip wears the entry mark's own yellow (#FFE400, icons/loop_resample.png), so
+    # fill and ring are hue-shifted with the glyphs rather than left on blue.
     "hotkey_active": (
         (0.42, 0.37, 0.08, 0.50),
         (0.68, 0.60, 0.12, 0.95),
@@ -165,11 +143,10 @@ _BOX_CACHE_LIMIT = 48
 
 
 def path_midpoint(points, closed):
-    """The point half the path's own length along from its first vertex.
+    """The point half the path's own length along from its first vertex, in local coordinates.
 
-    Local coordinates, straight off the frozen source, so this is a position in the mesh
-    rather than on the screen.  For a closed loop "halfway" is measured from whichever
-    vertex the sampler started on, which is as good a spot as any and never moves.
+    Off the frozen source, so a position in the mesh rather than on the screen.  For a closed
+    loop "halfway" is measured from whichever vertex the sampler started on, which never moves.
     """
     if not points:
         return None
@@ -200,15 +177,9 @@ def path_midpoint(points, closed):
 def segment_counts(point_counts, closed_flags):
     """A path's point count as the segment count the user counts on the wire.
 
-    The planner thinks in points -- how many samples it has to place -- and the user thinks
-    in segments, because that is what a resampled edge ring is built out of.  The two are
-    not one apart in general: an open path of ``n`` points has ``n - 1`` edges between
-    them, while a closed loop of ``n`` points has ``n`` edges, its last one closing it
-    back onto its first point.  So only the open path loses one.
-
-    It is recomputed per label rather than stored, so the stored numbers stay the numbers
-    the planner takes: one source of truth for a count, translated once, at the moment it
-    is drawn or reported.
+    An open path of ``n`` points has ``n - 1`` edges; a closed loop of ``n`` has ``n``, its last
+    one closing back onto the first.  Recomputed per label rather than stored, so the stored
+    numbers stay the planner's and a count is translated once, when it is drawn or reported.
     """
     return tuple(
         points if closed else points - 1
@@ -220,12 +191,9 @@ def _failure_text(message, limit=_FAILURE_LIMIT):
     """A planner failure as the sentence that fits in a chip.
 
     The wrapper is looked up rather than hard-coded because the operator already put the
-    translated one on: in another locale the message arrives in Chinese and stripping an
-    English prefix off it would leave the notice describing a failure twice over.
-
-    ``limit`` is looser for a standalone notice than for a chip squeezed in above the row:
-    the sentences that explain a refused selection put the cure at the end, where a chip
-    would cut it off.
+    translated one on: in another locale, stripping an English prefix off a Chinese message
+    would leave the notice describing a failure twice over.  ``limit`` is looser for a standalone
+    notice, because those sentences put the cure at the end, where a chip would cut it off.
     """
     if message is None:
         return ""
@@ -248,10 +216,9 @@ def _window_region(area):
 def _to_pixels(region, view_projection, world_point):
     """A 3D point in world space as pixels inside the viewport region.
 
-    ``perspective_matrix`` already folds the view transform and the region's window
-    transform together.  The point has to be handed over as a homogeneous 4-vector: a
-    3-vector in is multiplied as three rows and comes back three-wide with ``w`` silently
-    dropped, which leaves nothing to divide by.
+    ``perspective_matrix`` already folds the view and window transforms together.  The point goes
+    in as a homogeneous 4-vector: a 3-vector comes back three-wide with ``w`` dropped, leaving
+    nothing to divide by.
     """
     clip = view_projection @ Vector((*world_point, 1.0))
     if clip.w <= 1e-9:
@@ -279,8 +246,8 @@ def _polyline_shader():
 def _point_shader():
     """The round, soft-edged dot the path points are drawn with.
 
-    The built-in point shader would do, but it squares off at the edges and takes no
-    antialiasing, and a row of those reads as a dashed ruler rather than a set of points.
+    The built-in point shader squares off at the edges and takes no antialiasing, and a row of
+    those reads as a dashed ruler.
     """
     global _HIGHLIGHT_POINT_SHADER
     if _HIGHLIGHT_POINT_SHADER is None:
@@ -313,13 +280,12 @@ def _point_shader():
 
 
 def _rounded_box_batches(width, height, radius, border_width, shader, resolution=12):
-    """The two triangles of a rounded rectangle, as batches ready to draw.
+    """The two triangle batches of a rounded rectangle, fill and outline, ready to draw.
 
-    The key quantises the size so a chip that changes width by a pixel when the count gains
-    a digit keeps the batch it already built.  The vertices are stored offset from the box's
-    own bottom-left rather than from the region's, which is what lets one batch serve a chip
-    that moves: where the plate sits is applied as a matrix translation at draw time, so a
-    batch built for one frame is still correct in the next one.
+    The key quantises the size so a chip that changes width by a pixel when the count gains a
+    digit keeps its batch.  Vertices are offset from the box's own bottom-left rather than the
+    region's, so one batch serves a chip that moves: its position is a matrix translation at draw
+    time.
     """
     key = (
         int(float(width) // 5) * 5,
@@ -412,8 +378,7 @@ def _draw_rounded_box(x, y, width, height, background, border, radius, border_wi
 def _counts_text(values, closed):
     """Segment counts as one number when they all agree, as a list when they do not.
 
-    Many paths at the same count are one state, not a row of identical numbers: five edges
-    at five segments each read as "5, 5, 5, 5, 5" and say less than "5" does.
+    Five edges at five segments each say more as "5" than as "5, 5, 5, 5, 5".
     """
     counts = segment_counts(values, closed)
     distinct = set(counts)
@@ -425,25 +390,16 @@ def _counts_text(values, closed):
 def _chips(operator):
     """The three axes and the two clicks, as the typed parts the chip row takes.
 
-    Every axis names the key that claims the wheel, armed or not, so the row reads as a
-    list of what drives what and the lit one is where the next tick lands.  Under a held
-    modifier that lit chip is also the only confirmation on screen that the key was heard at
-    all: the wheel is doing something other than what it does by default, and nothing on the
-    mesh says why.
+    Every axis names the key that claims the wheel, armed or not, so the row reads as what drives
+    what and the lit one is where the next tick lands.  Under a held modifier that lit chip is the
+    only confirmation on screen that the key was heard: the wheel is doing something other than
+    its default and nothing on the mesh says why.  The count chip used to go red when the wheel
+    pointed elsewhere, which read as a warning about a count doing exactly what it should.
 
-    Only the armed axis is lit, and it is the bigger chip of the row.  The count chip used
-    to go red when the wheel was pointed elsewhere, which read as a warning about a count
-    that is doing exactly what it should.
-
-    The count reads entry → current, because a scroll carries every locked path by the same
-    amount rather than driving them to one shared number: where the wheel started is the only
-    reference that makes a tick readable.  Both halves collapse to one number when the paths
-    agree, so five edges at five segments each read "5 → 6" rather than two rows of fives.
-
-    The strengths are the ones that reached a mesh rather than the ones the wheel was last
-    turned to, which is the same rule the count already follows: a refused step leaves the
-    previous mesh standing, and a chip that moved anyway would be describing a mesh that is
-    not there.
+    The count reads entry → current because a scroll carries every locked path by the same amount
+    rather than to one shared number, so where the wheel started is the only reference that makes
+    a tick readable.  The strengths are likewise the ones that reached a mesh, not the ones the
+    wheel was last turned to: a refused step leaves the previous mesh standing.
     """
     mode = getattr(operator, "mode", MODE_COUNT)
     closed = operator.label_closed
@@ -474,11 +430,9 @@ def _chips(operator):
 def _strength_text(operator, attribute):
     """How far along its one axis the standing mesh sits, or nothing at the source.
 
-    Zero is the source curve, the one position on these axes with no strength to read,
-    so it leaves the chip bare rather than showing a neutral reading of its own.  Past
-    it the chip reads a percentage, because that is what a scroll now chose: an axis
-    with one function is only ever raised further, so the number is the wheel's own
-    reading rather than a stand-in for a direction.
+    Zero is the source curve, the one position on these axes with no strength to read, so it
+    leaves the chip bare.  Past it the chip reads a percentage, what a scroll actually chose: an
+    axis with one function is only ever raised further.
     """
     value = getattr(operator, attribute, 0.0)
     if value == 0.0:
@@ -500,10 +454,9 @@ def _draw_chip(
 ):
     """One chip: a rounded box, text lifted off its padding, an outline two pixels wide.
 
-    ``width``/``box_height``/the two offsets are the chip's *resting* measures, the ones the
-    row was laid out with, and ``scale`` grows the drawing about the chip's own centre from
-    them.  So a grown chip cannot push its neighbours: the layout was settled before the
-    multiplier was ever applied, and only the plate and glyphs move.
+    ``width``, ``box_height`` and the two offsets are the chip's resting measures, the ones the
+    row was laid out with; ``scale`` grows the drawing about the chip's own centre.  A grown chip
+    cannot push its neighbours, because only the plate and glyphs move.
     """
     background, outline, text_color = _CHIP_STYLES.get(
         chip.get("type"), _CHIP_STYLES["label"]
@@ -536,14 +489,10 @@ def _draw_chip(
 def _chip_metrics(chips, text_size=None):
     """Widths, height and total run of a row of chips, in region pixels.
 
-    Nothing here is multiplied by the interface scale: the paddings and the gap are already
-    written as the pixels they are meant to land at on screen, and scaling them on top grew
-    the whole band past the spacing they describe.
-
-    ``text_size`` is let through because both the row and the failure notice have to fit
-    the region they are drawn in, and the only way to know that is to measure at a size and
-    try a smaller one: the notice because it is a sentence rather than a label, and the row
-    because four labelled chips are a wider thing than two were.
+    Nothing here is multiplied by the interface scale: the paddings and the gap are already the
+    pixels they should land at, and scaling them on top grew the band past the spacing they
+    describe.  ``text_size`` is let through because the row and the failure notice both have to
+    fit their region, and the only way to know is to measure at a size and try a smaller one.
     """
     ui_scale = _CHIP_UI_SCALE
     padding_x = _CHIP_PADDING_X * ui_scale
@@ -573,18 +522,16 @@ def _chip_metrics(chips, text_size=None):
 
 
 def _draw_warning(region, text, bottom):
-    """One warning chip on a row of its own, centred at ``bottom`` pixels from the region's floor.
+    """One warning chip on a row of its own, centred at ``bottom`` pixels off the floor.
 
-    A planner sentence is longer than every label in the chip row put together, so it gets
-    a line to itself rather than joining it, and the warning red says it is news rather
-    than something to press.
+    A planner sentence is longer than every label in the chip row put together, so it gets a line
+    to itself rather than joining it.
     """
     chip = {"text": text, "type": "warning"}
     text_size = _CHIP_FONT_PIXELS
     metrics = _chip_metrics((chip,), text_size)
-    # One pixel at a time, and only down to the same floor the row uses: a reason nobody
-    # can read is no reason at all, but a reason wider than the window is clipped off the
-    # end, where the cause lives.
+    # Shrunk a pixel at a time, and only to the row's own floor: a reason wider than the window is
+    # clipped off the end, where the cause lives.
     while metrics["total"] > region.width and text_size > 10:
         text_size -= 1
         metrics = _chip_metrics((chip,), text_size)
@@ -604,9 +551,7 @@ def _draw_warning(region, text, bottom):
 def _draw_failure_chip(operator, region, above):
     """The refusal to a scroll, on a row above the chips.
 
-    Silence would be the other option -- the wheel does nothing, after all -- but a wheel
-    that does nothing and says nothing is indistinguishable from a wheel the operator is
-    not listening to.
+    Silence would read as an operator that is not listening.
     """
     message = _failure_text(getattr(operator, "message", None))
     if not message:
@@ -617,11 +562,9 @@ def _draw_failure_chip(operator, region, above):
 def _draw_chip_row(operator, region):
     """Lay the chips out as one band, centred horizontally near the bottom of the region.
 
-    The band belongs to the region rather than the area: the numbers above are region
-    pixels too, and a viewport with a toolbar is a few pixels shorter than its area.
-
-    Returns the top edge of the band, which is where the failure notice above it starts
-    measuring from.
+    The band belongs to the region, not the area: the numbers are region pixels too, and a
+    viewport with a toolbar is a few pixels shorter than its area.  Returns the top edge of the
+    band, where the failure notice above it starts measuring from.
     """
     chips = _chips(operator)
     if not chips:
@@ -629,10 +572,9 @@ def _draw_chip_row(operator, region):
     blf.rotation(_FONT_ID, 0.0)
     text_size = _CHIP_FONT_PIXELS
     metrics = _chip_metrics(chips, text_size)
-    # The wheel has three things it can be pointed at now and each of them names its key,
-    # so the row is long enough to meet a narrow viewport.  Shrunk to the same floor the
-    # failure notice uses rather than allowed to run off the sides, where a lit chip that
-    # is half off-screen reads as a mode that is broken rather than one that is armed.
+    # Three things the wheel can be pointed at, each naming its key, so the row can meet a narrow
+    # viewport.  Shrunk to the failure notice's floor rather than allowed off the sides, where a
+    # half-visible lit chip reads as a broken mode rather than an armed one.
     while metrics["total"] > region.width and text_size > 10:
         text_size -= 1
         metrics = _chip_metrics(chips, text_size)
@@ -642,11 +584,10 @@ def _draw_chip_row(operator, region):
     for chip, width in zip(chips, metrics["widths"]):
         laid_out.append((chip, x, width))
         x += width + metrics["item_gap"]
-    # Resting measures all the way through the layout, so the armed chip is the only thing
-    # that moves -- a row that shuffled sideways every time a key went down would read as the
-    # whole band flickering rather than as one chip being picked up.  The armed chip does
-    # overhang its neighbours, and going last is what makes that a plate laid on the row
-    # instead of a neighbour with a bite taken out of it.
+    # Resting measures through the whole layout, so the armed chip is the only thing that moves:
+    # a row that shuffled sideways on every keypress would read as the band flickering.  It does
+    # overhang its neighbours, and going last makes that a plate laid on the row instead of a
+    # neighbour with a bite taken out.
     for armed in (False, True):
         for chip, chip_x, width in laid_out:
             if (chip["type"] == "hotkey_active") is not armed:
@@ -694,12 +635,12 @@ def _draw_path_numbers(operator, area, region, scale):
 def draw_hud(operator, context):
     """Draw the whole overlay for one scroll session, or nothing if this view is not ours.
 
-    Registered as a ``POST_PIXEL`` handler on the viewport region, which is why the pixel
-    coordinates below need no projection of their own.
+    A ``POST_PIXEL`` handler on the viewport region, which is why the pixel coordinates below need
+    no projection of their own.
     """
-    # The context is the one captured when the modal started, so reading it is the only part
-    # of this that can meet a dead area.  A raise out of a draw handler costs the whole
-    # viewport its overlays, and Blender does not say which handler threw.
+    # The context is the one captured when the modal started, so reading it is the only part that
+    # can meet a dead area.  A raise out of a draw handler costs the whole viewport its overlays,
+    # and Blender does not say which handler threw.
     try:
         area = context.area
         scale = max(0.1, context.preferences.system.ui_scale)
@@ -723,13 +664,10 @@ def draw_hud(operator, context):
 def _highlight_geometry(obj):
     """The selected edges of the live edit mesh, as world-space points and segments.
 
-    A step ends by selecting exactly the path edges it just rebuilt, so the live selection
-    *is* the answer: reading it back keeps the outline on the mesh as it stands after each
-    scroll instead of on the frozen source it came from.  A mesh that is no longer in edit
-    mode has no live selection to read and reports nothing.
-
-    Both halves come out of one walk, and the points are de-duplicated: an interior point
-    sits on two edges of its own path, and dotting it twice would only waste vertices.
+    A step ends by selecting exactly the path edges it has rebuilt, so the live selection is the
+    answer, and reading it back keeps the outline on the mesh as it stands after each scroll
+    instead of on the frozen source.  The points are de-duplicated: an interior point sits on two
+    edges of its path, and dotting it twice only wastes vertices.
     """
     mesh = getattr(obj, "data", None)
     if mesh is None or not getattr(mesh, "is_editmode", False):
@@ -755,19 +693,17 @@ def _highlight_geometry(obj):
                 points.append(matrix_world @ vert.co)
         return points, segments
     except (AttributeError, ReferenceError, RuntimeError, ValueError):
-        # The object went away mid-session; the caller simply draws nothing this frame.
+        # The object went away mid-session; the caller draws nothing this frame.
         return (), ()
 
 
 def _highlight_key(obj, operator):
     """Cheap signature of everything the highlighted edges depend on.
 
-    The batches only have to be rebuilt when the geometry does, and for a while the count
-    that produced it was the only thing that could have changed one scroll to the next.
-    The shape axes can change it without touching the count, so the outline has to know
-    about them too: a stale batch here leaves the highlight tracing the curve the points
-    came off rather than the one they are now sitting on.  Reading this costs a copy of the
-    matrix and nothing else, so a still viewport rebuilds nothing.
+    The batches only need rebuilding when the geometry does.  The shape axes can change it without
+    touching the count, so they belong in the key too: a stale batch leaves the highlight tracing
+    the curve the points came off rather than the one they sit on now.  Reading this costs a copy
+    of the matrix, so a still viewport rebuilds nothing.
     """
     return (
         getattr(obj.data, "as_pointer", lambda: 0)(),
@@ -781,12 +717,12 @@ def _highlight_key(obj, operator):
 def _highlight_batches():
     """The line and point batches for the highlighted paths, at the coordinates they have.
 
-    Nothing is nudged toward the eye: a lift along that ray looks pixel-preserving in a
-    perspective view and is not one in an orthographic view, where the eye is a point on the
-    view axis -- every lifted coordinate then slides toward the middle of the viewport as the
-    view orbits, which is the outline drifting off the mesh it marks.  Drawn where they lie
-    the batches cannot move independently of the mesh, and they no longer depend on the view
-    at all.  What they give up is the depth test on a surface tilted away from the camera.
+    Nothing is nudged toward the eye.  A lift along that ray looks pixel-preserving in a
+    perspective view and is not in an orthographic one, where the eye is a point on the view axis:
+    every lifted coordinate slides toward the middle of the viewport as the view orbits, and the
+    outline drifts off the mesh it marks.  Drawn where they lie the batches no longer depend on
+    the view at all, and cannot move independently of the mesh.  They give up the depth test on a
+    surface tilted away from the camera.
     """
     coordinates = []
     for start, end in _HIGHLIGHT["segments"]:
@@ -811,10 +747,10 @@ def _highlight_uses_xray(context):
 def draw_highlight(operator, context):
     """Draw a yellow outline over the paths the session is currently resampling.
 
-    Registered as a ``POST_VIEW`` handler, unlike the chip row: these are world-space
-    segments rather than region pixels, so they follow the mesh when the viewport orbits
-    and are depth tested against it.  ``LESS_EQUAL`` rather than ``NONE`` because the
-    outline sits exactly on the surface and should disappear when the mesh turns away.
+    A ``POST_VIEW`` handler, unlike the chip row: these are world-space segments rather than
+    region pixels, so they follow the mesh when the viewport orbits and are depth tested against
+    it.  ``LESS_EQUAL`` rather than ``NONE`` because the outline sits exactly on the surface and
+    should disappear when the mesh turns away.
     """
     # Same stale-context read as draw_hud: both handlers were handed the invoke-time context.
     try:
@@ -829,9 +765,8 @@ def draw_highlight(operator, context):
     if obj is None:
         return
 
-    # The walk of the mesh is the expensive half, so it is cached on its own and runs only
-    # when the geometry behind it could have changed: the mesh itself, its placement, or the
-    # count that produced it.  The batches ride along with it now that nothing about them
+    # The mesh walk is the expensive half, so it is cached on its own and reruns only when the
+    # geometry behind it could have changed.  The batches ride along now that nothing about them
     # depends on the view.
     key = _highlight_key(obj, operator)
     if _HIGHLIGHT["batches"] is None or _HIGHLIGHT["geometry_key"] != key:
@@ -879,18 +814,17 @@ def draw_highlight(operator, context):
 def show_notice(area, message):
     """Say in the viewport why an action was refused when there is no session to say it.
 
-    A refusal can come before the operator has started: the selection on screen is not one
-    this tool can use, so it locks nothing and returns, and then nothing on screen belongs
-    to us -- no chip row, no numbers, and a header report that the next click wipes out.
-    That is the exact shape of "I pressed it and nothing happened".
+    A refusal can come before the operator has started, when the selection is not one this tool
+    can use: it locks nothing and returns, nothing on screen belongs to us, and the header report
+    is wiped by the next click.
 
-    The sentence is the whole of it.  Where the trouble sits used to be dotted onto the mesh
-    in red, and that was taken out: it needed a handler that survives a viewport swap, it
-    drew through the geometry, and what it pointed at was one vertex in a hundred the user
-    has no way to pick out anyway.
+    The sentence is the whole of it.  Where the trouble sits used to be dotted onto the mesh in
+    red, and that was taken out: it needed a handler that survives a viewport swap, it drew
+    through the geometry, and what it pointed at was one vertex in a hundred the user cannot pick
+    out anyway.
 
-    ``area`` is the viewport to draw in rather than the caller's own, because a call deferred
-    out of a menu has no area of its own to hand over -- see ``_viewport_area``.
+    ``area`` is the viewport to draw in rather than the caller's own, because a call deferred out
+    of a menu has no area to hand over (see ``_viewport_area``).
     """
     hide_notice()
     text = _failure_text(message, limit=_NOTICE_LIMIT)
@@ -913,10 +847,10 @@ def hide_notice():
 
 
 def _notice_expired():
-    """One-shot: the notice has had its say.
+    """One-shot timer callback.
 
-    It does not unregister itself -- returning ``None`` is how a timer retires, and calling
-    ``unregister`` on a timer from inside its own callback is not something to rely on.
+    Returning ``None`` is how a timer retires.  It does not unregister itself, because calling
+    ``unregister`` from inside a timer's own callback is not something to rely on.
     """
     _clear_notice()
     return None
@@ -938,8 +872,8 @@ def _clear_notice():
 def _draw_notice(area):
     """The refusal sentence, on the row the chip band would have used.
 
-    Same height as the scroll's own chips because this is the step the scroll never got to
-    start; with nothing else drawn there is nothing for it to overlap.
+    Same height as the scroll's own chips, because this is a scroll that never got to start; with
+    nothing else drawn there is nothing to overlap.
     """
     if not _NOTICE["text"]:
         return

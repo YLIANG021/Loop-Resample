@@ -30,9 +30,8 @@ from .utils import _point
 _ACTIVE = None
 _ACTIVE_KEY = None
 
-# The only capture outputs that name a BMesh element.  Everything else a capture
-# produces is already a copied value or a plain number, so it can be handed to the
-# next step as it stands.
+# The only capture outputs that name a BMesh element; everything else a capture produces
+# is a copied value or a plain number and passes to the next step as it stands.
 _ELEMENT_KEYS = frozenset({"faces", "delete_edges", "outer_vertices", "pole_vertex"})
 _INDEX_KEYS = frozenset(
     {
@@ -48,10 +47,10 @@ def _apply_trims(paths, trims):
     """Cut each rail down to the span the band between two chains actually covers.
 
     Two chains of different length leave the surface between them short of one chain's
-    end.  The capture reports how far each chain has to stop, and cutting them there turns
-    an unusable pair into an ordinary same-span one -- before any curve is fitted or any
-    count frozen, so every index downstream is built on the shortened rail and none of them
-    has to know a cut happened.  The tail that is dropped stays as plain mesh.
+    end.  The capture reports how far each chain has to stop; cutting them there happens
+    before any curve is fitted or any count frozen, so every index downstream is built on
+    the shortened rail and none of them has to know a cut happened.  The dropped tail
+    stays plain mesh.
     """
     if not trims:
         return paths
@@ -154,10 +153,10 @@ def _thaw_capture(cache, bm):
 def _selected_indices(bm):
     """What is selected on a mesh, as indices into its verts, edges and faces.
 
-    Taken once off the locked source.  The source keeps the flags themselves, because a
-    cancel hands that mesh back and the user's selection is part of what they get back;
-    these indices are what lets a step undo the same flags on its own copy by name,
-    instead of walking all 126,000 elements of it to find the few hundred that are set.
+    Taken once off the locked source, which keeps the flags themselves: a cancel hands
+    that mesh back and the user's selection is part of what they get back.  The indices
+    let a step undo the same flags on its own copy by name instead of walking all 126,000
+    elements of it to find the few hundred that are set.
     """
     return (
         tuple(vertex.index for vertex in bm.verts if vertex.select),
@@ -169,23 +168,20 @@ def _selected_indices(bm):
 class ResampleSession:
     """One adjust session: a locked source mesh plus its resampling curves.
 
-    Every step rebuilds from the locked mesh instead of from the previous step,
-    so attributes always transfer from the original and stepping a count down
-    and back up restores it exactly.  The source is a detached BMesh rather
-    than a datablock, so nothing it holds can be saved into the user's file.
-    ``curves`` holds ``None`` for a path that cannot be fitted, which falls
-    back to arc-length sampling of its polyline.
-
-    A session only exists inside edit mode; leaving it restores the locked
-    mesh as if the session had been cancelled.
+    Every step rebuilds from the locked mesh instead of the previous step, so attributes
+    always transfer from the original and stepping a count down and back up restores it
+    exactly.  The source is a detached BMesh, not a datablock, so nothing it holds can be
+    saved into the user's file.  ``curves`` holds ``None`` for a path that cannot be
+    fitted, which falls back to arc-length sampling of its polyline.  A session only
+    exists inside edit mode; leaving it restores the locked mesh as if cancelled.
     """
 
     def __init__(self, obj, source, paths, trims=None):
         self.obj = obj
         self.source = source
         self.selected = _selected_indices(source)
-        # Re-derived from the selection on every step, so it has to be cut back the same way
-        # each time or the paths stop matching the ones the curves below were fitted to.
+        # Paths are re-derived from the selection every step, so the trims must cut back
+        # the same way each time or the paths stop matching the curves fitted below.
         self.trims = dict(trims or {})
         self.source_points = tuple(
             tuple(_point(vertex) for vertex in path[0]) for path in paths
@@ -193,11 +189,10 @@ class ResampleSession:
         self.closed = tuple(bool(path[2]) for path in paths)
         # Each strip's frozen wiring as one unit: how its rails are paired, the transitions
         # that pairing was solved into, the loan they were priced under and the crossings
-        # they route through.  The shape axes move points without being asked to re-pair
-        # them; the count axis and the baseline step re-solve.  It lives here
-        # rather than on a region dict because ``capture`` replays a thawed copy of the
-        # captured regions every step, and it dies with the session so no wiring can
-        # leak into the next one.
+        # they route through.  The shape axes move points without re-pairing them; the
+        # count axis and the baseline step re-solve.  Lives on the session, not a region
+        # dict, because ``capture`` replays a thawed copy of the regions every step; dies
+        # with the session so no wiring leaks into the next one.
         self.laddings = {}
         self.source_counts = tuple(len(points) for points in self.source_points)
         self.segments = tuple(
@@ -214,7 +209,7 @@ class ResampleSession:
         self.capture_cache = None
         # Vertices where a UV island boundary leaves the band on no rebuilt vertex at all.
         # Written by the capture, read only to word the closing report; it steers no
-        # geometry, which is the point of keeping it here rather than in the sampler.
+        # geometry, which is why it lives here and not in the sampler.
         self.unmarked_cuts = ()
 
     def open_bmesh(self):
@@ -228,12 +223,12 @@ class ResampleSession:
     def clear_source_selection(self, bm):
         """Undo the locked selection on a working copy of the source.
 
-        Has to run after the capture -- the last thing that reads a selection -- and
-        before the detach, which deletes faces and edges and leaves bmesh renumbering
-        around the holes, so these indices stop naming the elements they were taken
-        from.  Nothing the rebuild creates is born selected, so this and the path edges
-        a step selects at the end are the whole of its selection: the same set the three
-        full-mesh passes used to arrive at.
+        Has to run after the capture, which is the last thing that reads a selection, and
+        before the detach: the detach deletes faces and edges and leaves bmesh renumbering
+        around the holes, so these indices stop naming the elements they were taken from.
+        Nothing the rebuild creates is born selected, so this and the path edges a step
+        selects at the end are its whole selection: the same set the three full-mesh
+        passes used to arrive at.
         """
         vertices, edges, faces = self.selected
         bm.verts.ensure_lookup_table()
@@ -249,8 +244,8 @@ class ResampleSession:
     def paths(self, bm):
         """Re-derive the locked paths on a working copy of the source mesh.
 
-        Shortened back to whatever :meth:`begin` trimmed, because the selection on the
-        frozen source still holds the edges that were cut.
+        Shortened back to whatever ``begin`` trimmed: the selection on the frozen source
+        still holds the edges that were cut.
         """
         selected_edges = {
             edge for edge in bm.edges if edge.select and not edge.hide
@@ -267,14 +262,13 @@ class ResampleSession:
     def capture(self, bm):
         """The count-independent half of a step, computed once per session.
 
-        Every step plans on a fresh :meth:`open_bmesh` copy of the same frozen source,
-        and nothing below reads the requested counts, so the whole capture is a pure
-        function of that source: only element identity differs between copies.  It is
-        therefore stored as indices plus copied values and re-bound onto each step's
-        elements instead of being recomputed.
-
-        The first call freezes and thaws too, so both routes hand back the same shapes
-        and a freeze/thaw bug shows up on the first press rather than the second.
+        Every step plans on a fresh ``open_bmesh`` copy of the same frozen source, and
+        nothing below reads the requested counts, so the whole capture is a pure function
+        of that source: only element identity differs between copies.  It is therefore
+        stored as indices plus copied values and re-bound onto each step's elements
+        instead of recomputed.  The first call freezes and thaws too, so both routes
+        hand back the same shapes and a freeze/thaw bug shows up on the first press rather
+        than the second.
         """
         cache = self.capture_cache
         if cache is None:
@@ -305,9 +299,9 @@ class ResampleSession:
                 region.get("outer_path_index") in synchronized
                 and region.get("path_index") in synchronized
             )
-        # A seam decides where the new vertices have to land: pinning the rail
-        # vertices it crosses keeps the red line continuous across the rebuild, so the
-        # crossings have to be known before anything is sampled.
+        # Seams decide where the new vertices have to land: pinning the rail vertices a
+        # crossing touches keeps the red line continuous across the rebuild, so the
+        # crossings must be known before anything is sampled.
         for region in regions:
             region["seam_crossings"] = region_seam_crossings(region, paths, bm)
         for region, edge_states in zip(
@@ -336,21 +330,19 @@ class ResampleSession:
         """Resampled coordinates for every locked path at the requested counts.
 
         ``anchors`` holds, per path, source vertex indices that must keep a sample
-        exactly on them -- the rail vertices a seam crossing runs through.
+        exactly on them: the rail vertices a seam crossing runs through.
 
         ``shape`` is one step of the smoothing and distribution axes, or None.  A moved
-        path samples from a curve refitted through its moved points rather than from
-        the points themselves: every position here is read off the curve object, so
-        handing over moved coordinates without moving the curve changes nothing at
-        all.  A path whose source cannot be fitted keeps its polyline fallback and
-        only takes the moved points, and carries no measure table -- re-weighting that
-        fallback would mean changing a third sampler for a source that is already
-        broken.
+        path samples from a curve refitted through its moved points: every position here
+        is read off the curve object, so handing over moved coordinates without moving
+        the curve changes nothing.  A path whose source cannot be fitted keeps its
+        polyline fallback and only takes the moved points, and carries no measure table;
+        re-weighting that fallback would mean changing a third sampler for a source that
+        is already broken.
 
-        Returns ``(coordinates, landings)``.  ``landings[path]`` is the sampler's answer to
-        where each pinned source vertex was put, in the same index frame as that path's
-        coordinate list; :mod:`.seams` reads it only to report a crossing whose pin the
-        slots could not hold.
+        Returns ``(coordinates, landings)``.  ``landings[path]`` says where each pinned
+        source vertex was put, in the same index frame as that path's coordinate list;
+        ``seams`` reads it only to report a crossing whose pin the slots could not hold.
         """
         outputs = []
         landings = []
@@ -386,9 +378,9 @@ class ResampleSession:
     def parameters(self, path_index, vertices, frame=None):
         """Place current path vertices in the locked source's parameter frame.
 
-        ``frame`` replaces the polyline that projection runs against, and stays the
-        same length and index space as the frozen source it stands in for.  Only a
-        step that moved the path's own control points has anywhere else to project to.
+        ``frame`` replaces the polyline that projection runs against, and keeps the
+        length and index space of the frozen source it stands in for.  Only a step that
+        moved the path's own control points has anywhere else to project to.
         """
         return normalized_parameters(
             self.source_points[path_index] if frame is None else frame,
@@ -428,9 +420,9 @@ def begin(context):
     }
     if not selected_edges:
         # The right-click entry reaches this from vertex select mode too, where a click
-        # sets ``vert.select`` and leaves every edge flag clear.  The vertices a user
-        # rang out bound exactly the edges they meant, so read them back as edges rather
-        # than refusing a selection that is plainly sitting on screen.
+        # sets ``vert.select`` and leaves every edge flag clear.  The selected vertices
+        # bound exactly the edges the user meant, so read them back as edges rather than
+        # refuse a selection sitting on screen.
         selected_edges = {
             edge
             for edge in live_bm.edges
@@ -449,16 +441,15 @@ def begin(context):
         )
     # Two chains that run alongside each other but stop at different columns are the one
     # shape a band between them cannot be read from: the surface stops where the short
-    # chain does, and the long chain's leftover segment has nothing opposite it.  Ask the
-    # capture where each chain would have to stop, cut them there once, and every step
-    # after this sees a pair it already knows how to rebuild.  This is the only place the
-    # cut is ever decided, which is what keeps the fitted curve, the entry counts and the
-    # frozen rung indices all speaking the same shortened rail.
+    # chain does, and the long chain's leftover segment has nothing opposite it.  The
+    # capture says where each chain would have to stop; cut them there once and every
+    # step after sees a pair it knows how to rebuild.  This is the only place the cut is
+    # decided, which keeps the fitted curve, the entry counts and the frozen rung indices
+    # on the same shortened rail.
     _, trims = capture_adjacent_strips(live_bm, paths, quiet=True)
     if trims:
-        # A cut that leaves some *other* band asking for more is one that only moved the
-        # problem along, so the whole selection goes back as it was and the capture refuses
-        # it in the words it would have used without this code existing.
+        # A cut that leaves some *other* band asking for more only moved the problem, so
+        # the selection goes back uncut and the capture refuses it in its own words.
         _, after = capture_adjacent_strips(
             live_bm, _apply_trims(paths, trims), quiet=True
         )
@@ -483,10 +474,10 @@ def begin(context):
 def end():
     """Drop the session the scroll owned and release its source mesh.
 
-    Unconditional on purpose: there is one session live at a time, the modal that began it is
-    the only thing that calls this, and ``begin`` releases whatever came before it.  The
-    match against the context this used to do could only ever fail, and a fail left the
-    session and its frozen copy of the mesh standing with nothing left to free them.
+    Unconditional on purpose: one session is live at a time, the modal that began it is
+    the only caller, and ``begin`` releases whatever came before it.  The context match
+    this used to do could only fail, and failing left the session and its frozen mesh
+    copy standing with nothing left to free them.
     """
     clear()
 
