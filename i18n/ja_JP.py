@@ -205,4 +205,17 @@ TRANSLATIONS = {
         "ここにはリサンプルできるものはありません。"
         "連続した辺またはポイントのチェーンを選択してください。"
     ),
+    # Why the menu item is greyed out, and what a wheel that never started says.
+    (
+        "*",
+        "Only available in mesh Edit Mode, with the vertex or edge select mode turned on.",
+    ): (
+        "メッシュの編集モードでのみ使えます。選択モードを頂点またはエッジにしてください。"
+    ),
+    (
+        "*",
+        "The wheel could not start: this viewport no longer has a mesh to adjust.",
+    ): (
+        "ホイールを開始できませんでした：このビューには調整できるメッシュがありません。"
+    ),
 }

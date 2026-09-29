@@ -220,4 +220,17 @@ TRANSLATIONS = {
         "Qui non c'è nulla da ricampionare. Seleziona una catena continua di spigoli o "
         "punti."
     ),
+    # Why the menu item is greyed out, and what a wheel that never started says.
+    (
+        "*",
+        "Only available in mesh Edit Mode, with the vertex or edge select mode turned on.",
+    ): (
+        "Disponibile solo in modalità Modifica di una mesh, con la selezione impostata su vertici o spigoli."
+    ),
+    (
+        "*",
+        "The wheel could not start: this viewport no longer has a mesh to adjust.",
+    ): (
+        "La rotellina non ha potuto avviarsi: questa vista non contiene più una mesh da regolare."
+    ),
 }

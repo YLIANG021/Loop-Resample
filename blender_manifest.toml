@@ -17,8 +17,8 @@ license = [
 ]
 
 [build]
-# Keep this list in step with Addon_pack.vbs, which is what actually builds the release:
-# a CLI build from the working tree has to come out with the same files in it.
+# Everything below is a working-tree artifact rather than part of the extension, so a
+# build straight from this directory comes out with the same files the release does.
 paths_exclude_pattern = [
   "__pycache__/",
   "*.pyc",

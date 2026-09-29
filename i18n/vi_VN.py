@@ -192,4 +192,17 @@ TRANSLATIONS = {
         "Không có gì ở đây có thể lấy mẫu lại. Hãy chọn một chuỗi liên tục các cạnh hoặc "
         "điểm."
     ),
+    # Why the menu item is greyed out, and what a wheel that never started says.
+    (
+        "*",
+        "Only available in mesh Edit Mode, with the vertex or edge select mode turned on.",
+    ): (
+        "Chỉ khả dụng trong chế độ Sửa của lưới, với chế độ chọn là đinh hoặc cạnh."
+    ),
+    (
+        "*",
+        "The wheel could not start: this viewport no longer has a mesh to adjust.",
+    ): (
+        "Không thể bắt đầu con lăn: khung nhìn này không còn lưới đềiều chỉnh."
+    ),
 }

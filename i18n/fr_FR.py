@@ -193,4 +193,17 @@ TRANSLATIONS = {
         "Ici, rien ne peut être rééchantillonné. Sélectionnez une chaîne continue "
         "d'arêtes ou de points."
     ),
+    # Why the menu item is greyed out, and what a wheel that never started says.
+    (
+        "*",
+        "Only available in mesh Edit Mode, with the vertex or edge select mode turned on.",
+    ): (
+        "Disponible uniquement en mode Édition d'un maillage, avec la sélection réglée sur sommets ou arêtes."
+    ),
+    (
+        "*",
+        "The wheel could not start: this viewport no longer has a mesh to adjust.",
+    ): (
+        "La molette n'a pas pu démarrer : cette vue ne contient plus de maillage à ajuster."
+    ),
 }

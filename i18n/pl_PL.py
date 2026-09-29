@@ -183,4 +183,17 @@ TRANSLATIONS = {
         "*",
         "Nothing here can be resampled.  Select a continuous chain of edges or points.",
     ): "Nie ma tu nic do resamplowania. Wybierz ciągły łańcuch krawędzi lub punktów.",
+    # Why the menu item is greyed out, and what a wheel that never started says.
+    (
+        "*",
+        "Only available in mesh Edit Mode, with the vertex or edge select mode turned on.",
+    ): (
+        "Dędostępne tylko w trybie edycji siatki, gdy wybór ustawiony jest na wierzchołki lub krawędzie."
+    ),
+    (
+        "*",
+        "The wheel could not start: this viewport no longer has a mesh to adjust.",
+    ): (
+        "Kółko nie mogło się uruchomić: ten widok nie zawiera już siatki do dostosowania."
+    ),
 }

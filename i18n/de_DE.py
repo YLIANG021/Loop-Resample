@@ -194,4 +194,17 @@ TRANSLATIONS = {
         "Hier kann nichts neu abgetastet werden. Eine durchgehende Kette aus Kanten oder "
         "Punkten auswählen."
     ),
+    # Why the menu item is greyed out, and what a wheel that never started says.
+    (
+        "*",
+        "Only available in mesh Edit Mode, with the vertex or edge select mode turned on.",
+    ): (
+        "Nur im Bearbeiten-Modus eines Netzes verfügbar, wenn die Auswahl auf Eckpunkte oder Kanten steht."
+    ),
+    (
+        "*",
+        "The wheel could not start: this viewport no longer has a mesh to adjust.",
+    ): (
+        "Das Mausrad konnte nicht gestartet werden: Diese 3D-Ansicht enthält kein Netz zum Anpassen mehr."
+    ),
 }

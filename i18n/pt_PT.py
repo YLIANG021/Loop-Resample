@@ -187,4 +187,17 @@ TRANSLATIONS = {
         "*",
         "Nothing here can be resampled.  Select a continuous chain of edges or points.",
     ): "Nada aqui pode ser reamostrado. Selecione uma cadeia contínua de arestas ou pontos.",
+    # Why the menu item is greyed out, and what a wheel that never started says.
+    (
+        "*",
+        "Only available in mesh Edit Mode, with the vertex or edge select mode turned on.",
+    ): (
+        "Disponível apenas no modo de edição de uma malha, com a seleção definida em vértices ou arestas."
+    ),
+    (
+        "*",
+        "The wheel could not start: this viewport no longer has a mesh to adjust.",
+    ): (
+        "A roda não pôde iniciar: esta vista já não tem uma malha para ajustar."
+    ),
 }

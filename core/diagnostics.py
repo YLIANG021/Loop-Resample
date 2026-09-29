@@ -4,7 +4,9 @@
 lines printed elsewhere, which ask through :func:`enabled`.  One resample step would
 otherwise write twenty-odd lines to the system console, and every one of them reports
 work the add-on already answers somewhere the user can see -- the HUD, the operator's
-return value -- so a released run leaves it False.
+return value -- so a released run leaves it False.  It is a source constant rather than a
+preference for that reason: nothing here tells the user anything they could not see on
+screen, so a setting would only offer to slow the add-on down.
 
 Two blocks sit under a second switch of their own and speak only when both are on:
 ``planner.DIAGNOSE_LADDER`` for the ladder search, ``surface.DIAGNOSE_UV`` for the UV

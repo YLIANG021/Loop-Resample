@@ -76,6 +76,9 @@ MESSAGES = [
     (
         "Nothing here can be resampled.  Select a continuous chain of edges or points."
     ),
+    # Why the menu item is greyed out, and what a wheel that never started says.
+    "Only available in mesh Edit Mode, with the vertex or edge select mode turned on.",
+    "The wheel could not start: this viewport no longer has a mesh to adjust.",
 ]
 
 TRANSLATIONS = {("*", message): message for message in MESSAGES}

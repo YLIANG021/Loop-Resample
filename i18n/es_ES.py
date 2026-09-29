@@ -219,4 +219,17 @@ TRANSLATIONS = {
         "Aquí no se puede remuestrear nada. Selecciona una cadena continua de "
         "aristas o puntos."
     ),
+    # Why the menu item is greyed out, and what a wheel that never started says.
+    (
+        "*",
+        "Only available in mesh Edit Mode, with the vertex or edge select mode turned on.",
+    ): (
+        "Solo disponible en el modo de edición de una malla, con la selección en vértices o aristas."
+    ),
+    (
+        "*",
+        "The wheel could not start: this viewport no longer has a mesh to adjust.",
+    ): (
+        "La rueda no pudo iniciarse: esta vista ya no tiene ninguna malla que ajustar."
+    ),
 }

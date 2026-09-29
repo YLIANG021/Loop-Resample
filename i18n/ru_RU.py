@@ -178,4 +178,17 @@ TRANSLATIONS = {
         "*",
         "Nothing here can be resampled.  Select a continuous chain of edges or points.",
     ): "Здесь нечего пересэмплировать. Выберите непрерывную цепочку рёбер или точек.",
+    # Why the menu item is greyed out, and what a wheel that never started says.
+    (
+        "*",
+        "Only available in mesh Edit Mode, with the vertex or edge select mode turned on.",
+    ): (
+        "Доступно только в режиме редактирования сетки, когда выбор установлен на вершины или рёбра."
+    ),
+    (
+        "*",
+        "The wheel could not start: this viewport no longer has a mesh to adjust.",
+    ): (
+        "Колесо не запустилось: в этом окне больше нет сетки для изменения."
+    ),
 }

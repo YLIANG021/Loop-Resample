@@ -33,6 +33,7 @@ and a spacing is the same question -- can a strip be laid between these two rail
 import bpy
 
 from ..core import session as sessions
+from ..core.diagnostics import enabled
 from ..i18n import pgettext
 from ..operators import apply_counts, cut_notice, restore_source
 from ..shape.state import (
@@ -175,12 +176,24 @@ class MESH_OT_loop_resample_interactive(bpy.types.Operator):
         # to a selection made in either of those two, and points out on the mesh which part
         # of it it could not use.
         select_mode = context.tool_settings.mesh_select_mode
-        return (
+        available = (
             context.mode == "EDIT_MESH"
             and context.active_object is not None
             and context.active_object.type == "MESH"
             and (select_mode[0] or select_mode[1])
         )
+        if not available:
+            # One sentence for all four reasons rather than one per reason: what the item
+            # says is which door to go and get, and the user can see for themselves which
+            # of the four it was.  The forwarder's poll calls this one, so the message is
+            # set for the menu item too.
+            cls.poll_message_set(
+                pgettext(
+                    "Only available in mesh Edit Mode, with the vertex or edge "
+                    "select mode turned on."
+                )
+            )
+        return available
 
     def invoke(self, context, event):
         session = sessions.active(context)
@@ -508,9 +521,19 @@ def _start_wheel_modal():
         # The selection can stop answering the poll between the click and this callback --
         # the menu closing is not a commit, but it is a redraw, and a viewport that lost the
         # mesh in between has nothing left to lock.  A timer callback has no operator to
-        # report through, so the only channel left is the console; silence here is what read
-        # as "the menu item does nothing" the first time round.
-        print(f"[Loop Resample][diagnostic] menu entry could not start the wheel: {error}")
+        # report through, so the notice pinned to the clicked viewport is the only channel
+        # that still reaches the user; silence here is what read as "the menu item does
+        # nothing" the first time round.
+        area = _clicked_viewport()
+        if area is not None:
+            show_notice(
+                area,
+                pgettext(
+                    "The wheel could not start: this viewport no longer has a mesh to adjust."
+                ),
+            )
+        if enabled():
+            print(f"[Loop Resample][diagnostic] menu entry lost the viewport: {error}")
     return None
 
 

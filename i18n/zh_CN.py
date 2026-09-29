@@ -117,4 +117,17 @@ TRANSLATIONS = {
         "*",
         "Nothing here can be resampled.  Select a continuous chain of edges or points.",
     ): "这里没有可重采样的东西。请选一条连续的边或者点。",
+    # Why the menu item is greyed out, and what a wheel that never started says.
+    (
+        "*",
+        "Only available in mesh Edit Mode, with the vertex or edge select mode turned on.",
+    ): (
+        "仅在网格的编辑模式下可用，且选择模式需为顶点或边。"
+    ),
+    (
+        "*",
+        "The wheel could not start: this viewport no longer has a mesh to adjust.",
+    ): (
+        "滚轮未能启动：此视口中已没有可调整的网格。"
+    ),
 }
