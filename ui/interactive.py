@@ -13,7 +13,6 @@ session on the way out; a session must not outlive its scroll.
 import bpy
 
 from ..core import session as sessions
-from ..core.diagnostics import enabled
 from ..i18n import pgettext
 from ..operators import apply_counts, cut_notice, restore_source
 from ..shape.state import (
@@ -506,8 +505,6 @@ def _start_wheel_modal():
                     "The wheel could not start: this viewport no longer has a mesh to adjust."
                 ),
             )
-        if enabled():
-            print(f"[Loop Resample][diagnostic] menu entry lost the viewport: {error}")
     return None
 
 

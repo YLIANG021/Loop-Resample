@@ -1,8 +1,6 @@
 """Topology-aware attribute transfer helpers."""
 
-import time
 
-from .diagnostics import accumulate_scan
 from .utils import _point
 
 FLOAT_ATTRIBUTE_TOLERANCE = 1e-6
@@ -95,15 +93,10 @@ def normalized_parameters(points, is_closed, vertices, segments):
     """
     if segments <= 0.0:
         return [0.0] * len(vertices)
-    started = time.perf_counter()
-    segment_count = len(points) if is_closed else len(points) - 1
     parameters = []
     for vertex in vertices:
         parameter, _ = path_projection(points, is_closed, _point(vertex))
         parameters.append(0.0 if parameter is None else parameter / segments)
-    accumulate_scan(
-        "path-projection", time.perf_counter() - started, len(vertices) * segment_count
-    )
     return parameters
 
 
@@ -226,8 +219,6 @@ def capture_region_edge_attributes(regions, paths, bm):
             for index in crossing["source_edges"]
         }
         records = []
-        started = time.perf_counter()
-        projection_scans = 0
         for edge in _destroyed_region_edges(region):
             state = _edge_state(edge, float_layers)
             if not _has_edge_state(state):
@@ -247,7 +238,6 @@ def capture_region_edge_attributes(regions, paths, bm):
             else:
                 midpoint = (first.co + second.co) * 0.5
                 parameter, tangent = path_projection(points, is_closed, midpoint)
-                projection_scans += len(points)
                 if parameter is None:
                     continue
                 direction = second.co - first.co
@@ -266,9 +256,6 @@ def capture_region_edge_attributes(regions, paths, bm):
                     "state": state,
                 }
             )
-        accumulate_scan(
-            "edge-capture-projection", time.perf_counter() - started, projection_scans
-        )
         captured.append({"closed": is_closed, "records": records})
     return captured
 
@@ -296,12 +283,9 @@ def apply_region_edge_attributes(bm, region, inner_parameters, rungs, carried=()
     # Records outnumber rungs whenever the count drops, so gather them per rung and merge;
     # last-write-wins silently dropped the others.
     grouped = {}
-    started = time.perf_counter()
-    compared = 0
     for record in records:
         best = None
         for position, (inner_index, _) in enumerate(rungs):
-            compared += 1
             distance = _u_distance(
                 inner_parameters[inner_index], record["u"], closed
             )
@@ -310,7 +294,6 @@ def apply_region_edge_attributes(bm, region, inner_parameters, rungs, carried=()
         if best is None:
             continue
         grouped.setdefault(best[1], []).append((1.0, record["state"]))
-    accumulate_scan("rung-match", time.perf_counter() - started, compared)
 
     layers_by_name = {layer.name: layer for layer in _float_edge_layers(bm)}
     for position, weighted in grouped.items():

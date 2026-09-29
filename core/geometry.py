@@ -3,11 +3,6 @@
 from mathutils.geometry import intersect_line_line
 
 from ..i18n import pgettext
-from .diagnostics import (
-    print_crossing,
-    print_degenerate_face,
-    print_normal_mismatch,
-)
 from .types import TRANSITION_ADVANCE
 from .utils import _point, _point_view
 
@@ -196,15 +191,6 @@ def _diagnose_intersecting_edges(
                 _point(candidate[1]),
                 epsilon_squared,
             ):
-                first_label = segment_labels[segment_index]
-                second_label = segment_labels[candidate_index]
-                print_crossing(
-                    first_label,
-                    segment,
-                    second_label,
-                    candidate,
-                    epsilon_squared,
-                )
                 return True
 
         for x_index in cell_ranges[0]:
@@ -241,13 +227,8 @@ def validate_ordered_strip_plan(plan, inner_vertices, outer_vertices, region):
     for face_index, face_vertices in enumerate(plan.faces):
         cost, reference, signed = _score_face(face_vertices, region)
         if cost is None:
-            print_degenerate_face("degenerate-final-face", face_index, face_vertices)
             raise ValueError(pgettext("The strip plan contains a degenerate face."))
         references.append(reference)
-        if signed is not None:
-            alignment = abs(signed)
-            if alignment <= NORMAL_ALIGNMENT_WARNING:
-                print_normal_mismatch(face_index, face_vertices, alignment)
     region[_REFERENCE_NORMALS] = (plan, tuple(references))
 
 

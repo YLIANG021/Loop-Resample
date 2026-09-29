@@ -3,8 +3,8 @@
 from dataclasses import dataclass
 
 
-# Columns one ladder step consumes of each rail.  The search, the validator and the
-# diagnostics all read this instead of restating the arithmetic.
+# Columns one ladder step consumes of each rail.  The search and the validator both
+# read this instead of restating the arithmetic.
 TRANSITION_ADVANCE = {
     "QUAD": (1, 1),
     "INNER_TRI": (1, 0),

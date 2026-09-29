@@ -15,7 +15,6 @@ from .curves import (
     sample_by_arclength,
     sample_catmull_rom_curve,
 )
-from .diagnostics import enabled
 from .paths import selected_paths, synchronize_closed_path_phases
 from .regions import (
     capture_adjacent_strips,
@@ -446,23 +445,15 @@ def begin(context):
     # step after sees a pair it knows how to rebuild.  This is the only place the cut is
     # decided, which keeps the fitted curve, the entry counts and the frozen rung indices
     # on the same shortened rail.
-    _, trims = capture_adjacent_strips(live_bm, paths, quiet=True)
+    _, trims = capture_adjacent_strips(live_bm, paths)
     if trims:
         # A cut that leaves some *other* band asking for more only moved the problem, so
         # the selection goes back uncut and the capture refuses it in its own words.
         _, after = capture_adjacent_strips(
-            live_bm, _apply_trims(paths, trims), quiet=True
+            live_bm, _apply_trims(paths, trims)
         )
         if after:
             trims = {}
-    for index, (head, tail) in sorted(trims.items()):
-        if enabled():
-            vertices = paths[index][0]
-            print(
-                "[Loop Resample][diagnostic] rail-trim "
-                f"path={index} kept={len(vertices) - head - tail}/{len(vertices)} "
-                f"dropped_head={head} dropped_tail={tail}"
-            )
     paths = _apply_trims(paths, trims)
     session = ResampleSession(obj, live_bm.copy(), paths, trims)
     _release()

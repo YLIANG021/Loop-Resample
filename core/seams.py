@@ -36,13 +36,7 @@ from .attributes import (
     _u_distance,
     merge_edge_states,
 )
-from .diagnostics import (
-    print_landing_fallback,
-    print_seam_crossing_skipped,
-    print_seam_jogs,
-    print_seam_rungs,
-)
-from .regions import _listed, region_rails
+from .regions import region_rails
 from .surface import island_boundary_edges
 
 
@@ -93,12 +87,6 @@ def region_seam_crossings(region, paths, bm):
             () if region.get("pole_vertex") is None else (region["pole_vertex"],)
         )
     if not inner_vertices or not outer_vertices:
-        print_seam_crossing_skipped(
-            region,
-            "no-rail",
-            f"kind={region.get('kind')} inner={len(inner_vertices)} "
-            f"outer={len(outer_vertices)}",
-        )
         return []
     deleted = _destroyed_region_edges(region)
     marked = {edge for edge in deleted if getattr(edge, "seam", False)}
@@ -117,12 +105,6 @@ def region_seam_crossings(region, paths, bm):
                 if getattr(edge, "seam", False)
             }
             - {edge.index for edge in deleted}
-        )
-        print_seam_crossing_skipped(
-            region,
-            "no-boundary",
-            f"kind={region.get('kind')} deleted={len(deleted)} "
-            f"seam-kept={_listed(kept)}",
         )
         return []
 
@@ -148,12 +130,6 @@ def region_seam_crossings(region, paths, bm):
         if len(inner_hits) != 1 or len(outer_hits) != 1:
             # A boundary running along the band rather than across it reaches no rung, and
             # on a mesh whose seams were never marked that is the ordinary shape of the pool.
-            if is_marked:
-                print_seam_crossing_skipped(
-                    region,
-                    "rail-ends",
-                    f"inner={len(inner_hits)} outer={len(outer_hits)}",
-                )
             continue
         crossings.append(
             {
@@ -215,14 +191,8 @@ def region_seam_waypoints(region, path_landings, inner_parameters, outer_paramet
     if not crossings or not inner_parameters or not outer_parameters:
         return ()
     closed = bool(region["frames"]["closed"])
-    inner_path_index = region["path_index"]
-    outer_path_index = region.get("outer_path_index")
     nodes = []
     for crossing in crossings:
-        if not _pinned(path_landings, inner_path_index, crossing["inner_index"]):
-            print_landing_fallback(region, "inner", crossing["inner_index"])
-        if not _pinned(path_landings, outer_path_index, crossing["outer_index"]):
-            print_landing_fallback(region, "outer", crossing["outer_index"])
         nodes.append(
             (
                 _nearest_index(inner_parameters, crossing["inner_u"], closed),
@@ -270,7 +240,6 @@ def region_seam_rungs(region, plan, inner_parameters, outer_parameters, path_lan
         outer_index = _nearest_index(outer_parameters, crossing["outer_u"], closed)
         candidates = columns.get(outer_index)
         if not candidates:
-            print_seam_crossing_skipped(region, "no-column", f"outer={outer_index}")
             continue
         preferred = _nearest_index(inner_parameters, crossing["inner_u"], closed)
         inner_index = min(
@@ -341,7 +310,6 @@ def apply_region_seams(bm, plan, region, rungs):
     """
     if not rungs:
         return
-    print_seam_rungs(region, rungs)
     layers_by_name = {layer.name: layer for layer in _float_edge_layers(bm)}
     inner_count = len(plan.inner_vertices)
     outer_count = len(plan.outer_vertices)
@@ -354,7 +322,6 @@ def apply_region_seams(bm, plan, region, rungs):
             )
         )
         if edge is None:
-            print_seam_crossing_skipped(region, "missing-edge", f"node={rung['node']}")
             continue
         _apply_edge_state(edge, rung["state"], layers_by_name)
 
@@ -422,7 +389,6 @@ def paint_path_seam_jogs(bm, updated_paths, ends):
                     "reason": reason,
                 }
             )
-    print_seam_jogs(joins)
 
 
 def _paint_arc(bm, vertices, first, last, closed):

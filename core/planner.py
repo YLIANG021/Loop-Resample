@@ -6,20 +6,9 @@ the final mesh cannot change a local connection after it has been searched.
 """
 
 import math
-import time
 
 from ..i18n import pgettext
 from .curves import _sample_parameterized, parameterize_boundary
-from .diagnostics import (
-    accumulate_scan,
-    print_ladder_dp,
-    print_ladder_plan,
-    print_outer_replay,
-    print_outer_align,
-    print_outer_rungs,
-    print_seam_crossing_skipped,
-    print_seam_excursion,
-)
 from .geometry import (
     _crossing_after_box_overlap,
     _segments_intersect,
@@ -52,12 +41,6 @@ def _rail_shift(kind):
     """
     inner_step, outer_step = TRANSITION_ADVANCE[kind]
     return outer_step - inner_step
-
-
-# The ladder block in ``diagnostics``: how a shape axis moved a strip's connectivity.
-# Nothing reads it to decide anything; set True, with ``diagnostics.DIAGNOSTICS``, to
-# bring the lines back.
-DIAGNOSE_LADDER = True
 
 
 def _triangle_distribution_cost(
@@ -507,10 +490,6 @@ def align_outer_boundary(inner_vertices, outer_vertices, is_closed, region=None)
     decided = _rung_decision(inner_vertices, outer, rungs, is_closed)
     if decided is not None:
         decision, rank, tied = decided
-        if DIAGNOSE_LADDER and region is not None:
-            print_outer_rungs(
-                region, rungs, rank, tied, decision, is_closed
-            )
         return apply_outer_decision(outer, decision, is_closed), decision
     inner_start = _point(inner_vertices[0])
     candidates = []
@@ -528,10 +507,6 @@ def align_outer_boundary(inner_vertices, outer_vertices, is_closed, region=None)
     chosen_index = min(
         range(len(candidates)), key=lambda index: candidates[index][0]
     )
-    if DIAGNOSE_LADDER and region is not None:
-        print_outer_align(
-            region, candidates, chosen_index, decisions[chosen_index][1], is_closed
-        )
     return candidates[chosen_index][1], decisions[chosen_index]
 
 
@@ -699,53 +674,6 @@ def _cached_waypoint_attempt(frozen, waypoints, inner_steps, outer_steps):
         )
     )
     return depth, allowed, nodes, dropped
-
-
-def _surplus_names(allowed):
-    """Which kinds this strip may spend a rail column with, for the seam-skip line."""
-    return "+".join(kind for kind in allowed if kind != "QUAD") or "none"
-
-
-def _waypoint_reach_diagnostic(nodes, dropped, allowed):
-    """The pruned crossings with the rule that cut them off, for the seam-skip line.
-
-    ``band`` says the strip can never reach that ``d = outer - inner``, ``chain`` that the
-    position lost the monotone competition to the ones kept, ``lattice`` that it is not a
-    rung the ladder has at all, and ``moved`` that the crossing only appeared after a
-    frozen wiring was refused.  A pruned crossing otherwise leaves only a slid rung
-    behind, which names no reason.
-    """
-    dropped_text = " ".join(
-        f"({inner_index}, {outer_index})={outer_index - inner_index}:{reason}"
-        for inner_index, outer_index, reason in dropped
-    )
-    kept_text = " ".join(
-        f"({inner_index}, {outer_index})={outer_index - inner_index}"
-        for inner_index, outer_index in nodes
-    )
-    return (
-        f"dropped=[{dropped_text}] kept=[{kept_text}] "
-        f"triangle={_surplus_names(allowed)}"
-    )
-
-
-def _waypoint_diagnostic(nodes, allowed, boundary_geometry):
-    """Per-node ``d`` plus the rung-crossing verdict, for the seam-skip line.
-
-    ``_seam_waypoint_nodes`` already dropped every unreachable position, so a surviving
-    turn-back in ``d`` would mean the two disagree; the expected reading is a flat ``d``
-    with one ``cross`` set, naming the node whose own rung the boundary test kills.  Read
-    once per failed solve, never in the search loop.
-    """
-    offsets = ", ".join(str(outer - inner) for inner, outer in nodes)
-    crossed = ", ".join(
-        str(int(_rung_crosses_boundary(boundary_geometry, inner, outer)))
-        for inner, outer in nodes
-    )
-    return (
-        f"nodes={nodes} d=[{offsets}] cross=[{crossed}] "
-        f"triangle={_surplus_names(allowed)}"
-    )
 
 
 def _on_seam_corridor(inner_index, outer_index, nodes):
@@ -987,8 +915,6 @@ def _rung_crosses_boundary(boundary_geometry, inner_index, outer_index):
         boundary_geometry,
         position,
     )
-    accumulate_scan("plan-boundary-candidates", 0.0, examined)
-    accumulate_scan("plan-boundary-cell-probes", 0.0, probes)
     boundary_geometry.rung_cross_cache[position] = crossed
     return crossed
 
@@ -1668,22 +1594,12 @@ def _build_transitions(
         outer_steps,
         depth,
     )
-    accumulate_scan("plan-expand", 0.0, expanded)
     if not states:
         raise ValueError(pgettext("No valid ordered strip path was found."))
     candidates = [
         (states[key], _replay_transitions(key, parents)) for key in states
     ]
     best = min(candidates, key=lambda state: state[0])
-    if DIAGNOSE_LADDER and region is not None:
-        print_ladder_dp(
-            region,
-            inner_steps,
-            outer_steps,
-            allowed,
-            sorted(candidates, key=lambda state: state[0])[:2],
-            waypoints,
-        )
     return best
 
 
@@ -1734,17 +1650,13 @@ def outer_boundary_order(inner_vertices, outer_vertices, region, decision=None):
     if region.get("phase_locked"):
         return list(outer_vertices), None
     if decision is None:
-        started = time.perf_counter()
         aligned, chosen = align_outer_boundary(
             inner_vertices,
             outer_vertices,
             region["closed"],
             region=region,
         )
-        accumulate_scan("plan-align", time.perf_counter() - started, 1)
     else:
-        if DIAGNOSE_LADDER:
-            print_outer_replay(region, decision)
         aligned = apply_outer_decision(outer_vertices, decision, region["closed"])
         chosen = decision
     return aligned, chosen
@@ -1752,7 +1664,6 @@ def outer_boundary_order(inner_vertices, outer_vertices, region, decision=None):
 
 def _ladder_plan(inner_boundary, outer_boundary, transitions, score, closed):
     """Turn one transition sequence into the faces and nodes it walks out."""
-    started = time.perf_counter()
     inner_index = 0
     outer_index = 0
     faces = []
@@ -1782,7 +1693,6 @@ def _ladder_plan(inner_boundary, outer_boundary, transitions, score, closed):
         outer_boundary.parameters,
         tuple(nodes),
     )
-    accumulate_scan("plan-faces", time.perf_counter() - started, len(transitions))
     return plan
 
 
@@ -1793,11 +1703,9 @@ def _finish_ladder_plan(plan, inner, outer, region):
     every check is geometric, so a shape tick that pushed a frozen rung across the
     boundary or into a degenerate face loses the replay rather than ships the face.
     """
-    started = time.perf_counter()
     validate_ordered_strip_plan(plan, inner, outer, region)
     if diagnose_ordered_strip_geometry(plan, inner, outer, region):
         raise ValueError(pgettext("The ordered strip contains intersecting edges."))
-    accumulate_scan("plan-validate", time.perf_counter() - started, len(plan.faces))
 
 
 def _search_ladder(
@@ -1818,14 +1726,12 @@ def _search_ladder(
     routing through every seam waypoint was refused and the crossings fall back to
     positional matching.  A degraded ladder is never frozen, because the seam's rung
     would then stay off the vertex the sampler pinned for as long as the shape axes were
-    scrolled.  ``swapped`` is diagnostic only.
+    scrolled.  ``swapped`` says whether the local swap moved anything.
 
     ``depth`` is the loan the crossings were granted.  It goes to the local swap along
     with the search, because the swap has to price a borrowed stretch the way the sweep
     did or it would move one for free.  The degraded answer gives the loan back.
     """
-    started = time.perf_counter()
-    attempts = 1
     complete = True
     try:
         score, transitions = _build_transitions(
@@ -1842,15 +1748,9 @@ def _search_ladder(
     except ValueError as strict_error:
         score = transitions = None
         if seam_nodes:
-            attempts += 1
             # Routing through every crossing can still be refused for good reason: a
             # rung there would cross the outer boundary.  Losing the whole step is worse
             # than the painter sliding that one rung.
-            print_seam_crossing_skipped(
-                region,
-                "waypoint",
-                _waypoint_diagnostic(seam_nodes, allowed, boundary_geometry),
-            )
             try:
                 score, transitions = _build_transitions(
                     inner,
@@ -1868,8 +1768,6 @@ def _search_ladder(
                 score = transitions = None
         if transitions is None:
             raise strict_error from None
-    accumulate_scan("plan-build", time.perf_counter() - started, attempts)
-    started = time.perf_counter()
     dp_transitions = transitions
     transitions = _beautify_transitions(
         transitions,
@@ -1882,7 +1780,6 @@ def _search_ladder(
         seam_nodes,
         depth,
     )
-    accumulate_scan("plan-beautify", time.perf_counter() - started, 1)
     return transitions, score, complete, transitions != dp_transitions
 
 
@@ -1915,10 +1812,8 @@ def build_ordered_strip_plan(
     if len(outer_vertices) < (3 if closed else 2):
         raise ValueError(pgettext("The outer curve has too few points."))
 
-    started = time.perf_counter()
     inner_boundary = parameterize_boundary(inner_vertices, closed)
     outer_boundary = parameterize_boundary(outer_vertices, closed)
-    accumulate_scan("plan-parameterize", time.perf_counter() - started, 2)
     inner = inner_boundary.vertices
     outer = outer_boundary.vertices
     inner_steps = len(inner) if closed else len(inner) - 1
@@ -1926,8 +1821,6 @@ def build_ordered_strip_plan(
     steps = (inner_steps, outer_steps)
 
     plan = None
-    swapped = False
-    source = "reuse"
     reused = frozen is not None and frozen["steps"] == steps
     if reused:
         try:
@@ -1937,18 +1830,10 @@ def build_ordered_strip_plan(
         except ValueError:
             plan = None
     if plan is None:
-        source = "reflow" if reused else "dp"
-        started = time.perf_counter()
         boundary_geometry = _prepare_boundary_geometry(
             inner_boundary.vertices,
             outer_boundary.vertices,
             closed,
-        )
-        accumulate_scan("plan-geometry", time.perf_counter() - started, 1)
-        accumulate_scan(
-            "plan-boundary-positions",
-            0.0,
-            len(boundary_geometry.rung_cross_cache),
         )
         allowed = _allowed_transitions(inner_steps, outer_steps)
         seam_nodes, dropped_nodes = _seam_waypoint_nodes(
@@ -2008,25 +1893,6 @@ def build_ordered_strip_plan(
                 # go because no band could reach them.
                 attempts[0] = (0, allowed, seam_nodes, dropped_nodes, "traded")
         for loan, loan_allowed, loan_nodes, loan_dropped, skip_reason in attempts:
-            if loan:
-                print_seam_excursion(
-                    region,
-                    f"depth={loan} "
-                    + _waypoint_reach_diagnostic(
-                        loan_nodes, loan_dropped, loan_allowed
-                    ),
-                )
-            elif loan_dropped:
-                # ``unreachable`` is the band's own refusal; ``moved`` is the frozen
-                # wiring's (see ``_cached_waypoint_attempt``); ``traded`` is a wider band
-                # that would have reached it at the price of one this band already had.
-                print_seam_crossing_skipped(
-                    region,
-                    skip_reason,
-                    _waypoint_reach_diagnostic(
-                        loan_nodes, loan_dropped, loan_allowed
-                    ),
-                )
             try:
                 transitions, score, complete, swapped = _search_ladder(
                     inner,
@@ -2051,11 +1917,6 @@ def build_ordered_strip_plan(
                 # exception, which is what the failure report reads.
                 if not loan:
                     raise
-                print_seam_crossing_skipped(
-                    region,
-                    "excursion",
-                    f"depth={loan} nodes={len(loan_nodes)}",
-                )
                 continue
             break
         if ladders is not None and decision is not None:
@@ -2073,8 +1934,6 @@ def build_ordered_strip_plan(
                 # leaving it would have every later shape tick try it, fail it and
                 # re-solve from scratch.
                 ladders.pop(region["region_index"], None)
-    if DIAGNOSE_LADDER:
-        print_ladder_plan(region, plan, source, swapped)
     return plan
 
 

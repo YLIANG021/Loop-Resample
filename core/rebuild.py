@@ -1,12 +1,10 @@
 """BMesh detach, path replacement, and face reconstruction."""
 
-import time
 
 import bmesh
 from mathutils.geometry import tessellate_polygon
 
 from ..i18n import pgettext
-from .diagnostics import accumulate_scan, enabled
 from .geometry import (
     _plan_rungs,
     cached_reference_normals,
@@ -63,15 +61,6 @@ def rebuild_detached_path(bm, path, samples):
         key=lambda item: item[0],
     )
     if attached:
-        if enabled():
-            print(
-                "[Loop Resample][diagnostic] detach-refused "
-                f"closed={int(is_closed)} rail_vertices={len(source_vertices)} "
-                f"rail_edges={len(source_edges)} still_attached={len(attached)} "
-                "edges=["
-                + ", ".join(f"{edge}:{list(faces)}" for edge, faces in attached[:12])
-                + "]"
-            )
         leftover = {
             face for edge in source_edge_set for face in edge.link_faces
         }
@@ -213,24 +202,19 @@ def rebuild_ngon_cap(bm, boundary_vertices, region):
 def apply_ordered_strip_plan(bm, plan, region):
     """Create the faces from a previously validated strip plan."""
     new_faces = []
-    sample_count = len(region.get("normal_samples", ()))
     # Validation already found each face's source normal, and the mesh has not
     # moved since.
     references = cached_reference_normals(plan, region)
     for face_index, face_vertices in enumerate(plan.faces):
-        started = time.perf_counter()
         face = bm.faces.new(face_vertices)
         face.material_index = region["material_index"]
         face.smooth = region["smooth"]
         face.normal_update()
-        accumulate_scan("bmesh-new-face", time.perf_counter() - started, 1)
-        started = time.perf_counter()
         reference_normal = (
             references[face_index]
             if references is not None
             else _reference_normal(face_vertices, region)
         )
-        accumulate_scan("reference-normal", time.perf_counter() - started, sample_count)
         if (
             reference_normal is not None
             and reference_normal.length > 1e-12

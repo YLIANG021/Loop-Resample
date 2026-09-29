@@ -1,47 +1,8 @@
 """Surface-region capture and source-topology mapping."""
 
-from collections import Counter
 
-from .diagnostics import enabled
 from .paths import ordered_selected_path
 from .utils import _point
-
-
-def _listed(values, limit=12):
-    """A sorted, capped index list for a diagnostic line."""
-    values = sorted(values)
-    shown = ",".join(str(value) for value in values[:limit])
-    if len(values) > limit:
-        shown += f",..+{len(values) - limit}"
-    return f"[{shown}]"
-
-
-def _rail_histogram(component, path_edge_set):
-    """How many of the path's rail edges each face of a component sits on.
-
-    ``1x8`` is a clean strip, one face per rail edge.  A face holding two means
-    that side is coarser than the rail, so the component gets rejected.
-    """
-    histogram = Counter(
-        sum(edge in path_edge_set for edge in face.edges) for face in component
-    )
-    return ",".join(
-        f"{holds}x{count}" for holds, count in sorted(histogram.items())
-    )
-
-
-def print_capture_reject(
-    path_index, reason, component, path_edge_set, quiet=False, **detail
-):
-    """Why one side of a rail was left out of the capture."""
-    if quiet or not enabled():
-        return
-    print(
-        "[Loop Resample][diagnostic] capture-reject "
-        f"path={path_index} reason={reason} "
-        f"faces={len(component)} rails={_rail_histogram(component, path_edge_set)}"
-        + "".join(f" {key}={value}" for key, value in detail.items())
-    )
 
 
 def _covered_run(edges, component_edges):
@@ -192,7 +153,7 @@ def _capture_ngon_cap(path_index, path, used_faces):
     ]
 
 
-def capture_adjacent_strips(bm, paths, quiet=False):
+def capture_adjacent_strips(bm, paths):
     """Capture a selected rail network as disjoint adjacent surface strips.
 
     All selected rails are barriers during capture.  A component that touches two
@@ -205,7 +166,7 @@ def capture_adjacent_strips(bm, paths, quiet=False):
     ``{path_index: (head, tail)}`` counted in edges of the path as handed in.  Those
     regions are left out of this pass so the caller can trim the rails and capture
     again against the shorter pair, the only way the ladder's indices stay in one
-    piece.  ``quiet`` holds the diagnostics back for that first, throwaway pass.
+    piece.
     """
     all_path_vertices = {vertex for path in paths for vertex in path[0]}
     all_path_edges = {edge for path in paths for edge in path[1]}
@@ -251,17 +212,6 @@ def capture_adjacent_strips(bm, paths, quiet=False):
         path_edge_set = set(path_edges)
         component_edges = {edge for face in component for edge in face.edges}
         if component_edges & path_edge_set != path_edge_set:
-            print_capture_reject(
-                path_index,
-                "partial-rail",
-                component,
-                path_edge_set,
-                quiet=quiet,
-                covered=f"{len(component_edges & path_edge_set)}/{len(path_edge_set)}",
-                missing_edges=_listed(
-                    edge.index for edge in path_edge_set - component_edges
-                ),
-            )
             return None
 
         component_vertices = {vertex for face in component for vertex in face.verts}
@@ -319,30 +269,8 @@ def capture_adjacent_strips(bm, paths, quiet=False):
                 outer_edges
             )
         except ValueError as error:
-            print_capture_reject(
-                path_index,
-                "outer-none"
-                if not outer_edges
-                else "outer-unorderable",
-                component,
-                path_edge_set,
-                quiet=quiet,
-                error=str(error),
-                outer_edges=_listed(edge.index for edge in outer_edges),
-                boundary=_listed(edge.index for edge in boundary_edges - outer_edges),
-            )
             return None
         if outer_closed != is_closed:
-            print_capture_reject(
-                path_index,
-                "outer-openness",
-                component,
-                path_edge_set,
-                quiet=quiet,
-                outer_closed=int(outer_closed),
-                path_closed=int(is_closed),
-                outer_vertices=_listed(vertex.index for vertex in outer_vertices),
-            )
             return None
 
         first_face = next(iter(component))
@@ -413,14 +341,6 @@ def capture_adjacent_strips(bm, paths, quiet=False):
         first_path = paths[first_index]
         second_path = paths[second_index]
         if first_path[2] != second_path[2]:
-            if not quiet and enabled():
-                print(
-                    "[Loop Resample][diagnostic] capture-reject "
-                    f"path={first_index} reason=pair-openness "
-                    f"between={first_index}+{second_index} "
-                    f"closed={int(first_path[2])}/{int(second_path[2])} "
-                    f"faces={len(eligible)}"
-                )
             continue
         boundary_edges = set(first_path[1]) | set(second_path[1])
         while eligible:
@@ -443,24 +363,6 @@ def capture_adjacent_strips(bm, paths, quiet=False):
             wanted = dict(
                 (index, (head, tail)) for index, head, tail in proposal or ()
             )
-            for index, rail in partial:
-                print_capture_reject(
-                    index,
-                    "partial-rail",
-                    component,
-                    rail,
-                    quiet=quiet,
-                    between=f"{first_index}+{second_index}",
-                    covered=f"{len(component_edges & rail)}/{len(rail)}",
-                    missing_edges=_listed(
-                        edge.index for edge in rail - component_edges
-                    ),
-                    trim=(
-                        "-"
-                        if index not in wanted
-                        else "{}+{}".format(*wanted[index])
-                    ),
-                )
             if partial:
                 for index, trim in wanted.items():
                     known = trims.get(index)
@@ -492,41 +394,6 @@ def capture_adjacent_strips(bm, paths, quiet=False):
 
     for path_index, (_, path_edges, _) in enumerate(paths):
         path_edge_set = set(path_edges)
-        linked_faces = {face for edge in path_edges for face in edge.link_faces}
-        captured_faces = {
-            face
-            for region in regions
-            if region["path_index"] == path_index
-            or region.get("outer_path_index") == path_index
-            for face in region["faces"]
-        }
-        remaining_faces = linked_faces - captured_faces
-        if remaining_faces and not quiet and enabled():
-            print(
-                "[Loop Resample][diagnostic] capture-incomplete "
-                f"path={path_index} selected_edges={len(path_edges)} "
-                f"linked_faces={len(linked_faces)} captured={len(captured_faces)} "
-                f"remaining={len(remaining_faces)} "
-                f"rails={_rail_histogram(remaining_faces, path_edge_set)} "
-                "reason=unsupported-component-boundary"
-            )
-            # The operator refuses the whole step once any face is still attached to
-            # the rail, so these are the faces worth blaming.
-            for face in sorted(remaining_faces, key=lambda item: item.index)[:12]:
-                print(
-                    "[Loop Resample][diagnostic] capture-uncaptured "
-                    f"path={path_index} face={face.index} "
-                    f"verts={_listed(vertex.index for vertex in face.verts)} "
-                    f"corners={len(face.verts)} "
-                    f"on_rail={sum(edge in path_edge_set for edge in face.edges)} "
-                    f"rail_edges={_listed(edge.index for edge in face.edges if edge in path_edge_set)} "
-                    f"other_faces={len({linked for edge in face.edges for linked in edge.link_faces}) - 1}"
-                )
-            if len(remaining_faces) > 12:
-                print(
-                    "[Loop Resample][diagnostic] capture-uncaptured "
-                    f"path={path_index} ..+{len(remaining_faces) - 12} more"
-                )
     for index in trim_conflicts:
         trims.pop(index, None)
     return regions, trims
