@@ -23,31 +23,41 @@
 
 ## 1. 线段直接改
 
-选一段边，滚轮改段数。两头不动，中间重新划分
+选中边，滚轮改段数。两头不动，中间重新划分，模型布线不够好也支持
 
-<img width="810" height="480" alt="非环形边链展示" src="" />
+<img width="908" height="540" alt="1" src="https://github.com/user-attachments/assets/2b9ec61a-bd0d-4d2e-8e20-5796dee2ceca" />
+
+
+
 
 ## 2. 圆环也能改
 
 闭合的边也支持
 
+<img width="908" height="540" alt="2" src="https://github.com/user-attachments/assets/6329d5dc-444d-4cdd-b668-93e5b5b95ea6" />
+
 ## 3. 同时改几根
 
 多选几根边链，滚轮一滚一起改段数
 
-<img width="810" height="480" alt="环形边功能展示" src="" />
+<img width="908" height="540" alt="3" src="https://github.com/user-attachments/assets/5200a5be-bebd-43bf-aac3-ead4cf5d3d24" />
+
+
+
 
 ## 4. Shift + 滚轮：顺手把曲线捋顺
 
 按住 Shift 调整滚轮，快速抛光你的曲线
 
-<img width="810" height="480" alt="smooth 展示" src="" />
+<img width="908" height="540" alt="4" src="https://github.com/user-attachments/assets/5c6fc478-74f6-429e-a7ed-070243e6dd48" />
+
 
 ## 5. Ctrl + 滚轮：把点摊匀
 
 按住 Ctrl 调整滚轮，把曲线变得均匀
 
-<img width="810" height="480" alt="even 功能展示" src="" />
+<img width="908" height="540" alt="5" src="https://github.com/user-attachments/assets/9c7eeca8-1cc6-4c19-94e1-96e80ea370a7" />
+
 
 ---
 
